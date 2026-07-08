@@ -9,13 +9,18 @@
 }
 
 .home-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
   gap: clamp(16px, 4vw, 32px);
   width: min(960px, 100%);
 }
 
 .home-tile {
+  /* Square tiles at 25% of the screen height, centered by the flex grid. */
+  height: 25vh;
+  height: 25svh;
   aspect-ratio: 1 / 1;
   border-radius: 28px;
   display: flex;
@@ -39,6 +44,8 @@
 }
 
 .home-tile-emoji {
-  font-size: clamp(56px, 14vw, 104px);
+  /* Scales with the 25vh tile. */
+  font-size: 12vh;
+  font-size: 12svh;
   line-height: 1;
 }
