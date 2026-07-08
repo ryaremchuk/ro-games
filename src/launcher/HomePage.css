@@ -1,0 +1,44 @@
+.home {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom));
+  background: linear-gradient(135deg, #dff3ff 0%, #ffe9f5 100%);
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: clamp(16px, 4vw, 32px);
+  width: min(960px, 100%);
+}
+
+.home-tile {
+  aspect-ratio: 1 / 1;
+  border-radius: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  box-shadow:
+    0 8px 0 rgba(0, 0, 0, 0.12),
+    0 14px 28px rgba(0, 0, 0, 0.16);
+  transition:
+    transform 0.08s ease,
+    box-shadow 0.08s ease;
+  touch-action: manipulation;
+}
+
+.home-tile:active {
+  transform: translateY(5px);
+  box-shadow:
+    0 3px 0 rgba(0, 0, 0, 0.12),
+    0 6px 14px rgba(0, 0, 0, 0.16);
+}
+
+.home-tile-emoji {
+  font-size: clamp(56px, 14vw, 104px);
+  line-height: 1;
+}
