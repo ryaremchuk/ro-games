@@ -38,4 +38,12 @@ export const games: GameMeta[] = [
     emoji: '👾',
     component: lazy(() => import('./feed-the-monster/FeedTheMonsterGame')),
   },
+  {
+    id: 'animal-band',
+    title: 'Animal Band',
+    path: '/animal-band',
+    color: '#9B5DE5',
+    emoji: '🥁',
+    component: lazy(() => import('./animal-band/AnimalBandGame')),
+  },
 ]
