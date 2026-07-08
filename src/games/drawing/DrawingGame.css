@@ -1,31 +1,35 @@
 .drawing {
-  display: flex;
-  flex-direction: column;
+  position: relative;
   height: 100%;
   width: 100%;
   background: #ffffff;
 }
 
 .drawing-canvas {
-  flex: 1 1 auto;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  min-height: 0;
   display: block;
   /* We handle all touch input ourselves — no scroll/zoom on the canvas. */
   touch-action: none;
   cursor: crosshair;
 }
 
+/* Floating pill in the top-right corner, on the same row as the home button. */
 .drawing-toolbar {
-  flex: 0 0 auto;
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  /* Never overlap the 56px home button pinned top-left. */
+  max-width: calc(100% - 96px - max(12px, env(safe-area-inset-left)));
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
-  padding-bottom: max(10px, env(safe-area-inset-bottom));
-  background: #f3f4f7;
-  box-shadow: 0 -2px 14px rgba(0, 0, 0, 0.08);
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 20px;
+  background: rgba(243, 244, 247, 0.94);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
   overflow-x: auto;
 }
 
@@ -56,8 +60,8 @@
 .size-button,
 .tool-button {
   flex: 0 0 auto;
-  width: 54px;
-  height: 54px;
+  width: 48px;
+  height: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
