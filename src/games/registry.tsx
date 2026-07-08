@@ -30,4 +30,12 @@ export const games: GameMeta[] = [
     emoji: '🖍️',
     component: lazy(() => import('./drawing/DrawingGame')),
   },
+  {
+    id: 'feed-the-monster',
+    title: 'Feed the Monster',
+    path: '/feed-the-monster',
+    color: '#FFA94D',
+    emoji: '👾',
+    component: lazy(() => import('./feed-the-monster/FeedTheMonsterGame')),
+  },
 ]
