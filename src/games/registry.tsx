@@ -46,4 +46,12 @@ export const games: GameMeta[] = [
     emoji: '🥁',
     component: lazy(() => import('./animal-band/AnimalBandGame')),
   },
+  {
+    id: 'whack-a-silly',
+    title: 'Whack-a-Silly',
+    path: '/whack-a-silly',
+    color: '#6BCB77',
+    emoji: '🐹',
+    component: lazy(() => import('./whack-a-silly/WhackASillyGame')),
+  },
 ]
