@@ -1,6 +1,12 @@
+import { Suspense, lazy } from 'react'
+import { useLocation } from 'react-router-dom'
 import Phaser from 'phaser'
 import PhaserGame from '../../shared/PhaserGame'
 import SlingshotScene from './SlingshotScene'
+
+// Hidden adult tool (`#/slingshot?edit`) — lazy so the child's play path never
+// downloads the editor panel.
+const EditorPanel = lazy(() => import('./editor/EditorPanel'))
 
 /**
  * Slingshot Birds — an Angry-Birds-style physics playground for a 3–4 year old.
@@ -20,6 +26,8 @@ import SlingshotScene from './SlingshotScene'
  * identically across dpr and portrait/landscape.
  */
 export default function SlingshotGame() {
+  const { search } = useLocation()
+  const editOn = new URLSearchParams(search).has('edit')
   const dpr = Math.min(window.devicePixelRatio || 1, 3)
   const config: Omit<Phaser.Types.Core.GameConfig, 'parent'> = {
     type: Phaser.AUTO,
@@ -45,12 +53,19 @@ export default function SlingshotGame() {
   }
 
   return (
-    <div
-      role="img"
-      aria-label="Pull the slingshot and launch birds at the block towers to free the sleeping piggies"
-      style={{ width: '100%', height: '100%' }}
-    >
-      <PhaserGame config={config} />
-    </div>
+    <>
+      <div
+        role="img"
+        aria-label="Pull the slingshot and launch birds at the block towers to free the sleeping piggies"
+        style={{ width: '100%', height: '100%' }}
+      >
+        <PhaserGame config={config} />
+      </div>
+      {editOn && (
+        <Suspense fallback={null}>
+          <EditorPanel />
+        </Suspense>
+      )}
+    </>
   )
 }

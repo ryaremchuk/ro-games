@@ -118,8 +118,8 @@ export const SLING = { x: 0.13, y: 0.56 } as const
 export const RIGHT_ZONE_MIN = 0.5
 
 /** Default block footprint (a chunky, tumble-able cube). */
-const WOOD_W = 0.078
-const WOOD_H = 0.078
+export const WOOD_W = 0.078
+export const WOOD_H = 0.078
 /** Tall skinny domino footprint. */
 const DOMINO_W = 0.03
 const DOMINO_H = 0.115
