@@ -1,4 +1,5 @@
 import type { BirdKind } from './logic'
+import type { EditorApi } from './editor/bridge'
 
 /**
  * E2E test hook for the Slingshot scene.
@@ -47,5 +48,7 @@ export interface SlingshotTestApi {
 declare global {
   interface Window {
     __slingshot?: SlingshotTestApi
+    /** Dev/e2e-only handle to the hidden level editor (`#/slingshot?edit`). */
+    __slingshotEditor?: EditorApi
   }
 }
