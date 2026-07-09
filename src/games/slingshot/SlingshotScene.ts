@@ -25,6 +25,7 @@ import {
   mulberry32,
 } from './logic'
 import type { BirdKind, BlockMaterial, BlockSpec, LevelSpec, PiggySpec, PropSpec } from './logic'
+import type { SlingshotTestApi } from './testHook'
 
 // ART SPEC palette.
 const INK = 0x3d3a4b
@@ -173,6 +174,7 @@ export default class SlingshotScene extends Phaser.Scene {
       this.removeWindowListeners()
       this.matter.world.off('collisionstart', this.onCollisionStart)
       this.clearTimers()
+      this.teardownTestApi()
       clearLevel()
     })
     // React unmount calls game.destroy(), which emits DESTROY (not SHUTDOWN).
@@ -181,14 +183,64 @@ export default class SlingshotScene extends Phaser.Scene {
     // destroyed scene (e.g. an iPad orientation change after leaving the game),
     // and each visit leaks another. removeEventListener is idempotent if both
     // events fire.
-    this.events.once(Phaser.Scenes.Events.DESTROY, this.removeWindowListeners)
+    this.events.once(Phaser.Scenes.Events.DESTROY, () => {
+      this.removeWindowListeners()
+      this.teardownTestApi()
+    })
 
     this.buildLevel(this.level)
+
+    // Dev-only e2e hook (tree-shaken from production builds). Lets Playwright
+    // read deterministic play state and drive the real aim/release path — Phaser
+    // renders to an opaque canvas the DOM can't inspect. See ./testHook.ts.
+    if (import.meta.env.DEV || location.search.includes('e2e')) this.exposeTestApi()
   }
 
   private removeWindowListeners = (): void => {
     window.removeEventListener('resize', this.handleResize)
     window.removeEventListener('orientationchange', this.handleResize)
+  }
+
+  // ─── E2E test hook (dev-only) ──────────────────────────────────────────────
+
+  private testApi?: SlingshotTestApi
+
+  private exposeTestApi(): void {
+    const api: SlingshotTestApi = {
+      state: () => ({
+        level: this.level,
+        canAim: this.canAim,
+        aiming: this.aiming,
+        levelClearing: this.levelClearing,
+        birdState: this.bird?.state ?? null,
+        birdKind: this.bird?.kind ?? null,
+        piggiesTotal: this.piggies.length,
+        piggiesFreed: this.piggies.filter((p) => p.freed).length,
+        consecutiveMisses: this.consecutiveMisses,
+      }),
+      flick: (dxN, dyN) => {
+        if (!this.canAim || this.aiming || this.levelClearing || this.bird?.state !== 'loaded') {
+          return false
+        }
+        this.aiming = true
+        this.dragStart = { x: this.forkX, y: this.forkY }
+        const pointer = { x: this.forkX + dxN * this.L, y: this.forkY + dyN * this.L }
+        this.updateAim(pointer as unknown as Phaser.Input.Pointer)
+        this.release()
+        return true
+      },
+      flap: () => this.flap(),
+    }
+    this.testApi = api
+    window.__slingshot = api
+  }
+
+  private teardownTestApi(): void {
+    // Identity guard: React StrictMode double-mounts in dev, and Phaser defers
+    // destroy() to the next game step — so this scene's late DESTROY can fire
+    // *after* the remounted scene has installed its own hook. Only remove ours,
+    // never the live one.
+    if (this.testApi && window.__slingshot === this.testApi) delete window.__slingshot
   }
 
   private handleResize = (): void => {
