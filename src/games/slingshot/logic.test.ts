@@ -329,6 +329,135 @@ describe('contact-speed thresholds (normalized — the self-free regression)', (
   })
 })
 
+describe('spawn geometry (no interpenetration — Matter ejects overlapping bodies)', () => {
+  const EPS = 1e-6
+
+  it('no two blocks overlap', () => {
+    for (const lvl of RAMP_LEVELS) {
+      const blocks = level(lvl).blocks
+      for (let i = 0; i < blocks.length; i++) {
+        for (let j = i + 1; j < blocks.length; j++) {
+          const a = blocks[i]
+          const b = blocks[j]
+          const overlapX = Math.abs(a.x - b.x) < (a.w + b.w) / 2 - EPS
+          const overlapY = Math.abs(a.y - b.y) < (a.h + b.h) / 2 - EPS
+          expect(overlapX && overlapY, `level ${lvl}: blocks ${i}/${j} overlap`).toBe(false)
+        }
+      }
+    }
+  })
+
+  it('no piggy body overlaps a block', () => {
+    for (const lvl of RAMP_LEVELS) {
+      const spec = level(lvl)
+      const bodyR = PIGGY.radius * PIGGY_BODY_SCALE
+      for (const p of spec.piggies) {
+        for (const b of spec.blocks) {
+          // Closest point on the block AABB to the piggy center.
+          const cx = Math.max(b.x - b.w / 2, Math.min(p.x, b.x + b.w / 2))
+          const cy = Math.max(b.y - b.h / 2, Math.min(p.y, b.y + b.h / 2))
+          const dist = Math.hypot(p.x - cx, p.y - cy)
+          expect(dist, `level ${lvl}: piggy inside block`).toBeGreaterThan(bodyR - EPS)
+        }
+      }
+    }
+  })
+
+  it('no two piggy bodies overlap', () => {
+    for (const lvl of RAMP_LEVELS) {
+      const piggies = level(lvl).piggies
+      const bodyR = PIGGY.radius * PIGGY_BODY_SCALE
+      for (let i = 0; i < piggies.length; i++) {
+        for (let j = i + 1; j < piggies.length; j++) {
+          const d = Math.hypot(piggies[i].x - piggies[j].x, piggies[i].y - piggies[j].y)
+          expect(d, `level ${lvl}: piggies ${i}/${j} overlap`).toBeGreaterThan(2 * bodyR - EPS)
+        }
+      }
+    }
+  })
+
+  it('every block stack is supported (ground, a block below, or a seesaw plank)', () => {
+    for (const lvl of RAMP_LEVELS) {
+      const spec = level(lvl)
+      for (const b of spec.blocks) {
+        const bottom = b.y + b.h / 2
+        const onGround = Math.abs(bottom - GROUND_Y) < 1e-9
+        const onBlock = spec.blocks.some(
+          (s) =>
+            s !== b &&
+            Math.abs(s.y - s.h / 2 - bottom) < 1e-9 &&
+            Math.abs(s.x - b.x) < (s.w + b.w) / 2 - 1e-9,
+        )
+        const onPlank = spec.props.some(
+          (p) =>
+            p.kind === 'seesaw' &&
+            Math.abs(p.y - (p.h ?? 0.026) / 2 - bottom) < 0.01 &&
+            Math.abs(p.x - b.x) < ((p.w ?? 0.22) + b.w) / 2 - 1e-9,
+        )
+        expect(
+          onGround || onBlock || onPlank,
+          `level ${lvl}: floating block at ${b.x},${b.y}`,
+        ).toBe(true)
+      }
+    }
+  })
+
+  it('no block interpenetrates a seesaw plank', () => {
+    for (const lvl of RAMP_LEVELS) {
+      const spec = level(lvl)
+      for (const p of spec.props) {
+        if (p.kind !== 'seesaw') continue
+        const pw = p.w ?? 0.22
+        const ph = p.h ?? 0.026
+        for (const b of spec.blocks) {
+          const overlapX = Math.abs(p.x - b.x) < (pw + b.w) / 2 - EPS
+          const overlapY = Math.abs(p.y - b.y) < (ph + b.h) / 2 - EPS
+          expect(overlapX && overlapY, `level ${lvl}: block clips the plank`).toBe(false)
+        }
+      }
+    }
+  })
+})
+
+describe('variety (anti-oatmeal: consecutive levels must differ)', () => {
+  it('consecutive levels never share an identical block layout', () => {
+    for (let lvl = 1; lvl < 30; lvl++) {
+      const a = JSON.stringify(level(lvl).blocks)
+      const b = JSON.stringify(level(lvl + 1).blocks)
+      expect(a, `levels ${lvl} and ${lvl + 1} are identical`).not.toBe(b)
+    }
+  })
+
+  it('same-theme neighbours differ categorically, not just by jitter', () => {
+    // For each two-level theme pair (1..14), the pair must differ in block
+    // count, piggy layout, or structure silhouette (column count / max height).
+    for (let lvl = 1; lvl <= 13; lvl += 2) {
+      const a = level(lvl)
+      const b = level(lvl + 1)
+      const silhouette = (s: LevelSpec) => {
+        const xs = new Set(s.blocks.map((blk) => Math.round(blk.x * 100)))
+        const minY = Math.min(...s.blocks.map((blk) => blk.y))
+        // Piggy y-profile counts too: perched vs penned vs apex reads as a
+        // different level to the child even over a similar block footprint.
+        const piggyYs = s.piggies.map((p) => Math.round(p.y * 50)).join(',')
+        return `${s.blocks.length}|${xs.size}|${Math.round(minY * 100)}|${piggyYs}`
+      }
+      expect(silhouette(a), `theme pair ${lvl}/${lvl + 1} looks identical`).not.toBe(silhouette(b))
+    }
+  })
+
+  it('the first six levels produce at least three distinct block counts or shapes', () => {
+    const shapes = new Set(
+      Array.from({ length: 6 }, (_, i) => {
+        const s = level(i + 1)
+        const xs = new Set(s.blocks.map((blk) => Math.round(blk.x * 50)))
+        return `${s.blocks.length}-${xs.size}`
+      }),
+    )
+    expect(shapes.size).toBeGreaterThanOrEqual(3)
+  })
+})
+
 describe('canFreePiggy arming (no zero-input frees)', () => {
   it('unarmed: nothing frees, not even a fast direct bird hit', () => {
     expect(canFreePiggy(false, 'bird', 99, 99, FREE_SPEED_NORM)).toBe(false)
