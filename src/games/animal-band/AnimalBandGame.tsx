@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { playTone } from '../../shared/audio'
+import { reportLevel } from '../../shared/level'
 import {
   PAD_PITCHES,
   applyFail,
@@ -9,6 +10,7 @@ import {
   celebrationTier,
   checkTap,
   initialBandState,
+  levelForLength,
 } from './logic'
 import type { BandState, CelebrationTier } from './logic'
 import './AnimalBandGame.css'
@@ -166,6 +168,9 @@ export default function AnimalBandGame() {
     bandRef.current = next
     setBand(next)
   }
+
+  // Standardized HUD badge mirrors the sequence length (the real difficulty).
+  useEffect(() => reportLevel(levelForLength(band.sequence.length)), [band.sequence.length])
 
   const animals = bandForRounds(band.roundsCompleted)
 

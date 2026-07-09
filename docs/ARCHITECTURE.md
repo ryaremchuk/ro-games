@@ -33,9 +33,13 @@ audio feedback, no text the child must read. Hosted free on GitHub Pages.
 
 Shared frame only (`src/shared/`), never shared game logic:
 
-- `GameFrame.tsx` — home button + iOS audio unlock, wraps every game.
+- `GameFrame.tsx` — home button, the standardized level badge (top-left,
+  next to home) + iOS audio unlock, wraps every game.
 - `PhaserGame.tsx` — reusable mount/destroy for a `Phaser.Game`.
 - `audio.ts` — Web Audio tone synthesis + `unlockAudio()`.
+- `level.ts` — shared level store: games call `reportLevel(n)` and the badge
+  updates. Each game owns its level RULES in its own `logic.ts` (pure,
+  tested); this store only carries the current value.
 
 ## Directory map
 
@@ -88,6 +92,10 @@ public/
 
 4. Use `playTone(...)` from `shared/audio.ts` for sound. Audio is already
    unlocked by `GameFrame`.
+5. Report the game's current level with `reportLevel(...)` from
+   `shared/level.ts` (define the level rule as a pure function in the game's
+   `logic.ts` and test it). The standardized badge next to the home button
+   renders it; it resets automatically when the game unmounts.
 
 ## Rendering rules
 

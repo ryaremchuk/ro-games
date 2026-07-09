@@ -1,6 +1,15 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { CRITTERS, GRID_SIZE, HOLE_COUNT, gapMs, isConfettiBop, planSpawn } from './logic'
+import { reportLevel } from '../../shared/level'
+import {
+  CRITTERS,
+  GRID_SIZE,
+  HOLE_COUNT,
+  gapMs,
+  isConfettiBop,
+  levelForBops,
+  planSpawn,
+} from './logic'
 import type { CritterSpawn, RampState } from './logic'
 
 // ART SPEC palette — garden scene.
@@ -83,6 +92,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.buildEmitters()
     this.wireBackgroundTaps()
     this.layout()
+    reportLevel(levelForBops(this.bops))
 
     window.addEventListener('resize', this.handleWindowResize)
     window.addEventListener('orientationchange', this.handleWindowResize)
@@ -541,6 +551,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     hole.state = 'leaving'
     this.stopCritterClock(hole)
     this.bops++
+    reportLevel(levelForBops(this.bops))
 
     playTone(587, 70, 'square', 0.08)
     this.time.delayedCall(70, () => playTone(294, 130, 'square', 0.06))

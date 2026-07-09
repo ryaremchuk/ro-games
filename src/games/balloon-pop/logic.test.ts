@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   BALLOON_COLORS,
+  CELEBRATION_EVERY_ROUNDS,
+  COLOR_TASK_MIN_LEVEL,
+  CROSS_REP_MIN_LEVEL,
   DICE_LAYOUTS,
   MAX_BALLOON_VALUE,
   MAX_MATCHES_ON_SCREEN,
@@ -15,6 +18,7 @@ import {
   distractorValues,
   dotPositions,
   isSkyCelebration,
+  levelFor,
   maxTargetFor,
   nextColorIndex,
   planBalloon,
@@ -43,6 +47,9 @@ const ROUNDS_S1 = 0
 const ROUNDS_S2 = STAGE2_ROUNDS
 const ROUNDS_S3 = STAGE3_ROUNDS
 const ROUNDS_S4 = STAGE4_ROUNDS + 4
+/** First round of the cross-representation and color levels. */
+const ROUNDS_L6 = (CROSS_REP_MIN_LEVEL - 1) * CELEBRATION_EVERY_ROUNDS
+const ROUNDS_L8 = (COLOR_TASK_MIN_LEVEL - 1) * CELEBRATION_EVERY_ROUNDS
 
 function roundAt(roundsCompleted: number, rng: Rng): RoundPlan {
   return planRound(roundsCompleted, null, rng)
@@ -181,12 +188,12 @@ describe('target progression', () => {
 })
 
 describe('numeral rounds', () => {
-  it('never appear before stage 4', () => {
+  it('never put numerals on balloons before stage 4', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
       for (let rounds = 0; rounds < STAGE4_ROUNDS; rounds++) {
         for (let i = 0; i < 20; i++) {
-          expect(planRound(rounds, null, rng).numeralRound).toBe(false)
+          expect(planRound(rounds, null, rng).balloonKind).toBe('dots')
         }
       }
     }
@@ -197,7 +204,7 @@ describe('numeral rounds', () => {
     let numeralRounds = 0
     for (let i = 0; i < 400; i++) {
       const round = planRound(ROUNDS_S4, null, rng)
-      if (!round.numeralRound) continue
+      if (round.balloonKind !== 'numeral') continue
       numeralRounds++
       for (const spec of spawnMany(round, ROUNDS_S4, 12, 1, rng)) {
         expect(spec.kind).toBe('numeral')
@@ -213,6 +220,94 @@ describe('numeral rounds', () => {
     for (const spec of spawnMany(round, ROUNDS_S1, 50, 1, rng)) {
       expect(spec.kind).toBe('dots')
     }
+  })
+})
+
+describe('levels', () => {
+  it('advances one level per rainbow (every 5 rounds)', () => {
+    expect(levelFor(0)).toBe(1)
+    expect(levelFor(CELEBRATION_EVERY_ROUNDS - 1)).toBe(1)
+    expect(levelFor(CELEBRATION_EVERY_ROUNDS)).toBe(2)
+    expect(levelFor(2 * CELEBRATION_EVERY_ROUNDS - 1)).toBe(2)
+    expect(levelFor(2 * CELEBRATION_EVERY_ROUNDS)).toBe(3)
+    expect(levelFor(ROUNDS_L6)).toBe(CROSS_REP_MIN_LEVEL)
+    expect(levelFor(ROUNDS_L8)).toBe(COLOR_TASK_MIN_LEVEL)
+  })
+})
+
+describe('cross-representation rounds (level 6+)', () => {
+  it('keeps the sign in the same representation as the balloons before level 6', () => {
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed)
+      for (const rounds of [ROUNDS_S1, ROUNDS_S2, ROUNDS_S3, ROUNDS_S4, ROUNDS_L6 - 1]) {
+        for (let i = 0; i < 20; i++) {
+          const round = planRound(rounds, null, rng)
+          expect(round.promptKind).toBe(round.balloonKind)
+        }
+      }
+    }
+  })
+
+  it('regularly asks in the OTHER representation from level 6', () => {
+    const rng = mulberry32(51)
+    let crossed = 0
+    for (let i = 0; i < 400; i++) {
+      const round = planRound(ROUNDS_L6, null, rng)
+      if (round.promptKind === round.balloonKind) continue
+      crossed++
+      const kinds = [round.promptKind, round.balloonKind].sort()
+      expect(kinds).toEqual(['dots', 'numeral'])
+    }
+    expect(crossed).toBeGreaterThan(100)
+    expect(crossed).toBeLessThan(300)
+  })
+})
+
+describe('color rounds (level 8+)', () => {
+  it('never pins a color before level 8', () => {
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed)
+      for (const rounds of [ROUNDS_S1, ROUNDS_S4, ROUNDS_L6, ROUNDS_L8 - 1]) {
+        for (let i = 0; i < 20; i++) {
+          expect(planRound(rounds, null, rng).targetColorIndex).toBeNull()
+        }
+      }
+    }
+  })
+
+  it('appears regularly from level 8 with a valid palette color', () => {
+    const rng = mulberry32(61)
+    let colorRounds = 0
+    for (let i = 0; i < 400; i++) {
+      const { targetColorIndex } = planRound(ROUNDS_L8, null, rng)
+      if (targetColorIndex === null) continue
+      colorRounds++
+      expect(Number.isInteger(targetColorIndex)).toBe(true)
+      expect(targetColorIndex).toBeGreaterThanOrEqual(0)
+      expect(targetColorIndex).toBeLessThan(BALLOON_COLORS.length)
+    }
+    expect(colorRounds).toBeGreaterThan(80)
+    expect(colorRounds).toBeLessThan(260)
+  })
+
+  it('matches need number AND color; decoys never have both', () => {
+    const rng = mulberry32(62)
+    let round = roundAt(ROUNDS_L8, rng)
+    while (round.targetColorIndex === null) round = roundAt(ROUNDS_L8, rng)
+
+    const specs = spawnMany(round, ROUNDS_L8, 300, 1, rng)
+    for (const spec of specs) {
+      if (spec.isMatch) {
+        expect(spec.value).toBe(round.target)
+        expect(spec.colorIndex).toBe(round.targetColorIndex)
+      } else {
+        const both = spec.value === round.target && spec.colorIndex === round.targetColorIndex
+        expect(both).toBe(false)
+      }
+    }
+    // Both decoy axes exist: right number in a wrong color, and wrong number.
+    expect(specs.some((s) => !s.isMatch && s.value === round.target)).toBe(true)
+    expect(specs.some((s) => !s.isMatch && s.value !== round.target)).toBe(true)
   })
 })
 
@@ -322,6 +417,47 @@ describe('matching balloon invariant (CRITICAL)', () => {
       }
       expect(afloat.length).toBe(round.concurrent)
     }
+  })
+
+  it('does not always lead the opening wave with the match', () => {
+    let leadMisses = 0
+    let waves = 0
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed)
+      for (const rounds of [ROUNDS_S1, ROUNDS_S2, ROUNDS_S3, ROUNDS_S4]) {
+        const round = roundAt(rounds, rng)
+        const wave = planInitialWave(round, rounds, rng)
+        expect(wave.some((spec) => spec.isMatch)).toBe(true)
+        waves++
+        if (!wave[0].isMatch) leadMisses++
+      }
+    }
+    // The guaranteed match lands at a random slot, so a healthy share of
+    // waves must open with a non-match.
+    expect(leadMisses).toBeGreaterThan(waves / 8)
+  })
+
+  it('does not force a match when one is planned later in the wave', () => {
+    const rng = mulberry32(71)
+    const round = roundAt(ROUNDS_S2, rng)
+    const specs: BalloonSpec[] = []
+    for (let i = 0; i < 200; i++) {
+      specs.push(
+        planBalloon(
+          {
+            round,
+            roundsCompleted: ROUNDS_S2,
+            activeMatchCount: 0,
+            activeXFracs: [],
+            lastColorIndex: null,
+            matchPlanned: true,
+          },
+          rng,
+        ),
+      )
+    }
+    expect(specs.some((spec) => !spec.isMatch)).toBe(true)
+    expect(specs.some((spec) => spec.isMatch)).toBe(true)
   })
 
   it('caps simultaneous matches so the hunt stays meaningful', () => {

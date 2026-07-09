@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { playTone } from '../../shared/audio'
+import { reportLevel } from '../../shared/level'
 import { initialSessionState, nextPuzzle, registerMiss, registerSolve, showHint } from './logic'
 import type { Puzzle, SessionState } from './logic'
 import './OddOneOutGame.css'
@@ -97,6 +98,9 @@ export default function OddOneOutGame() {
     },
     [],
   )
+
+  // Standardized HUD badge mirrors the session's own L1-L5 difficulty ladder.
+  useEffect(() => reportLevel(session.level), [session.level])
 
   const setPhaseNow = (next: Phase) => {
     phaseRef.current = next

@@ -65,6 +65,14 @@ export function isConfettiBop(bops: number): boolean {
   return bops > 0 && bops % CONFETTI_EVERY_BOPS === 0
 }
 
+/** Bops per HUD level — one level per confetti burst. */
+export const BOPS_PER_LEVEL = CONFETTI_EVERY_BOPS
+
+/** 1-based level for a total bop count (0-9 → L1, 10-19 → L2, …). */
+export function levelForBops(bops: number): number {
+  return Math.floor(Math.max(bops, 0) / BOPS_PER_LEVEL) + 1
+}
+
 // ─── Phase / ramp state machine ──────────────────────────────────────────────
 
 export type Phase = 1 | 2 | 3 | 4

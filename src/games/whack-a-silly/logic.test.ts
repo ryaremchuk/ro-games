@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  BOPS_PER_LEVEL,
   CRITTERS,
   GAP_FLOOR_MS,
   GAP_START_MS,
@@ -15,6 +16,7 @@ import {
   critterById,
   gapMs,
   isConfettiBop,
+  levelForBops,
   phaseFor,
   planSpawn,
   upTimeMs,
@@ -285,6 +287,25 @@ describe('spawn plan timing', () => {
       const plan = planSpawn(state, [], null, rng)
       expect(plan.upTimeMs).toBe(upTimeMs(state))
       expect(plan.gapMs).toBe(gapMs(state))
+    }
+  })
+})
+
+describe('levels', () => {
+  it('advances one level per confetti burst (every 10 bops)', () => {
+    expect(levelForBops(0)).toBe(1)
+    expect(levelForBops(BOPS_PER_LEVEL - 1)).toBe(1)
+    expect(levelForBops(BOPS_PER_LEVEL)).toBe(2)
+    expect(levelForBops(BOPS_PER_LEVEL * 4)).toBe(5)
+    expect(levelForBops(-5)).toBe(1) // defensive: never below level 1
+  })
+
+  it('is monotonic in bops', () => {
+    let last = 0
+    for (let bops = 0; bops <= BOPS_PER_LEVEL * 5; bops++) {
+      const level = levelForBops(bops)
+      expect(level).toBeGreaterThanOrEqual(last)
+      last = level
     }
   })
 })

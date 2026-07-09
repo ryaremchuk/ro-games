@@ -16,6 +16,7 @@ import {
   checkTap,
   extendSequence,
   initialBandState,
+  levelForLength,
   newSequence,
   randomPad,
   stageBand,
@@ -269,5 +270,26 @@ describe('celebration tiers', () => {
     expect(celebrationTier(STAR_LENGTH)).toBe('stars')
     expect(celebrationTier(STAR_LENGTH + 2)).toBe('stars')
     expect(celebrationTier(MAX_LENGTH)).toBe('stars')
+  })
+})
+
+describe('levels', () => {
+  it('maps sequence length straight onto the HUD level', () => {
+    expect(levelForLength(START_LENGTH)).toBe(1)
+    expect(levelForLength(START_LENGTH + 1)).toBe(2)
+    expect(levelForLength(MAX_LENGTH)).toBe(MAX_LENGTH - START_LENGTH + 1)
+    expect(levelForLength(0)).toBe(1) // defensive: never below level 1
+  })
+
+  it('follows the band state up and back down on drop-backs', () => {
+    const rng = mulberry32(5)
+    let state = initialBandState(rng)
+    expect(levelForLength(state.sequence.length)).toBe(1)
+    state = applySuccess(state, rng)
+    state = applySuccess(state, rng)
+    expect(levelForLength(state.sequence.length)).toBe(3)
+    state = applyFail(state)
+    state = applyFail(state) // second consecutive fail drops one step
+    expect(levelForLength(state.sequence.length)).toBe(2)
   })
 })
