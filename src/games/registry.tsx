@@ -54,4 +54,12 @@ export const games: GameMeta[] = [
     emoji: '🐹',
     component: lazy(() => import('./whack-a-silly/WhackASillyGame')),
   },
+  {
+    id: 'odd-one-out',
+    title: 'Odd One Out',
+    path: '/odd-one-out',
+    color: '#4ECDC4',
+    emoji: '🧩',
+    component: lazy(() => import('./odd-one-out/OddOneOutGame')),
+  },
 ]
