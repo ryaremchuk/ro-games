@@ -31,11 +31,14 @@ if (modified.includes('package.json') && !modified.includes('package-lock.json')
 
 // --- Project-specific -------------------------------------------------------
 
-// A new game folder must be registered so it shows up on the home screen.
+// A new game must be registered so it shows up on the home screen. A new game
+// is signalled by a newly-created `*Game.tsx` component (the file the registry
+// lazy-imports) — not by any file under an existing game folder, so adding a
+// helper/test to a game that's already registered doesn't trip this.
 const newGames = Array.from(
   new Set(
     created
-      .filter((file) => file.startsWith('src/games/'))
+      .filter((file) => /^src\/games\/[^/]+\/[^/]*Game\.tsx$/.test(file))
       .map((file) => file.split('/')[2])
       .filter(Boolean),
   ),
