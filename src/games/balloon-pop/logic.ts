@@ -10,6 +10,11 @@
  * subitizing test); numeral-only balloons appear late to build the
  * numeral↔quantity link. 3-4 balloons concurrent, never clutter, and at
  * least one matching balloon is planned on screen at all times.
+ *
+ * Levels advance one per rainbow celebration (every 5 rounds). Level 6+ may
+ * cross representations (sign asks in dots, balloons carry numerals, or the
+ * reverse); level 8+ adds color rounds where the match must also wear the
+ * asked-for balloon color.
  */
 
 /** Injectable random source, [0, 1). Defaults to Math.random in the game. */
@@ -88,7 +93,31 @@ export function distractorValues(target: number, stage: Stage): number[] {
   return values
 }
 
+// ─── Levels (one per rainbow) ────────────────────────────────────────────────
+
+/** Every 5 correct rounds: rainbow-and-stars sky celebration. */
+export const CELEBRATION_EVERY_ROUNDS = 5
+
+/**
+ * 1-based level shown on the HUD badge. A level is passed exactly when its
+ * rainbow celebration has flown — every CELEBRATION_EVERY_ROUNDS rounds.
+ */
+export function levelFor(roundsCompleted: number): number {
+  return Math.floor(roundsCompleted / CELEBRATION_EVERY_ROUNDS) + 1
+}
+
+/** From this level the sign may ask in the OTHER representation than balloons. */
+export const CROSS_REP_MIN_LEVEL = 6
+/** Chance a level-6+ round crosses representations (dots sign ↔ numeral balloons). */
+export const CROSS_REP_PROBABILITY = 0.5
+/** From this level some rounds also demand a specific balloon color. */
+export const COLOR_TASK_MIN_LEVEL = 8
+/** Chance a level-8+ round pins a color on top of the quantity. */
+export const COLOR_TASK_PROBABILITY = 0.4
+
 // ─── Round planning ──────────────────────────────────────────────────────────
+
+export type BalloonKind = 'dots' | 'numeral'
 
 /** Chance a stage-4 round shows numerals on balloons instead of dots. */
 export const NUMERAL_ROUND_PROBABILITY = 0.5
@@ -101,8 +130,12 @@ export function concurrentBalloonsFor(stage: Stage): number {
 export interface RoundPlan {
   /** Quantity the crab's sign asks for (1..5). */
   target: number
-  /** Balloons carry numerals instead of dot patterns (stage 4 only). */
-  numeralRound: boolean
+  /** The ONE representation the sign shows (dots-only or numeral-only). */
+  promptKind: BalloonKind
+  /** Representation balloons carry — differs from promptKind in cross rounds. */
+  balloonKind: BalloonKind
+  /** Color the match must also have (level-8+ color rounds), else null. */
+  targetColorIndex: number | null
   /** How many balloons float at once this round (3-4). */
   concurrent: number
   /** Quantities wrong balloons may carry this round. */
@@ -120,6 +153,7 @@ export function planRound(
   rng: Rng = Math.random,
 ): RoundPlan {
   const stage = stageFor(roundsCompleted)
+  const level = levelFor(roundsCompleted)
 
   let target: number
   if (roundsCompleted < STAGE2_ROUNDS) {
@@ -132,9 +166,31 @@ export function planRound(
     target = pool[Math.floor(rng() * pool.length)]
   }
 
+  // Representations: identical below level 6. From level 6 the sign may ask
+  // in dots while balloons carry numerals (or the reverse) — the child must
+  // translate between the two.
+  let balloonKind: BalloonKind
+  let promptKind: BalloonKind
+  if (level >= CROSS_REP_MIN_LEVEL && rng() < CROSS_REP_PROBABILITY) {
+    balloonKind = rng() < 0.5 ? 'numeral' : 'dots'
+    promptKind = balloonKind === 'numeral' ? 'dots' : 'numeral'
+  } else {
+    balloonKind = stage >= 4 && rng() < NUMERAL_ROUND_PROBABILITY ? 'numeral' : 'dots'
+    promptKind = balloonKind
+  }
+
+  // Level 8+: some rounds also pin a color — the match must show the right
+  // quantity AND wear the right color.
+  const targetColorIndex =
+    level >= COLOR_TASK_MIN_LEVEL && rng() < COLOR_TASK_PROBABILITY
+      ? Math.floor(rng() * BALLOON_COLORS.length)
+      : null
+
   return {
     target,
-    numeralRound: stage >= 4 && rng() < NUMERAL_ROUND_PROBABILITY,
+    promptKind,
+    balloonKind,
+    targetColorIndex,
     concurrent: concurrentBalloonsFor(stage),
     distractors: distractorValues(target, stage),
   }
@@ -159,7 +215,6 @@ export function baseRiseSpeed(roundsCompleted: number): number {
 
 // ─── Balloon spawn planning ──────────────────────────────────────────────────
 
-export type BalloonKind = 'dots' | 'numeral'
 export type DotLayoutKind = 'dice' | 'line' | 'scatter'
 
 export interface BalloonSpec {
@@ -186,6 +241,14 @@ export interface BalloonSpec {
 export const MAX_MATCHES_ON_SCREEN = 2
 /** Chance a non-forced spawn is a match. */
 export const MATCH_PROBABILITY = 0.35
+/** Chance a wrong balloon in a color round shows the right number in a wrong color. */
+export const WRONG_COLOR_DECOY_PROBABILITY = 0.5
+
+/** Any palette color except the target's, for right-number-wrong-color decoys. */
+export function wrongColorIndex(targetColorIndex: number, rng: Rng): number {
+  const step = 1 + Math.floor(rng() * (BALLOON_COLORS.length - 1))
+  return (targetColorIndex + step) % BALLOON_COLORS.length
+}
 /** Chance a stage-3+ dots balloon uses the hard scatter layout. */
 export const SCATTER_PROBABILITY = 0.35
 /** Chance a dots balloon uses a line layout instead of dice. */
@@ -200,6 +263,8 @@ export interface SpawnContext {
   activeXFracs: readonly number[]
   /** Color of the most recently spawned balloon (no immediate repeats). */
   lastColorIndex: number | null
+  /** A match is already scheduled to spawn later this wave — don't force one. */
+  matchPlanned?: boolean
 }
 
 function pickLayout(stage: Stage, rng: Rng): DotLayoutKind {
@@ -218,28 +283,43 @@ function pickXFrac(activeXFracs: readonly number[], rng: Rng): number {
 }
 
 /**
- * Plan one balloon. CRITICAL invariant: if no matching balloon is afloat,
- * the planned balloon IS a match — so the target is always reachable.
+ * Plan one balloon. CRITICAL invariant: if no matching balloon is afloat
+ * (and none is scheduled via matchPlanned), the planned balloon IS a match —
+ * so the target is always reachable.
  */
 export function planBalloon(ctx: SpawnContext, rng: Rng = Math.random): BalloonSpec {
   const stage = stageFor(ctx.roundsCompleted)
   const { round } = ctx
 
+  const mustMatch = ctx.activeMatchCount === 0 && !ctx.matchPlanned
   const isMatch =
-    ctx.activeMatchCount === 0 ||
+    mustMatch ||
     round.distractors.length === 0 ||
     (ctx.activeMatchCount < MAX_MATCHES_ON_SCREEN && rng() < MATCH_PROBABILITY)
-  const value = isMatch
-    ? round.target
-    : round.distractors[Math.floor(rng() * round.distractors.length)]
+
+  let value: number
+  let colorIndex: number
+  if (isMatch) {
+    value = round.target
+    // Color rounds pin the match to the asked-for color (may repeat the
+    // previous balloon's color — correctness beats variety here).
+    colorIndex = round.targetColorIndex ?? nextColorIndex(ctx.lastColorIndex, rng)
+  } else if (round.targetColorIndex !== null && rng() < WRONG_COLOR_DECOY_PROBABILITY) {
+    // Right quantity, wrong color — makes the color half of the task real.
+    value = round.target
+    colorIndex = wrongColorIndex(round.targetColorIndex, rng)
+  } else {
+    value = round.distractors[Math.floor(rng() * round.distractors.length)]
+    colorIndex = nextColorIndex(ctx.lastColorIndex, rng)
+  }
 
   const jitter = 1 - RISE_JITTER + rng() * 2 * RISE_JITTER
   return {
     value,
     isMatch,
-    kind: round.numeralRound ? 'numeral' : 'dots',
+    kind: round.balloonKind,
     layout: pickLayout(stage, rng),
-    colorIndex: nextColorIndex(ctx.lastColorIndex, rng),
+    colorIndex,
     speedCss: baseRiseSpeed(ctx.roundsCompleted) * jitter,
     swayAmpCss: 10 + rng() * 14,
     swayPeriodMs: 1800 + rng() * 1400,
@@ -247,7 +327,10 @@ export function planBalloon(ctx: SpawnContext, rng: Rng = Math.random): BalloonS
   }
 }
 
-/** Plan a round's opening wave — always contains at least one match. */
+/**
+ * Plan a round's opening wave — always contains at least one match, but at a
+ * random position, so the first balloon isn't reliably the answer.
+ */
 export function planInitialWave(
   round: RoundPlan,
   roundsCompleted: number,
@@ -258,6 +341,7 @@ export function planInitialWave(
   let matches = 0
   let lastColor = lastColorIndex
   const xs: number[] = []
+  const forcedMatchIndex = Math.floor(rng() * round.concurrent)
   for (let i = 0; i < round.concurrent; i++) {
     const spec = planBalloon(
       {
@@ -266,6 +350,7 @@ export function planInitialWave(
         activeMatchCount: matches,
         activeXFracs: xs,
         lastColorIndex: lastColor,
+        matchPlanned: i < forcedMatchIndex,
       },
       rng,
     )
@@ -381,9 +466,7 @@ export function shouldShowHint(wrongTaps: number): boolean {
   return wrongTaps >= WRONG_TAPS_BEFORE_HINT
 }
 
-/** Every 5 correct rounds: rainbow-and-stars sky celebration. */
-export const CELEBRATION_EVERY_ROUNDS = 5
-
+/** Rainbow-and-stars sky celebration — fires exactly when a level is passed. */
 export function isSkyCelebration(roundsCompleted: number): boolean {
   return roundsCompleted > 0 && roundsCompleted % CELEBRATION_EVERY_ROUNDS === 0
 }

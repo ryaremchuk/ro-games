@@ -33,3 +33,44 @@
 .home-button:active {
   transform: scale(0.92);
 }
+
+/* Standardized level badge — next to the home button; display only (never a
+   tap target), pops when the level changes (key={level} remounts it). */
+.level-badge {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top));
+  left: calc(max(12px, env(safe-area-inset-left)) + 66px);
+  z-index: 1000;
+  height: 56px;
+  min-width: 56px;
+  padding: 0 16px;
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 24px;
+  pointer-events: none;
+  animation: level-badge-pop 450ms ease-out;
+}
+
+.level-badge-number {
+  font-family: 'Arial Rounded MT Bold', 'Helvetica Neue', system-ui, sans-serif;
+  font-weight: 900;
+  font-size: 30px;
+  color: #3d3a4b;
+}
+
+@keyframes level-badge-pop {
+  0% {
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}

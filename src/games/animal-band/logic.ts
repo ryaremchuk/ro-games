@@ -185,3 +185,12 @@ export type CelebrationTier = 'cheer' | 'stars'
 export function celebrationTier(echoedLength: number): CelebrationTier {
   return echoedLength >= STAR_LENGTH ? 'stars' : 'cheer'
 }
+
+/**
+ * 1-based HUD level = how far the sequence has grown: length 2 → L1,
+ * 3 → L2, … 8 → L7. Drop-backs lower it honestly — the badge mirrors the
+ * difficulty the child is actually playing at.
+ */
+export function levelForLength(sequenceLength: number): number {
+  return Math.max(1, sequenceLength - START_LENGTH + 1)
+}

@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
+import { reportLevel } from '../../shared/level'
 import {
   COLOR_HEX,
   FOODS,
@@ -8,6 +9,7 @@ import {
   generateRound,
   grayedBubbleItems,
   isRoundComplete,
+  levelForRound,
   requestTotal,
   wantsFood,
 } from './logic'
@@ -578,6 +580,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.roundNumber = n
     this.eaten = []
     this.transitioning = false
+    reportLevel(levelForRound(n))
     const round = generateRound(n, this.previousRequest)
     this.round = round
     this.previousRequest = round.request

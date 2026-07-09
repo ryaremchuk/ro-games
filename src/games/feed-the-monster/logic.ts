@@ -68,6 +68,14 @@ export function stageForRound(round: number): Stage {
   return 'combo'
 }
 
+/** Rounds per HUD level — matches the every-3-rounds big celebration. */
+export const ROUNDS_PER_LEVEL = 3
+
+/** 1-based level for the CURRENT round number (rounds 1-3 → L1, 4-6 → L2, …). */
+export function levelForRound(round: number): number {
+  return Math.floor(Math.max(round - 1, 0) / ROUNDS_PER_LEVEL) + 1
+}
+
 export interface CountEntry {
   foodId: string
   count: number

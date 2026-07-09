@@ -1,9 +1,11 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
+import { reportLevel } from '../../shared/level'
 import {
   BALLOON_COLORS,
   dotPositions,
   isSkyCelebration,
+  levelFor,
   planBalloon,
   planInitialWave,
   planRound,
@@ -98,6 +100,16 @@ export default class BalloonPopScene extends Phaser.Scene {
   private signRoot!: Phaser.GameObjects.Container
   private signNumeral!: Phaser.GameObjects.Image
   private signDots: Phaser.GameObjects.Image[] = []
+  private signBlob!: Phaser.GameObjects.Image
+  private signDisc!: Phaser.GameObjects.Image
+
+  // Sign prompt geometry (css px), set by updateSign, reused by countAloud
+  // so flying dots land exactly where the sign draws them.
+  private signDotSpacing = 36
+  private signDotOriginY = 0
+  private signDotScale = 1
+  private signNumeralY = 0
+  private signNumeralScale = 0.95
 
   private stars!: Phaser.GameObjects.Particles.ParticleEmitter
   private starRain!: Phaser.GameObjects.Particles.ParticleEmitter
@@ -140,6 +152,7 @@ export default class BalloonPopScene extends Phaser.Scene {
     })
 
     this.scheduleBlink()
+    reportLevel(levelFor(this.roundsCompleted))
     this.time.delayedCall(450, () => this.startRound())
   }
 
@@ -318,6 +331,16 @@ export default class BalloonPopScene extends Phaser.Scene {
       g.destroy()
     }
 
+    // Balloon-shaped white blob for the sign's color prompt (tinted per round).
+    if (!this.textures.exists('bp-sign-blob')) {
+      const g = this.add.graphics()
+      g.fillStyle(0xffffff, 1)
+      g.fillEllipse(this.px(44), this.px(48), this.px(82), this.px(92))
+      g.fillTriangle(this.px(37), this.px(100), this.px(51), this.px(100), this.px(44), this.px(90))
+      g.generateTexture('bp-sign-blob', this.px(88), this.px(102))
+      g.destroy()
+    }
+
     // Soft golden halo for the escalating match hint.
     if (!this.textures.exists('bp-glow')) {
       const g = this.add.graphics()
@@ -477,14 +500,17 @@ export default class BalloonPopScene extends Phaser.Scene {
       ease: 'Sine.easeInOut',
     })
 
-    // Sign: white rounded card with big numeral + the same dot pattern.
+    // Sign: white rounded card showing ONLY the current task — dots, or a
+    // numeral, or either of those on a mini balloon of the asked-for color.
     const signBg = this.add.image(0, 0, 'bp-sign')
-    this.signNumeral = this.add.image(0, -this.px(24), 'bp-num-1').setScale(0.72)
+    this.signBlob = this.add.image(0, 0, 'bp-sign-blob').setVisible(false)
+    this.signDisc = this.add.image(0, -this.px(4), 'bp-disc').setScale(0.85).setVisible(false)
+    this.signNumeral = this.add.image(0, 0, 'bp-num-1').setScale(0.95)
     this.signDots = Array.from({ length: 6 }, () =>
-      this.add.image(0, this.px(30), 'bp-ink-dot').setScale(0.7).setVisible(false),
+      this.add.image(0, 0, 'bp-ink-dot').setVisible(false),
     )
     this.signRoot = this.add
-      .container(0, 0, [signBg, this.signNumeral, ...this.signDots])
+      .container(0, 0, [signBg, this.signBlob, this.signDisc, this.signNumeral, ...this.signDots])
       .setDepth(31)
 
     // Tapping the sign replays the count beeps.
@@ -657,22 +683,56 @@ export default class BalloonPopScene extends Phaser.Scene {
     this.spawnWave()
   }
 
-  /** Sign shows the target as numeral + the SAME dice-dot pattern (+ beeps). */
+  /**
+   * Sign shows ONLY the current task: the dot pattern alone, or the numeral
+   * alone (cross rounds ask in the other representation than the balloons
+   * carry), and in color rounds the prompt sits on a mini balloon tinted the
+   * asked-for color.
+   */
   private updateSign(): void {
     if (!this.round) return
-    const target = this.round.target
-    this.signNumeral.setTexture(`bp-num-${target}`)
-    const points = dotPositions(target, 'dice')
-    this.signDots.forEach((dot, i) => {
-      const point = points[i]
-      if (point) {
-        dot.setVisible(true)
-        dot.setPosition(point.x * this.px(22), this.px(30) + point.y * this.px(22))
-        dot.setScale(0.7)
-      } else {
-        dot.setVisible(false)
-      }
-    })
+    const { target, promptKind, targetColorIndex } = this.round
+    const colorRound = targetColorIndex !== null
+
+    this.signBlob.setVisible(colorRound)
+    this.signDisc.setVisible(colorRound)
+    if (targetColorIndex !== null) {
+      this.signBlob.setTint(hexToInt(BALLOON_COLORS[targetColorIndex]))
+    }
+
+    // Full-size alone on the card; shrunk onto the mini balloon's disc.
+    const centerY = colorRound ? -4 : 0
+    this.signNumeralY = centerY
+    this.signNumeralScale = colorRound ? 0.52 : 0.95
+    this.signDotOriginY = centerY
+    this.signDotSpacing = colorRound ? 23 : 36
+    this.signDotScale = colorRound ? 0.7 : 1
+
+    if (promptKind === 'numeral') {
+      for (const dot of this.signDots) dot.setVisible(false)
+      this.signNumeral
+        .setTexture(`bp-num-${target}`)
+        .setPosition(0, this.px(this.signNumeralY))
+        .setScale(this.signNumeralScale)
+        .setVisible(true)
+    } else {
+      this.signNumeral.setVisible(false)
+      const points = dotPositions(target, 'dice')
+      this.signDots.forEach((dot, i) => {
+        const point = points[i]
+        if (point) {
+          dot
+            .setPosition(
+              point.x * this.px(this.signDotSpacing),
+              this.px(this.signDotOriginY) + point.y * this.px(this.signDotSpacing),
+            )
+            .setScale(this.signDotScale)
+            .setVisible(true)
+        } else {
+          dot.setVisible(false)
+        }
+      })
+    }
     this.tweens.killTweensOf(this.signRoot)
     this.signRoot.setScale(0.6)
     this.tweens.add({
@@ -704,15 +764,15 @@ export default class BalloonPopScene extends Phaser.Scene {
     const dot = this.signDots[index]
     if (!dot || !dot.visible) return
     this.tweens.killTweensOf(dot)
-    dot.setScale(0.7)
+    dot.setScale(this.signDotScale)
     this.tweens.add({
       targets: dot,
-      scaleX: 1.25,
-      scaleY: 1.25,
+      scaleX: this.signDotScale * 1.7,
+      scaleY: this.signDotScale * 1.7,
       duration: 130,
       yoyo: true,
       ease: 'Quad.easeOut',
-      onComplete: () => dot.setScale(0.7),
+      onComplete: () => dot.setScale(this.signDotScale),
     })
   }
 
@@ -981,11 +1041,15 @@ export default class BalloonPopScene extends Phaser.Scene {
         const source = spec.kind === 'dots' ? sources[i] : sources[0]
         const texture = spec.kind === 'dots' ? 'bp-ink-dot' : `bp-num-${target}`
         const destX =
-          spec.kind === 'dots' ? this.signRoot.x + points[i].x * this.px(22) : this.signRoot.x
+          spec.kind === 'dots'
+            ? this.signRoot.x + points[i].x * this.px(this.signDotSpacing)
+            : this.signRoot.x
         const destY =
           spec.kind === 'dots'
-            ? this.signRoot.y + this.px(30) + points[i].y * this.px(22)
-            : this.signRoot.y - this.px(24)
+            ? this.signRoot.y +
+              this.px(this.signDotOriginY) +
+              points[i].y * this.px(this.signDotSpacing)
+            : this.signRoot.y + this.px(this.signNumeralY)
         const flyer = this.add
           .image(source.x, source.y, texture)
           .setDepth(40)
@@ -994,7 +1058,7 @@ export default class BalloonPopScene extends Phaser.Scene {
           targets: flyer,
           x: destX,
           y: destY,
-          scale: 0.7,
+          scale: spec.kind === 'dots' ? this.signDotScale : this.signNumeralScale,
           delay: i * COUNT_STEP_MS,
           duration: FLY_MS,
           ease: 'Cubic.easeInOut',
@@ -1070,6 +1134,8 @@ export default class BalloonPopScene extends Phaser.Scene {
       ease: 'Sine.easeInOut',
       onUpdate: () => this.drawRainbow(progress.t),
       onComplete: () => {
+        // Rainbow finished flying — the level is passed.
+        reportLevel(levelFor(this.roundsCompleted))
         this.tweens.add({
           targets: this.rainbowGfx,
           alpha: 0,
