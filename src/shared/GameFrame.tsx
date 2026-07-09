@@ -45,7 +45,9 @@ export default function GameFrame({ title, children }: GameFrameProps) {
       </button>
       {level !== null && (
         <div key={level} className="level-badge" aria-label={`Level ${level}`}>
-          <span aria-hidden>⭐</span>
+          <span className="level-badge-star" aria-hidden>
+            ⭐
+          </span>
           <span className="level-badge-number" aria-hidden>
             {level}
           </span>
