@@ -62,4 +62,12 @@ export const games: GameMeta[] = [
     emoji: '🧩',
     component: lazy(() => import('./odd-one-out/OddOneOutGame')),
   },
+  {
+    id: 'balloon-pop',
+    title: 'Balloon Pop',
+    path: '/balloon-pop',
+    color: '#4D96FF',
+    emoji: '🎈',
+    component: lazy(() => import('./balloon-pop/BalloonPopGame')),
+  },
 ]
