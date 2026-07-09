@@ -1,0 +1,446 @@
+.odd-one-out {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Calm flat room (art spec) — action lives on the white cards. */
+  background: #f3effa;
+  touch-action: none;
+  --card-size: clamp(140px, 20vmin, 220px);
+  --card-radius: 22px;
+  --card-shadow: 0 6px 0 rgba(61, 58, 75, 0.08), 0 12px 24px rgba(61, 58, 75, 0.16);
+}
+
+/* ---------- background decor (wobbles on tap, never busy) ---------- */
+
+.blob {
+  position: absolute;
+  z-index: 1;
+  opacity: 0.55;
+  animation: blob-breathe 4s ease-in-out infinite;
+}
+
+.blob-a {
+  left: -8vmin;
+  bottom: -10vmin;
+  width: 36vmin;
+  height: 32vmin;
+  background: #e4daf6;
+  border-radius: 48% 52% 56% 44% / 56% 47% 53% 44%;
+}
+
+.blob-b {
+  right: -9vmin;
+  top: 20%;
+  width: 30vmin;
+  height: 27vmin;
+  background: #d9ece9;
+  border-radius: 54% 46% 45% 55% / 47% 56% 44% 53%;
+  animation-delay: 1.3s;
+}
+
+@keyframes blob-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.03);
+  }
+}
+
+/* ---------- sticker shelf (decorative collection, never gates play) ---------- */
+
+.shelf {
+  position: relative;
+  z-index: 2;
+  margin-top: max(12px, env(safe-area-inset-top));
+  height: clamp(56px, 9vmin, 78px);
+  width: min(72vw, 760px);
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 18px;
+  box-shadow: inset 0 -5px 0 rgba(61, 58, 75, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+}
+
+.sticker {
+  border: none;
+  background: none;
+  padding: 0;
+  height: 100%;
+  /* Squeeze together once the shelf fills up — never overflow the strip. */
+  flex: 0 1 clamp(44px, 7vmin, 60px);
+  min-width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(30px, 5.5vmin, 46px);
+  line-height: 1;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', system-ui, sans-serif;
+  cursor: pointer;
+  touch-action: manipulation;
+  animation: sticker-drop 500ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+}
+
+.sticker:active {
+  transform: scale(0.9);
+}
+
+@keyframes sticker-drop {
+  0% {
+    transform: translateY(-150%) scale(0.4);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* ---------- the four cards ---------- */
+
+.cards {
+  position: relative;
+  z-index: 2;
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(4, var(--card-size));
+  gap: clamp(14px, 3vmin, 30px);
+  align-content: center;
+  align-items: center;
+}
+
+.card {
+  position: relative;
+  width: var(--card-size);
+  aspect-ratio: 1;
+  border: none;
+  padding: 0;
+  border-radius: var(--card-radius);
+  background: #ffffff;
+  box-shadow: var(--card-shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: manipulation;
+  /* Round intro: drop in with a bounce, staggered left → right. */
+  animation: card-drop 650ms ease-out backwards;
+  animation-delay: var(--stagger, 0ms);
+}
+
+.card:nth-child(1) {
+  --stagger: 0ms;
+}
+.card:nth-child(2) {
+  --stagger: 100ms;
+}
+.card:nth-child(3) {
+  --stagger: 200ms;
+}
+.card:nth-child(4) {
+  --stagger: 300ms;
+}
+
+/* Bounce.easeOut approximation for the drop-in. */
+@keyframes card-drop {
+  0% {
+    transform: translateY(-60vh);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  55% {
+    transform: translateY(0);
+  }
+  70% {
+    transform: translateY(-4.5%);
+  }
+  81% {
+    transform: translateY(0);
+  }
+  90% {
+    transform: translateY(-2%);
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Touch-down acknowledgement (<100ms). */
+.card:active {
+  transform: scale(0.94);
+}
+
+.card-face {
+  font-size: clamp(72px, 12vmin, 112px);
+  line-height: 1;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', system-ui, sans-serif;
+  pointer-events: none;
+}
+
+/* Size rounds render real-world size: 3 big elephants read big, mouse small. */
+.card.shows-small .card-face {
+  font-size: clamp(42px, 6.8vmin, 64px);
+}
+
+.card.shows-big .card-face {
+  font-size: clamp(80px, 13.5vmin, 124px);
+}
+
+/* Escalating hint after the 1st miss: the matching trio pulse-glows softly
+   (on ::after so it never fights the card's own tap animations). */
+.card::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: calc(var(--card-radius) + 6px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.card.is-match::after {
+  box-shadow:
+    0 0 0 5px rgba(255, 217, 61, 0.35),
+    0 0 28px 10px rgba(255, 217, 61, 0.3);
+  animation: match-pulse 1.15s ease-in-out infinite;
+}
+
+@keyframes match-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+/* ---------- solved: dance, exit, clap ---------- */
+
+/* Winner card: golden glow comes from a WAAPI box-shadow pulse (see TSX);
+   the item dances on the face, then the whole card leaves the room. */
+.card.is-winner {
+  pointer-events: none;
+  z-index: 3;
+}
+
+.card.is-winner .card-face {
+  animation: winner-dance 760ms ease-in-out;
+}
+
+@keyframes winner-dance {
+  0% {
+    transform: translateY(0) rotate(0deg) scale(1);
+  }
+  18% {
+    transform: translateY(-20%) rotate(-10deg) scale(1.08);
+  }
+  38% {
+    transform: translateY(0) rotate(9deg) scale(1.16, 0.86);
+  }
+  58% {
+    transform: translateY(-24%) rotate(-7deg) scale(1.05);
+  }
+  78% {
+    transform: translateY(0) rotate(5deg) scale(1.12, 0.9);
+  }
+  100% {
+    transform: translateY(0) rotate(0deg) scale(1);
+  }
+}
+
+/* Exit per item kind: vehicles drive off, fliers fly up, the rest hops away. */
+.card.is-winner.exit-drive {
+  animation: exit-drive 700ms ease-in 760ms forwards;
+}
+
+.card.is-winner.exit-fly {
+  animation: exit-fly 780ms ease-in 760ms forwards;
+}
+
+.card.is-winner.exit-hop {
+  animation: exit-hop 900ms linear 760ms forwards;
+}
+
+@keyframes exit-drive {
+  0% {
+    transform: translateX(0) rotate(0deg);
+  }
+  18% {
+    transform: translateX(9vw) rotate(2deg);
+  }
+  40% {
+    transform: translateX(30vw) rotate(-2deg);
+  }
+  65% {
+    transform: translateX(62vw) rotate(2deg);
+  }
+  100% {
+    transform: translateX(120vw) rotate(0deg);
+  }
+}
+
+@keyframes exit-fly {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  30% {
+    transform: translate(6vw, -18vh) rotate(-6deg);
+  }
+  60% {
+    transform: translate(15vw, -46vh) rotate(4deg);
+  }
+  100% {
+    transform: translate(28vw, -115vh) rotate(-8deg);
+  }
+}
+
+@keyframes exit-hop {
+  0% {
+    transform: translate(0, 0);
+  }
+  20% {
+    transform: translate(14vw, -16vh) rotate(6deg);
+  }
+  38% {
+    transform: translate(26vw, 0) scale(1.08, 0.88);
+  }
+  56% {
+    transform: translate(42vw, -12vh) rotate(5deg);
+  }
+  72% {
+    transform: translate(56vw, 0) scale(1.08, 0.9);
+  }
+  88% {
+    transform: translate(76vw, -9vh) rotate(4deg);
+  }
+  100% {
+    transform: translate(105vw, 2vh);
+  }
+}
+
+/* The three friends clap-bounce together while the odd one takes its bow. */
+.card.is-clap .card-face {
+  animation: clap-bounce 480ms ease-in-out 2;
+}
+
+@keyframes clap-bounce {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  30% {
+    transform: translateY(-12%) rotate(-5deg) scale(1.05);
+  }
+  65% {
+    transform: translateY(-2%) rotate(5deg);
+  }
+}
+
+/* ---------- particles (confetti, level-up sparkle wave) ---------- */
+
+.particle-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.burst {
+  position: absolute;
+  inset: 0;
+}
+
+.particle {
+  position: absolute;
+  width: 12px;
+  height: 17px;
+  border-radius: 5px;
+  animation: confetti-fly var(--dur, 1700ms) ease-out forwards;
+}
+
+@keyframes confetti-fly {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 1;
+  }
+  60% {
+    transform: translate(calc(var(--dx) * 0.8), var(--dy)) rotate(var(--rot));
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), calc(var(--dy) + 38vmin)) rotate(calc(var(--rot) * 1.7));
+    opacity: 0;
+  }
+}
+
+.sparkle-wave {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.sparkle-wave::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    rgba(255, 217, 61, 0) 22%,
+    rgba(255, 217, 61, 0.28) 50%,
+    rgba(255, 217, 61, 0) 78%
+  );
+  transform: translateX(-100%);
+  animation: wave-sweep 900ms ease-out forwards;
+}
+
+@keyframes wave-sweep {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.sparkle {
+  position: absolute;
+  font-size: 28px;
+  line-height: 1;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', system-ui, sans-serif;
+  animation: sparkle-pop 750ms ease-out var(--delay, 0ms) both;
+}
+
+@keyframes sparkle-pop {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  40% {
+    transform: scale(1.25);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.6) translateY(-34px);
+    opacity: 0;
+  }
+}
+
+/* ---------- portrait: 2×2 grid ---------- */
+
+@media (orientation: portrait) {
+  .odd-one-out {
+    --card-size: clamp(140px, 33vmin, 260px);
+  }
+
+  .cards {
+    grid-template-columns: repeat(2, var(--card-size));
+  }
+}
