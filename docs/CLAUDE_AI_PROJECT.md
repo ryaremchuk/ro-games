@@ -47,6 +47,16 @@ and specs, never code.
 ## Already built / in the pipeline
 
 - ✅ Drawing pad (colors, brush sizes, eraser, clear-all)
+- ✅ Feed the Monster (drag food to a blob monster; picture-bubble requests
+  ramp count → color → combos; comedy chomp/spit reactions)
+- ✅ Animal Band (Simon-style echo: animal pads sing a growing tone sequence,
+  kid repeats; free-jam between rounds, hints after misses)
+- ✅ Whack-a-Silly (whack-a-mole with a go/no-go twist: never bop critters in
+  party hats; letting them leave is celebrated)
+- ✅ Odd One Out (tap the item that doesn't belong; ladder from color to
+  category to concept; sticker shelf collection)
+- ✅ Balloon Pop (pop balloons matching a dot/numeral target; subitizing
+  layouts, count-aloud feedback, rainbow celebrations)
 - 💡 Backlog ideas: memory match (flip cards, find pairs), later a gentle
   explore/collect "RPG" (walk around, find hidden objects, gather things)
 
