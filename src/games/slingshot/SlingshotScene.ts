@@ -7,15 +7,20 @@ import {
   BIG_BIRD,
   BIRD,
   FLAP_NORM,
+  FREE_SPEED_NORM,
   GROUND_Y,
+  KNOCK_SPEED_NORM,
   MATERIALS,
   MAX_LAUNCH_SPEED_NORM,
   MAX_PULL_NORM,
   MIN_PULL_NORM,
   PIGGY,
+  PIGGY_BODY_SCALE,
+  SETTLE_SPEED_NORM,
   SLING,
   TRAMPOLINE,
   assistStrength,
+  canFreePiggy,
   generateLevel,
   mulberry32,
 } from './logic'
@@ -27,11 +32,11 @@ const SKY_TOP = 0x8fd0ff
 const RAINBOW = [0xff6b6b, 0xffa94d, 0xffd93d, 0x6bcb77, 0x4d96ff, 0x9b5de5]
 
 // Physics feel (normalized units; scaled by the resolution unit L at build).
+// Contact-speed thresholds live in logic.ts (FREE/KNOCK/SETTLE_SPEED_NORM).
 const ASSIST_ACCEL_NORM = 3.0
-const FREE_SPEED_STEP = 0.35
-const KNOCK_SPEED_STEP = 1.0
-const SETTLE_SPEED_STEP = 0.25
 const SETTLE_S = 0.5
+/** Post-entrance grace: no freeing / knock sounds while the level settles. */
+const SETTLE_GRACE_MS = 1000
 const MAX_FLIGHT_S = 4.5
 const POOF_MS = 900
 const IDLE_MS = 10000
@@ -132,6 +137,16 @@ export default class SlingshotScene extends Phaser.Scene {
   private lastCreak = 0
   private lastKnock = 0
 
+  // Zero-input-free guards: piggy freeing arms on the FIRST launch of each
+  // level; until then (and during the post-entrance grace) no collision can
+  // free a piggy or play knock sounds. Thresholds are px/step, L-scaled at
+  // build from the *_NORM constants.
+  private freeingArmed = false
+  private settleGraceUntil = Infinity
+  private freeSpeedPx = 0
+  private knockSpeedPx = 0
+  private settleSpeedPx = 0
+
   private dynTextureKeys = new Set<string>()
   private levelTimers: Phaser.Time.TimerEvent[] = []
 
@@ -180,8 +195,11 @@ export default class SlingshotScene extends Phaser.Scene {
     const w = Math.max(window.innerWidth, 1) * this.dpr
     const h = Math.max(window.innerHeight, 1) * this.dpr
     this.scale.resize(w, h)
-    // Relayout = rebuild the current level for the new aspect / size.
-    this.buildLevel(this.level)
+    // Relayout = rebuild the current level for the new aspect / size. If a
+    // resize lands mid-celebration (iOS URL-bar churn, rotation), the rebuild
+    // kills the pending auto-advance timer — so advance here instead of
+    // silently replaying the level the child just cleared.
+    this.buildLevel(this.levelClearing ? this.level + 1 : this.level)
   }
 
   // ─── Coordinate mapping ────────────────────────────────────────────────────
@@ -563,6 +581,11 @@ export default class SlingshotScene extends Phaser.Scene {
     const gy = (BASE_GRAVITY_NORM * this.spec.gravityScale * this.L) / 1000
     this.matter.world.setGravity(0, gy)
 
+    // Contact thresholds: field-units/s → px/step (Matter speeds are px/step).
+    this.freeSpeedPx = (FREE_SPEED_NORM * this.L) / 60
+    this.knockSpeedPx = (KNOCK_SPEED_NORM * this.L) / 60
+    this.settleSpeedPx = (SETTLE_SPEED_NORM * this.L) / 60
+
     this.drawBackground()
     this.buildBounds()
     this.buildSling()
@@ -572,6 +595,8 @@ export default class SlingshotScene extends Phaser.Scene {
     this.levelClearing = false
     this.freedThisFlight = false
     this.consecutiveMisses = 0
+    this.freeingArmed = false
+    this.settleGraceUntil = Infinity
     this.queueIndex = 0
     this.loadBird(this.spec.birds[0])
     this.canAim = false
@@ -744,7 +769,7 @@ export default class SlingshotScene extends Phaser.Scene {
       friction: PIGGY.friction,
       restitution: PIGGY.restitution,
     })
-    img.setCircle(rPx * 0.9, { label: 'piggy' })
+    img.setCircle(rPx * PIGGY_BODY_SCALE, { label: 'piggy' })
     img.setDensity(PIGGY.density).setFriction(PIGGY.friction).setBounce(PIGGY.restitution)
     img.setStatic(true).setAlpha(0).setDepth(16)
     const zzz = this.add
@@ -856,9 +881,12 @@ export default class SlingshotScene extends Phaser.Scene {
     for (const t of this.trampolines) {
       this.tweens.add({ targets: t, alpha: 1, duration: 300 })
     }
-    // Wake the physics once everything has settled in visually.
+    // Wake the physics once everything has settled in visually. The wake drop
+    // (bodies fall their spawn gap) collides at ≈0.12 field-units/s, so the
+    // grace window keeps those contacts silent and free-proof.
     this.delay(120 + movers.length * 55 + 220, () => {
       for (const img of movers) img.setStatic(false)
+      this.settleGraceUntil = this.time.now + SETTLE_GRACE_MS
       this.canAim = true
       this.lastInteraction = this.time.now
     })
@@ -1030,7 +1058,10 @@ export default class SlingshotScene extends Phaser.Scene {
       this.relaxBand()
       return
     }
-    // Launch.
+    // Launch. The first launch of a level arms piggy freeing and ends the
+    // settle grace immediately, so even an instant fast shot can free.
+    this.freeingArmed = true
+    this.settleGraceUntil = 0
     this.bird.state = 'flying'
     this.bird.skin.scaleX = 1
     this.bird.skin.scaleY = 1
@@ -1103,15 +1134,24 @@ export default class SlingshotScene extends Phaser.Scene {
     const other0 = tramp === a ? b : a
     if (tramp && other0.label === 'bird') this.boing(tramp)
 
-    // Piggy freeing — generous: bird contact frees at any speed; a moving block
-    // (fall) or a shoved piggy frees it too.
+    // Build/entrance/settle grace: while the level drops into place nothing
+    // may free a piggy or thud — second belt behind the launch arming.
+    if (this.time.now < this.settleGraceUntil) return
+
+    // Piggy freeing — armed by the first launch of the level; then generous:
+    // bird contact frees at any speed; a moving block (fall) or a shoved piggy
+    // frees above the L-scaled threshold.
     const piggyBody = a.label === 'piggy' ? a : b.label === 'piggy' ? b : null
     if (piggyBody) {
       const hitter = piggyBody === a ? b : a
       if (
-        hitter.label === 'bird' ||
-        hitter.speed > FREE_SPEED_STEP ||
-        piggyBody.speed > FREE_SPEED_STEP
+        canFreePiggy(
+          this.freeingArmed,
+          hitter.label,
+          hitter.speed,
+          piggyBody.speed,
+          this.freeSpeedPx,
+        )
       ) {
         const piggy = this.piggyById.get(piggyBody.id)
         if (piggy) this.freePiggy(piggy)
@@ -1122,7 +1162,7 @@ export default class SlingshotScene extends Phaser.Scene {
     const now = this.time.now
     if (now - this.lastKnock > 55) {
       const impact = Math.max(a.speed, b.speed)
-      if (impact > KNOCK_SPEED_STEP) {
+      if (impact > this.knockSpeedPx) {
         const blockBody = a.label === 'block' ? a : b.label === 'block' ? b : null
         if (blockBody) {
           this.knock(this.blockById.get(blockBody.id)?.material ?? 'wood')
@@ -1264,7 +1304,9 @@ export default class SlingshotScene extends Phaser.Scene {
     }
     for (const block of this.blocks) {
       const body = this.bodyOf(block.img)
-      const tumbling = Math.abs(body.angularVelocity) > 0.04 || body.speed > 0.5
+      // Angular test is in rad/step (resolution-independent); the linear test
+      // is L-scaled like every other speed threshold (0.02 field-units/s).
+      const tumbling = Math.abs(body.angularVelocity) > 0.04 || body.speed > (0.02 * this.L) / 60
       if (tumbling !== block.oh) {
         block.oh = tumbling
         block.img.setTexture(this.blockTextureKey(block.material, block.wPx, block.hPx, tumbling))
@@ -1278,7 +1320,7 @@ export default class SlingshotScene extends Phaser.Scene {
       this.flightTime += dt
       this.applyAssist()
       const body = this.bodyOf(this.bird.body)
-      if (body.speed < SETTLE_SPEED_STEP) this.settleTime += dt
+      if (body.speed < this.settleSpeedPx) this.settleTime += dt
       else this.settleTime = 0
       if (
         this.settleTime > SETTLE_S ||
