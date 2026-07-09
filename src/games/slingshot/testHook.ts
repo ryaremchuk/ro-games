@@ -16,6 +16,15 @@ export interface SlingshotTestState {
   levelClearing: boolean
   birdState: 'loaded' | 'flying' | 'spent' | null
   birdKind: BirdKind | null
+  /** Bird body position in backing px (null once the body is destroyed). */
+  birdX: number | null
+  birdY: number | null
+  /**
+   * True if Matter has put the bird's body to sleep. A launched bird must
+   * never be asleep — sleeping bodies are skipped by gravity and integration,
+   * so a slept "launch" freezes mid-air (the regression this flag guards).
+   */
+  birdAsleep: boolean | null
   piggiesTotal: number
   piggiesFreed: number
   consecutiveMisses: number

@@ -51,6 +51,7 @@ interface MatterBodyLike {
   speed: number
   mass: number
   angularVelocity: number
+  isSleeping: boolean
   velocity: { x: number; y: number }
   position: { x: number; y: number }
 }
@@ -214,6 +215,9 @@ export default class SlingshotScene extends Phaser.Scene {
         levelClearing: this.levelClearing,
         birdState: this.bird?.state ?? null,
         birdKind: this.bird?.kind ?? null,
+        birdX: this.bird?.body.active ? this.bird.body.x : null,
+        birdY: this.bird?.body.active ? this.bird.body.y : null,
+        birdAsleep: this.bird?.body.active ? this.bodyOf(this.bird.body).isSleeping : null,
         piggiesTotal: this.piggies.length,
         piggiesFreed: this.piggies.filter((p) => p.freed).length,
         consecutiveMisses: this.consecutiveMisses,
@@ -937,7 +941,13 @@ export default class SlingshotScene extends Phaser.Scene {
     // (bodies fall their spawn gap) collides at ≈0.12 field-units/s, so the
     // grace window keeps those contacts silent and free-proof.
     this.delay(120 + movers.length * 55 + 220, () => {
-      for (const img of movers) img.setStatic(false)
+      for (const img of movers) {
+        img.setStatic(false)
+        // Big levels stay static past Matter's 60-step sleep countdown (which
+        // ticks for static bodies too); a slept mover would ignore gravity and
+        // hang mid-air after setStatic(false) — wake it explicitly.
+        img.setAwake()
+      }
       this.settleGraceUntil = this.time.now + SETTLE_GRACE_MS
       this.canAim = true
       this.lastInteraction = this.time.now
@@ -957,6 +967,10 @@ export default class SlingshotScene extends Phaser.Scene {
       .setFriction(BIRD.friction)
       .setBounce(kind === 'big' ? BIG_BIRD.restitution : BIRD.restitution)
       .setFrictionAir(0.0015)
+    // The hero bird is exempt from sleeping (threshold 0): it waits loaded on
+    // the sling far longer than the 60-step sleep countdown, and a slept body
+    // cannot be launched (belt on top of the explicit wake in release()).
+    body.setSleepThreshold(0)
     body.setStatic(true).setVisible(false)
     // Visible skin follows the body and carries all the squash/stretch.
     const skin = this.add.image(this.forkX, this.forkY, key).setDepth(26)
@@ -1118,6 +1132,11 @@ export default class SlingshotScene extends Phaser.Scene {
     this.bird.skin.scaleX = 1
     this.bird.skin.scaleY = 1
     this.bird.body.setStatic(false)
+    // Matter's Sleeping.update also counts down STATIC motionless bodies, and
+    // neither setStatic(false) nor setVelocity wakes a slept one — a sleeping
+    // body is skipped by gravity and integration, so without this wake a bird
+    // aimed for >1s would "launch" frozen in mid-air.
+    this.bird.body.setAwake()
     this.bird.body.setVelocity(this.launchV.x / 60, this.launchV.y / 60)
     this.flightTime = 0
     this.settleTime = 0
