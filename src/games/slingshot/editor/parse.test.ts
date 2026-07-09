@@ -88,6 +88,28 @@ describe('slingshot editor: parseLevelSpec', () => {
     expect(parseLevelSpec(JSON.stringify(herd)).ok).toBe(false)
   })
 
+  it('accepts all five bird kinds', () => {
+    const spec = valid()
+    for (const kind of ['green', 'blue', 'purple', 'red', 'yellow']) {
+      const res = parseLevelSpec(JSON.stringify({ ...spec, birds: [kind] }))
+      expect(res.ok, `${kind} must parse`).toBe(true)
+      if (res.ok) expect(res.spec.birds).toEqual([kind])
+    }
+  })
+
+  it('maps legacy bird kinds so old drafts still import (normal→green, big→yellow)', () => {
+    const spec = valid()
+    const res = parseLevelSpec(JSON.stringify({ ...spec, birds: ['normal', 'big'] }))
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(res.spec.birds).toEqual(['green', 'yellow'])
+  })
+
+  it('rejects unknown bird kinds', () => {
+    const spec = valid()
+    expect(parseLevelSpec(JSON.stringify({ ...spec, birds: ['rainbow'] })).ok).toBe(false)
+    expect(parseLevelSpec(JSON.stringify({ ...spec, birds: ['green', 'huge'] })).ok).toBe(false)
+  })
+
   it('drops unknown fields instead of passing them through', () => {
     const spec = valid()
     const withJunk = {

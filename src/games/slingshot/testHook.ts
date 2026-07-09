@@ -17,6 +17,8 @@ export interface SlingshotTestState {
   levelClearing: boolean
   birdState: 'loaded' | 'flying' | 'spent' | null
   birdKind: BirdKind | null
+  /** The player's persisted active bird (green until a reward promotes it). */
+  activeBirdKind: BirdKind
   /** Bird body position in backing px (null once the body is destroyed). */
   birdX: number | null
   birdY: number | null
@@ -29,6 +31,12 @@ export interface SlingshotTestState {
   piggiesTotal: number
   piggiesFreed: number
   consecutiveMisses: number
+  /** True while the victory-star reward overlay is up (Feature 2). */
+  starDropActive: boolean
+  /** The tier (bird kind) the star currently shows, or null when no drop. */
+  starDropTier: BirdKind | null
+  /** Taps left including the closing 'open' (null when no drop is active). */
+  starDropTapsRemaining: number | null
 }
 
 export interface SlingshotTestApi {
@@ -43,6 +51,18 @@ export interface SlingshotTestApi {
   flick: (dxN: number, dyN: number) => boolean
   /** Flap a bird that is mid-flight (no-op otherwise). */
   flap: () => void
+  /**
+   * Pin the reward of the NEXT star drop to `kind`, bypassing the weighted roll.
+   * Call before clearing the level that triggers the drop (every 3rd level) so
+   * the e2e outcome is deterministic.
+   */
+  forceStarDrop: (kind: BirdKind) => void
+  /**
+   * Jump straight to `level`, skipping the slow physics playthrough of the
+   * levels before it — so a spec can reach a star-drop level (multiple of 3)
+   * quickly. Dev/e2e only; no-op in the editor.
+   */
+  skipToLevel: (level: number) => void
 }
 
 declare global {

@@ -3,8 +3,7 @@ import {
   ASSIST_AFTER_MISSES,
   BALL,
   BASE_GRAVITY_NORM,
-  BIG_BIRD_EVERY,
-  BIG_BIRD_FROM_LEVEL,
+  BIRDS,
   FREE_SPEED_NORM,
   GROUND_Y,
   KNOCK_SPEED_NORM,
@@ -18,7 +17,6 @@ import {
   SLING,
   THEME_CYCLE,
   assistStrength,
-  birdCycleFor,
   canFreePiggy,
   generateLevel,
   gravityScaleFor,
@@ -218,20 +216,63 @@ describe('ballistic reachability', () => {
   })
 })
 
-describe('bird queue', () => {
-  it('serves normal birds only before level 5', () => {
-    for (let lvl = 1; lvl < BIG_BIRD_FROM_LEVEL; lvl++) {
-      expect(birdCycleFor(lvl)).toEqual(['normal'])
-      expect(level(lvl).birds.every((b) => b === 'normal')).toBe(true)
+describe('birds table (semantic progression)', () => {
+  const { green, blue, purple, red, yellow } = BIRDS
+  // A size step must land in the documented 0.25–0.3 band; round away the FP dust
+  // (1.8 − 1.5 = 0.30000000000000004) before the band check.
+  const sizeStep = (hi: number, lo: number): number => Math.round((hi - lo) * 1000) / 1000
+  const inSizeBand = (step: number): boolean => step >= 0.25 && step <= 0.3
+
+  it('every kind shares the same friction', () => {
+    for (const bird of Object.values(BIRDS)) expect(bird.friction).toBe(0.5)
+  })
+
+  it('green is the baseline', () => {
+    expect(green.radiusScale).toBe(1.0)
+    expect(green.density).toBe(1.5)
+    expect(green.restitution).toBe(0.35)
+  })
+
+  it('blue = +1 size, +1 weight vs green (same bounce)', () => {
+    expect(inSizeBand(sizeStep(blue.radiusScale, green.radiusScale))).toBe(true)
+    expect(blue.density - green.density).toBeCloseTo(1.0)
+    expect(blue.restitution).toBe(green.restitution)
+  })
+
+  it('purple = +1 size vs blue, same weight, +1 bounce', () => {
+    expect(inSizeBand(sizeStep(purple.radiusScale, blue.radiusScale))).toBe(true)
+    expect(purple.density).toBe(blue.density)
+    expect(purple.restitution - blue.restitution).toBeCloseTo(0.1)
+  })
+
+  it('red = same size/weight as purple, +2 bounce', () => {
+    expect(red.radiusScale).toBe(purple.radiusScale)
+    expect(red.density).toBe(purple.density)
+    expect(red.restitution - purple.restitution).toBeCloseTo(0.2)
+  })
+
+  it('yellow = +1 size vs red, +2 weight, +1 bounce', () => {
+    expect(inSizeBand(sizeStep(yellow.radiusScale, red.radiusScale))).toBe(true)
+    expect(yellow.density - red.density).toBeCloseTo(2.0)
+    expect(yellow.restitution - red.restitution).toBeCloseTo(0.1)
+  })
+
+  it('is monotone non-decreasing in size, weight, and bounce across the ladder', () => {
+    const ladder = [green, blue, purple, red, yellow]
+    for (let i = 1; i < ladder.length; i++) {
+      expect(ladder[i].radiusScale).toBeGreaterThanOrEqual(ladder[i - 1].radiusScale)
+      expect(ladder[i].density).toBeGreaterThanOrEqual(ladder[i - 1].density)
+      expect(ladder[i].restitution).toBeGreaterThanOrEqual(ladder[i - 1].restitution)
     }
   })
 
-  it('serves a Big Bird every third launch from level 5', () => {
-    for (const lvl of [5, 8, 12, 20]) {
-      const cycle = birdCycleFor(lvl)
-      expect(cycle).toHaveLength(BIG_BIRD_EVERY)
-      expect(cycle.filter((b) => b === 'big')).toHaveLength(1)
-      expect(cycle[BIG_BIRD_EVERY - 1]).toBe('big')
+  it('green is visually distinct from the piggy green', () => {
+    expect(green.color).not.toBe(PIGGY.color)
+  })
+
+  it('generated levels emit a green placeholder queue (scene swaps the active bird)', () => {
+    for (const lvl of RAMP_LEVELS) {
+      expect(level(lvl).birds).toEqual(['green'])
     }
   })
 })
