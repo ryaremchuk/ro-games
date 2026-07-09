@@ -25,6 +25,7 @@ import {
   mulberry32,
 } from './logic'
 import type { BirdKind, BlockMaterial, BlockSpec, LevelSpec, PiggySpec, PropSpec } from './logic'
+import type { SlingshotTestApi } from './testHook'
 
 // ART SPEC palette.
 const INK = 0x3d3a4b
@@ -50,6 +51,7 @@ interface MatterBodyLike {
   speed: number
   mass: number
   angularVelocity: number
+  isSleeping: boolean
   velocity: { x: number; y: number }
   position: { x: number; y: number }
 }
@@ -173,6 +175,7 @@ export default class SlingshotScene extends Phaser.Scene {
       this.removeWindowListeners()
       this.matter.world.off('collisionstart', this.onCollisionStart)
       this.clearTimers()
+      this.teardownTestApi()
       clearLevel()
     })
     // React unmount calls game.destroy(), which emits DESTROY (not SHUTDOWN).
@@ -181,14 +184,67 @@ export default class SlingshotScene extends Phaser.Scene {
     // destroyed scene (e.g. an iPad orientation change after leaving the game),
     // and each visit leaks another. removeEventListener is idempotent if both
     // events fire.
-    this.events.once(Phaser.Scenes.Events.DESTROY, this.removeWindowListeners)
+    this.events.once(Phaser.Scenes.Events.DESTROY, () => {
+      this.removeWindowListeners()
+      this.teardownTestApi()
+    })
 
     this.buildLevel(this.level)
+
+    // Dev-only e2e hook (tree-shaken from production builds). Lets Playwright
+    // read deterministic play state and drive the real aim/release path — Phaser
+    // renders to an opaque canvas the DOM can't inspect. See ./testHook.ts.
+    if (import.meta.env.DEV || location.search.includes('e2e')) this.exposeTestApi()
   }
 
   private removeWindowListeners = (): void => {
     window.removeEventListener('resize', this.handleResize)
     window.removeEventListener('orientationchange', this.handleResize)
+  }
+
+  // ─── E2E test hook (dev-only) ──────────────────────────────────────────────
+
+  private testApi?: SlingshotTestApi
+
+  private exposeTestApi(): void {
+    const api: SlingshotTestApi = {
+      state: () => ({
+        level: this.level,
+        canAim: this.canAim,
+        aiming: this.aiming,
+        levelClearing: this.levelClearing,
+        birdState: this.bird?.state ?? null,
+        birdKind: this.bird?.kind ?? null,
+        birdX: this.bird?.body.active ? this.bird.body.x : null,
+        birdY: this.bird?.body.active ? this.bird.body.y : null,
+        birdAsleep: this.bird?.body.active ? this.bodyOf(this.bird.body).isSleeping : null,
+        piggiesTotal: this.piggies.length,
+        piggiesFreed: this.piggies.filter((p) => p.freed).length,
+        consecutiveMisses: this.consecutiveMisses,
+      }),
+      flick: (dxN, dyN) => {
+        if (!this.canAim || this.aiming || this.levelClearing || this.bird?.state !== 'loaded') {
+          return false
+        }
+        this.aiming = true
+        this.dragStart = { x: this.forkX, y: this.forkY }
+        const pointer = { x: this.forkX + dxN * this.L, y: this.forkY + dyN * this.L }
+        this.updateAim(pointer as unknown as Phaser.Input.Pointer)
+        this.release()
+        return true
+      },
+      flap: () => this.flap(),
+    }
+    this.testApi = api
+    window.__slingshot = api
+  }
+
+  private teardownTestApi(): void {
+    // Identity guard: React StrictMode double-mounts in dev, and Phaser defers
+    // destroy() to the next game step — so this scene's late DESTROY can fire
+    // *after* the remounted scene has installed its own hook. Only remove ours,
+    // never the live one.
+    if (this.testApi && window.__slingshot === this.testApi) delete window.__slingshot
   }
 
   private handleResize = (): void => {
@@ -885,7 +941,13 @@ export default class SlingshotScene extends Phaser.Scene {
     // (bodies fall their spawn gap) collides at ≈0.12 field-units/s, so the
     // grace window keeps those contacts silent and free-proof.
     this.delay(120 + movers.length * 55 + 220, () => {
-      for (const img of movers) img.setStatic(false)
+      for (const img of movers) {
+        img.setStatic(false)
+        // Big levels stay static past Matter's 60-step sleep countdown (which
+        // ticks for static bodies too); a slept mover would ignore gravity and
+        // hang mid-air after setStatic(false) — wake it explicitly.
+        img.setAwake()
+      }
       this.settleGraceUntil = this.time.now + SETTLE_GRACE_MS
       this.canAim = true
       this.lastInteraction = this.time.now
@@ -905,6 +967,10 @@ export default class SlingshotScene extends Phaser.Scene {
       .setFriction(BIRD.friction)
       .setBounce(kind === 'big' ? BIG_BIRD.restitution : BIRD.restitution)
       .setFrictionAir(0.0015)
+    // The hero bird is exempt from sleeping (threshold 0): it waits loaded on
+    // the sling far longer than the 60-step sleep countdown, and a slept body
+    // cannot be launched (belt on top of the explicit wake in release()).
+    body.setSleepThreshold(0)
     body.setStatic(true).setVisible(false)
     // Visible skin follows the body and carries all the squash/stretch.
     const skin = this.add.image(this.forkX, this.forkY, key).setDepth(26)
@@ -1066,6 +1132,11 @@ export default class SlingshotScene extends Phaser.Scene {
     this.bird.skin.scaleX = 1
     this.bird.skin.scaleY = 1
     this.bird.body.setStatic(false)
+    // Matter's Sleeping.update also counts down STATIC motionless bodies, and
+    // neither setStatic(false) nor setVelocity wakes a slept one — a sleeping
+    // body is skipped by gravity and integration, so without this wake a bird
+    // aimed for >1s would "launch" frozen in mid-air.
+    this.bird.body.setAwake()
     this.bird.body.setVelocity(this.launchV.x / 60, this.launchV.y / 60)
     this.flightTime = 0
     this.settleTime = 0
