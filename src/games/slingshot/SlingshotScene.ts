@@ -19,12 +19,18 @@ import {
   SETTLE_SPEED_NORM,
   SLING,
   TRAMPOLINE,
+  WOOD_H,
+  WOOD_W,
   assistStrength,
   canFreePiggy,
   generateLevel,
+  hasReachablePiggy,
   mulberry32,
 } from './logic'
 import type { BirdKind, BlockMaterial, BlockSpec, LevelSpec, PiggySpec, PropSpec } from './logic'
+import { editRequested, emitEditorChange, getEditorApi, registerEditorApi } from './editor/bridge'
+import type { AddKind, EditorApi, EditorMode, SelectionKind } from './editor/bridge'
+import { clamp, parseLevelSpec, round3 } from './editor/parse'
 import type { SlingshotTestApi } from './testHook'
 
 // ART SPEC palette.
@@ -43,6 +49,8 @@ const POOF_MS = 900
 const IDLE_MS = 10000
 const TRAJECTORY_DOTS = 16
 const TRAJECTORY_DT = 0.055
+/** localStorage key for the editor's work-in-progress level draft. */
+const EDITOR_DRAFT_KEY = 'ro-games:slingshot-editor-draft'
 
 /** A minimal view of the Matter body fields the scene reads (avoids `any`). */
 interface MatterBodyLike {
@@ -152,6 +160,20 @@ export default class SlingshotScene extends Phaser.Scene {
   private dynTextureKeys = new Set<string>()
   private levelTimers: Phaser.Time.TimerEvent[] = []
 
+  // ─── Hidden level editor (adult tool, `#/slingshot?edit`) ──────────────────
+  // The editor owns a mutable LevelSpec `draft`; in 'edit' mode the level is
+  // built from it with every body static + draggable, in 'play' mode the same
+  // draft runs through the normal entrance/physics path for in-place testing.
+  private editorOn = false
+  private editorMode: EditorMode = 'edit'
+  private draft: LevelSpec | null = null
+  private editorApi: EditorApi | null = null
+  private selected: {
+    kind: SelectionKind
+    ref: BlockSpec | PiggySpec | PropSpec
+    img: Phaser.Physics.Matter.Image
+  } | null = null
+
   constructor() {
     super('slingshot')
   }
@@ -176,6 +198,7 @@ export default class SlingshotScene extends Phaser.Scene {
       this.matter.world.off('collisionstart', this.onCollisionStart)
       this.clearTimers()
       this.teardownTestApi()
+      this.teardownEditorApi()
       clearLevel()
     })
     // React unmount calls game.destroy(), which emits DESTROY (not SHUTDOWN).
@@ -187,7 +210,16 @@ export default class SlingshotScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.DESTROY, () => {
       this.removeWindowListeners()
       this.teardownTestApi()
+      this.teardownEditorApi()
     })
+
+    this.editorOn = editRequested()
+    if (this.editorOn) {
+      this.draft = this.restoreEditorDraft() ?? generateLevel(1, mulberry32(1))
+      this.level = this.draft.level
+      this.wireEditorInput()
+      this.installEditorApi()
+    }
 
     this.buildLevel(this.level)
 
@@ -254,8 +286,9 @@ export default class SlingshotScene extends Phaser.Scene {
     // Relayout = rebuild the current level for the new aspect / size. If a
     // resize lands mid-celebration (iOS URL-bar churn, rotation), the rebuild
     // kills the pending auto-advance timer — so advance here instead of
-    // silently replaying the level the child just cleared.
-    this.buildLevel(this.levelClearing ? this.level + 1 : this.level)
+    // silently replaying the level the child just cleared. The editor never
+    // advances: its draft is the level.
+    this.buildLevel(this.levelClearing && !this.editorOn ? this.level + 1 : this.level)
   }
 
   // ─── Coordinate mapping ────────────────────────────────────────────────────
@@ -624,8 +657,11 @@ export default class SlingshotScene extends Phaser.Scene {
   private buildLevel(level: number): void {
     this.clearLevelObjects()
     this.level = Math.max(1, level)
-    this.spec = generateLevel(this.level, mulberry32(this.level))
-    reportLevel(this.level)
+    // Editor builds from its mutable draft; normal play from the generator.
+    // The badge stays hidden in the editor (reportLevel drives child-facing UI).
+    this.spec =
+      this.editorOn && this.draft ? this.draft : generateLevel(this.level, mulberry32(this.level))
+    if (!this.editorOn) reportLevel(this.level)
 
     const w = this.scale.width
     const h = this.scale.height
@@ -654,9 +690,16 @@ export default class SlingshotScene extends Phaser.Scene {
     this.freeingArmed = false
     this.settleGraceUntil = Infinity
     this.queueIndex = 0
-    this.loadBird(this.spec.birds[0])
     this.canAim = false
     this.lastInteraction = this.time.now
+
+    if (this.isEditing()) {
+      // Editor layout: no bird, no entrance, every body static + draggable.
+      this.enterEditLayout()
+      return
+    }
+
+    this.loadBird(this.spec.birds[0])
 
     // "Blocks drop into place": everything stays static + fades in, then wakes.
     this.staggerEntrance()
@@ -666,6 +709,7 @@ export default class SlingshotScene extends Phaser.Scene {
     this.tweens.killAll()
     this.clearTimers()
     this.aiming = false
+    this.selected = null
     this.hideTrajectory()
     this.bandGfx?.clear()
     this.rainbowGfx?.clear()
@@ -803,9 +847,11 @@ export default class SlingshotScene extends Phaser.Scene {
     const block: Block = { img, material: spec.material, oh: false, wPx, hPx }
     this.blocks.push(block)
     this.blockById.set(this.bodyOf(img).id, block)
+    img.setData('kind', 'block').setData('ref', spec)
 
     img.setInteractive()
     img.on('pointerdown', () => {
+      if (this.isEditing()) return // editor: taps select, they don't play
       this.bump()
       // Tint toward warm yellow (multiply can only darken) for a tap flash.
       img.setTint(0xfff0b0)
@@ -835,6 +881,7 @@ export default class SlingshotScene extends Phaser.Scene {
     const piggy: Piggy = { img, zzz, freed: false, rPx }
     this.piggies.push(piggy)
     this.piggyById.set(this.bodyOf(img).id, piggy)
+    img.setData('kind', 'piggy').setData('ref', spec)
     this.tweens.add({
       targets: zzz,
       y: img.y - rPx * 2.1,
@@ -847,6 +894,7 @@ export default class SlingshotScene extends Phaser.Scene {
 
     img.setInteractive()
     img.on('pointerdown', () => {
+      if (this.isEditing()) return // editor: taps select, they don't play
       if (piggy.freed) return
       this.bump()
       playTone(160, 200, 'sine', 0.05)
@@ -884,6 +932,7 @@ export default class SlingshotScene extends Phaser.Scene {
     img.setStatic(true).setAlpha(0)
     this.trampolines.push(img)
     this.trampolineById.set(this.bodyOf(img).id, img)
+    img.setData('kind', 'trampoline').setData('ref', prop)
   }
 
   private addBall(prop: PropSpec): void {
@@ -896,6 +945,7 @@ export default class SlingshotScene extends Phaser.Scene {
     img.setDensity(BALL.density).setFriction(BALL.friction).setBounce(BALL.restitution)
     img.setStatic(true).setAlpha(0).setDepth(15)
     this.balls.push(img)
+    img.setData('kind', 'ball').setData('ref', prop)
   }
 
   private addSeesaw(prop: PropSpec): void {
@@ -912,6 +962,7 @@ export default class SlingshotScene extends Phaser.Scene {
     })
     img.setStatic(true).setAlpha(0).setDepth(13)
     this.seesawPlanks.push(img)
+    img.setData('kind', 'seesaw').setData('ref', prop)
     // Revolute pivot: pin the plank center to a fixed world point (free to rotate).
     const constraint = this.matter.add.worldConstraint(img.body as unknown as StaticBody, 0, 1, {
       pointA: { x: pivotX, y: pivotY },
@@ -1053,6 +1104,11 @@ export default class SlingshotScene extends Phaser.Scene {
   private wireInput(): void {
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       this.lastInteraction = this.time.now
+      if (this.isEditing()) {
+        // Tap on empty space deselects (taps on objects select via gameobjectdown).
+        if (this.input.hitTestPointer(pointer).length === 0) this.selectObject(null)
+        return
+      }
       if (this.aiming || this.levelClearing) return
       if (this.bird?.state === 'flying') {
         this.flap()
@@ -1342,8 +1398,16 @@ export default class SlingshotScene extends Phaser.Scene {
     )
 
     // Auto-advance to the next level (accepts input again on the new build).
+    // The editor instead returns to edit mode on the same draft — a play-test
+    // win must never regenerate the level being tuned.
     this.delay(2500, () => {
       this.rainbowGfx.clear()
+      if (this.editorOn) {
+        this.editorMode = 'edit'
+        this.buildLevel(this.level)
+        emitEditorChange()
+        return
+      }
       this.buildLevel(this.level + 1)
     })
   }
@@ -1458,5 +1522,254 @@ export default class SlingshotScene extends Phaser.Scene {
 
   private bodyOf(img: Phaser.Physics.Matter.Image): MatterBodyLike {
     return img.body as unknown as MatterBodyLike
+  }
+
+  // ─── Level editor (hidden adult tool) ──────────────────────────────────────
+  //
+  // Everything below only runs when the URL asked for `?edit`. The scene owns
+  // the draft and all mutation; the React EditorPanel is dumb buttons wired
+  // through editor/bridge.ts. Draft persistence: localStorage, so an accidental
+  // reload never loses a half-tuned level.
+
+  private isEditing(): boolean {
+    return this.editorOn && this.editorMode === 'edit'
+  }
+
+  private fromX(px: number): number {
+    return (px - this.offX) / this.L
+  }
+
+  private fromY(py: number): number {
+    return (py - this.offY) / this.L
+  }
+
+  /** All draggable editor objects of the current build. */
+  private editorImages(): Phaser.Physics.Matter.Image[] {
+    return [
+      ...this.blocks.map((b) => b.img),
+      ...this.piggies.map((p) => p.img),
+      ...this.balls,
+      ...this.trampolines,
+      ...this.seesawPlanks,
+    ]
+  }
+
+  /** Edit-mode build tail: skip entrance, keep static, make draggable. */
+  private enterEditLayout(): void {
+    for (const img of this.editorImages()) {
+      img.setAlpha(1)
+      img.setStatic(true)
+      if (!img.input) img.setInteractive()
+      this.input.setDraggable(img, true)
+    }
+    for (const p of this.piggies) {
+      this.tweens.killTweensOf(p.zzz)
+      p.zzz.setAlpha(0.9)
+      p.zzz.setPosition(p.img.x, p.img.y - p.rPx * 1.75)
+    }
+    emitEditorChange()
+  }
+
+  private wireEditorInput(): void {
+    // A real drag needs a little travel; plain taps stay selection-only.
+    this.input.dragDistanceThreshold = 10
+    this.input.on(
+      'gameobjectdown',
+      (_p: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject) => {
+        if (this.isEditing() && obj.getData('kind')) {
+          this.selectObject(obj as Phaser.Physics.Matter.Image)
+        }
+      },
+    )
+    this.input.on(
+      'drag',
+      (
+        _p: Phaser.Input.Pointer,
+        obj: Phaser.GameObjects.GameObject,
+        dragX: number,
+        dragY: number,
+      ) => {
+        if (!this.isEditing() || !obj.getData('kind')) return
+        const img = obj as Phaser.Physics.Matter.Image
+        img.setPosition(dragX, dragY)
+        const piggy = this.piggies.find((p) => p.img === img)
+        piggy?.zzz.setPosition(img.x, img.y - piggy.rPx * 1.75)
+      },
+    )
+    this.input.on('dragend', (_p: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject) => {
+      if (!this.isEditing() || !obj.getData('kind')) return
+      this.writeBack(obj as Phaser.Physics.Matter.Image)
+    })
+  }
+
+  private selectObject(img: Phaser.Physics.Matter.Image | null): void {
+    if (this.selected?.img.active) this.selected.img.clearTint()
+    this.selected = null
+    if (img) {
+      const kind = img.getData('kind') as SelectionKind
+      const ref = img.getData('ref') as BlockSpec | PiggySpec | PropSpec
+      this.selected = { kind, ref, img }
+      img.setTint(0xfff08a)
+    }
+    emitEditorChange()
+  }
+
+  /** Drop: normalized coords back into the draft spec (clamped above ground). */
+  private writeBack(img: Phaser.Physics.Matter.Image): void {
+    if (!this.draft) return
+    const kind = img.getData('kind') as SelectionKind
+    const ref = img.getData('ref') as BlockSpec & PiggySpec & PropSpec
+    const nx = round3(clamp(this.fromX(img.x), 0.03, 0.97))
+    if (kind === 'block') {
+      ref.x = nx
+      ref.y = round3(clamp(this.fromY(img.y), 0.03, GROUND_Y - ref.h / 2))
+    } else if (kind === 'piggy') {
+      ref.x = nx
+      ref.y = round3(clamp(this.fromY(img.y), 0.03, GROUND_Y - PIGGY.radius))
+    } else if (kind === 'ball') {
+      ref.x = nx
+      ref.y = round3(clamp(this.fromY(img.y), 0.03, GROUND_Y - (ref.r ?? BALL.radius)))
+    } else if (kind === 'trampoline') {
+      // The image floats above its spec anchor (cap offset); invert that.
+      ref.x = nx
+      ref.y = round3(clamp(this.fromY(img.y + img.displayHeight * 0.35), 0.2, GROUND_Y))
+    } else {
+      ref.x = nx
+      ref.y = round3(clamp(this.fromY(img.y), 0.1, GROUND_Y - 0.02))
+    }
+    // Snap the visual to the (possibly clamped) spec position.
+    if (kind === 'trampoline') {
+      img.setPosition(this.toX(ref.x), this.toY(ref.y) - img.displayHeight * 0.35)
+    } else {
+      img.setPosition(this.toX(ref.x), this.toY(ref.y))
+    }
+    const piggy = this.piggies.find((p) => p.img === img)
+    piggy?.zzz.setPosition(img.x, img.y - piggy.rPx * 1.75)
+    this.saveDraft()
+    emitEditorChange()
+  }
+
+  private editorAdd(kind: AddKind): void {
+    if (!this.draft) return
+    const d = this.draft
+    // Stagger spawn spots so repeated adds don't stack invisibly.
+    const n = d.blocks.length + d.piggies.length + d.props.length
+    const x = round3(0.58 + (n % 7) * 0.05)
+    if (kind === 'wood' || kind === 'stone' || kind === 'ice') {
+      d.blocks.push({
+        material: kind,
+        x,
+        y: round3(GROUND_Y - WOOD_H / 2),
+        w: WOOD_W,
+        h: WOOD_H,
+        angle: 0,
+      })
+    } else if (kind === 'piggy') {
+      d.piggies.push({ x, y: round3(GROUND_Y - PIGGY.radius) })
+    } else if (kind === 'ball') {
+      d.props.push({ kind: 'ball', x, y: round3(GROUND_Y - BALL.radius), r: BALL.radius })
+    } else if (kind === 'trampoline') {
+      d.props.push({ kind: 'trampoline', x: 0.44, y: GROUND_Y, w: 0.12 })
+    } else {
+      d.props.push({ kind: 'seesaw', x, y: round3(GROUND_Y - 0.05), w: 0.22, h: 0.026 })
+    }
+    this.saveDraft()
+    this.buildLevel(this.level)
+  }
+
+  private editorDelete(): void {
+    if (!this.draft || !this.selected) return
+    const { kind, ref } = this.selected
+    if (kind === 'block') {
+      this.draft.blocks = this.draft.blocks.filter((b) => b !== ref)
+    } else if (kind === 'piggy') {
+      this.draft.piggies = this.draft.piggies.filter((p) => p !== ref)
+    } else {
+      this.draft.props = this.draft.props.filter((p) => p !== ref)
+    }
+    this.selected = null
+    this.saveDraft()
+    this.buildLevel(this.level)
+  }
+
+  private editorRotate(degrees: number): void {
+    if (!this.selected || this.selected.kind !== 'block') return
+    const ref = this.selected.ref as BlockSpec
+    ref.angle = round3(ref.angle + Phaser.Math.DegToRad(degrees))
+    this.selected.img.setAngle(Phaser.Math.RadToDeg(ref.angle))
+    this.saveDraft()
+    emitEditorChange()
+  }
+
+  private installEditorApi(): void {
+    const api: EditorApi = {
+      snapshot: () => ({
+        mode: this.editorMode,
+        level: this.draft?.level ?? this.level,
+        reachable: this.draft ? hasReachablePiggy(this.draft) : false,
+        blocks: this.draft?.blocks.length ?? 0,
+        piggies: this.draft?.piggies.length ?? 0,
+        props: this.draft?.props.length ?? 0,
+        selection: this.selected?.kind ?? null,
+      }),
+      exportJson: () => JSON.stringify(this.draft, null, 2),
+      importJson: (json) => {
+        const res = parseLevelSpec(json)
+        if (!res.ok) return res.error
+        this.draft = res.spec
+        this.editorMode = 'edit'
+        this.saveDraft()
+        this.buildLevel(res.spec.level)
+        return null
+      },
+      regenerate: (level) => {
+        const lv = Math.max(1, Math.floor(level))
+        this.draft = generateLevel(lv, mulberry32(lv))
+        this.editorMode = 'edit'
+        this.saveDraft()
+        this.buildLevel(lv)
+      },
+      setMode: (mode) => {
+        if (mode === this.editorMode) return
+        this.editorMode = mode
+        this.buildLevel(this.level)
+        emitEditorChange()
+      },
+      add: (kind) => this.editorAdd(kind),
+      deleteSelected: () => this.editorDelete(),
+      rotateSelected: (degrees) => this.editorRotate(degrees),
+    }
+    this.editorApi = api
+    registerEditorApi(api)
+    // e2e drives the editor through the same window hook style as __slingshot.
+    if (import.meta.env.DEV || location.search.includes('e2e')) window.__slingshotEditor = api
+  }
+
+  private teardownEditorApi(): void {
+    if (!this.editorApi) return
+    // Same identity guard as the test API: never unregister a remounted scene's.
+    if (getEditorApi() === this.editorApi) registerEditorApi(null)
+    if (window.__slingshotEditor === this.editorApi) delete window.__slingshotEditor
+    this.editorApi = null
+  }
+
+  private saveDraft(): void {
+    if (!this.draft) return
+    try {
+      localStorage.setItem(EDITOR_DRAFT_KEY, JSON.stringify(this.draft))
+    } catch {
+      // Private mode / quota: the draft just isn't persisted.
+    }
+  }
+
+  private restoreEditorDraft(): LevelSpec | null {
+    try {
+      const raw = localStorage.getItem(EDITOR_DRAFT_KEY)
+      if (!raw) return null
+      const res = parseLevelSpec(raw)
+      return res.ok ? res.spec : null
+    } catch {
+      return null
+    }
   }
 }
