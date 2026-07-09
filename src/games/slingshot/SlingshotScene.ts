@@ -1,0 +1,1349 @@
+import Phaser from 'phaser'
+import { playTone } from '../../shared/audio'
+import { clearLevel, reportLevel } from '../../shared/level'
+import {
+  BALL,
+  BASE_GRAVITY_NORM,
+  BIG_BIRD,
+  BIRD,
+  FLAP_NORM,
+  GROUND_Y,
+  MATERIALS,
+  MAX_LAUNCH_SPEED_NORM,
+  MAX_PULL_NORM,
+  MIN_PULL_NORM,
+  PIGGY,
+  SLING,
+  TRAMPOLINE,
+  assistStrength,
+  generateLevel,
+  mulberry32,
+} from './logic'
+import type { BirdKind, BlockMaterial, BlockSpec, LevelSpec, PiggySpec, PropSpec } from './logic'
+
+// ART SPEC palette.
+const INK = 0x3d3a4b
+const SKY_TOP = 0x8fd0ff
+const RAINBOW = [0xff6b6b, 0xffa94d, 0xffd93d, 0x6bcb77, 0x4d96ff, 0x9b5de5]
+
+// Physics feel (normalized units; scaled by the resolution unit L at build).
+const ASSIST_ACCEL_NORM = 3.0
+const FREE_SPEED_STEP = 0.35
+const KNOCK_SPEED_STEP = 1.0
+const SETTLE_SPEED_STEP = 0.25
+const SETTLE_S = 0.5
+const MAX_FLIGHT_S = 4.5
+const POOF_MS = 900
+const IDLE_MS = 10000
+const TRAJECTORY_DOTS = 16
+const TRAJECTORY_DT = 0.055
+
+/** A minimal view of the Matter body fields the scene reads (avoids `any`). */
+interface MatterBodyLike {
+  id: number
+  label: string
+  speed: number
+  mass: number
+  angularVelocity: number
+  velocity: { x: number; y: number }
+  position: { x: number; y: number }
+}
+
+interface Block {
+  img: Phaser.Physics.Matter.Image
+  material: BlockMaterial
+  oh: boolean
+  wPx: number
+  hPx: number
+}
+
+interface Piggy {
+  img: Phaser.Physics.Matter.Image
+  zzz: Phaser.GameObjects.Image
+  freed: boolean
+  rPx: number
+}
+
+interface Bird {
+  /** Invisible Matter body (collision + physics only; never scaled). */
+  body: Phaser.Physics.Matter.Image
+  /** Plain visual that follows the body and carries all squash/stretch. */
+  skin: Phaser.GameObjects.Image
+  kind: BirdKind
+  state: 'loaded' | 'flying' | 'spent'
+}
+
+type StaticBody = ReturnType<Phaser.Physics.Matter.Factory['rectangle']>
+type Constraint = ReturnType<Phaser.Physics.Matter.Factory['worldConstraint']>
+
+export default class SlingshotScene extends Phaser.Scene {
+  private dpr = 1
+
+  // Resolution-independent mapping: normalized [0,1] field → backing pixels.
+  private L = 1
+  private offX = 0
+  private offY = 0
+
+  private level = 1
+  private spec!: LevelSpec
+  private queueIndex = 0
+
+  // Bodies / entities for the current level.
+  private blocks: Block[] = []
+  private piggies: Piggy[] = []
+  private balls: Phaser.Physics.Matter.Image[] = []
+  private trampolines: Phaser.Physics.Matter.Image[] = []
+  private seesawPlanks: Phaser.Physics.Matter.Image[] = []
+  private bird!: Bird
+  private slingPost?: Phaser.GameObjects.Image
+  private freedBalloons: Phaser.GameObjects.Image[] = []
+  private staticBodies: StaticBody[] = []
+  private constraints: Constraint[] = []
+  private blockById = new Map<number, Block>()
+  private piggyById = new Map<number, Piggy>()
+  private trampolineById = new Map<number, Phaser.Physics.Matter.Image>()
+
+  // Graphics layers.
+  private bgGfx!: Phaser.GameObjects.Graphics
+  private bandGfx!: Phaser.GameObjects.Graphics
+  private rainbowGfx!: Phaser.GameObjects.Graphics
+  private trajDots: Phaser.GameObjects.Image[] = []
+
+  // Particles.
+  private confetti!: Phaser.GameObjects.Particles.ParticleEmitter
+  private hearts!: Phaser.GameObjects.Particles.ParticleEmitter
+  private dustBurst!: Phaser.GameObjects.Particles.ParticleEmitter
+  private sparkles!: Phaser.GameObjects.Particles.ParticleEmitter
+
+  // Aiming / flight state.
+  private canAim = false
+  private aiming = false
+  private levelClearing = false
+  private dragStart = { x: 0, y: 0 }
+  private launchV = { x: 0, y: 0 }
+  private lastPullPx = 0
+  private forkX = 0
+  private forkY = 0
+  private flightTime = 0
+  private settleTime = 0
+  private freedThisFlight = false
+  private consecutiveMisses = 0
+  private lastInteraction = 0
+  private lastCreak = 0
+  private lastKnock = 0
+
+  private dynTextureKeys = new Set<string>()
+  private levelTimers: Phaser.Time.TimerEvent[] = []
+
+  constructor() {
+    super('slingshot')
+  }
+
+  create(): void {
+    this.dpr = Math.min(window.devicePixelRatio || 1, 3)
+    this.makeStaticTextures()
+
+    this.bgGfx = this.add.graphics().setDepth(0)
+    this.rainbowGfx = this.add.graphics().setDepth(60)
+    this.bandGfx = this.add.graphics().setDepth(24)
+    this.buildParticles()
+    this.buildTrajectory()
+    this.wireInput()
+
+    window.addEventListener('resize', this.handleResize)
+    window.addEventListener('orientationchange', this.handleResize)
+    this.matter.world.on('collisionstart', this.onCollisionStart)
+
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.removeWindowListeners()
+      this.matter.world.off('collisionstart', this.onCollisionStart)
+      this.clearTimers()
+      clearLevel()
+    })
+    // React unmount calls game.destroy(), which emits DESTROY (not SHUTDOWN).
+    // The window listeners are the only resource Phaser can't reclaim with the
+    // scene, so drop them here too — otherwise a stale handleResize fires on a
+    // destroyed scene (e.g. an iPad orientation change after leaving the game),
+    // and each visit leaks another. removeEventListener is idempotent if both
+    // events fire.
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.removeWindowListeners)
+
+    this.buildLevel(this.level)
+  }
+
+  private removeWindowListeners = (): void => {
+    window.removeEventListener('resize', this.handleResize)
+    window.removeEventListener('orientationchange', this.handleResize)
+  }
+
+  private handleResize = (): void => {
+    const w = Math.max(window.innerWidth, 1) * this.dpr
+    const h = Math.max(window.innerHeight, 1) * this.dpr
+    this.scale.resize(w, h)
+    // Relayout = rebuild the current level for the new aspect / size.
+    this.buildLevel(this.level)
+  }
+
+  // ─── Coordinate mapping ────────────────────────────────────────────────────
+
+  private toX(nx: number): number {
+    return this.offX + nx * this.L
+  }
+  private toY(ny: number): number {
+    return this.offY + ny * this.L
+  }
+  private sz(n: number): number {
+    return n * this.L
+  }
+  private px(css: number): number {
+    return css * this.dpr
+  }
+
+  // ─── Static (size-independent) textures ────────────────────────────────────
+
+  private makeStaticTextures(): void {
+    this.emojiTexture('sl-zzz', '💤', 34)
+    this.emojiTexture('sl-balloon', '🎈', 64)
+
+    this.graphicsTexture('sl-dot', 20, 20, (g) => {
+      g.fillStyle(INK, 0.5)
+      g.fillCircle(this.px(6), this.px(6), this.px(5))
+    })
+    this.graphicsTexture('sl-spark', 20, 20, (g) => {
+      g.fillStyle(0xffffff, 1)
+      g.fillCircle(this.px(5), this.px(5), this.px(5))
+    })
+    this.graphicsTexture('sl-confetti', 18, 12, (g) => {
+      g.fillStyle(0xffffff, 1)
+      g.fillRoundedRect(0, 0, this.px(14), this.px(9), this.px(2))
+    })
+    this.graphicsTexture('sl-dust', 30, 30, (g) => {
+      g.fillStyle(0xffffff, 0.5)
+      g.fillCircle(this.px(9), this.px(9), this.px(9))
+    })
+    this.graphicsTexture('sl-heart', 40, 40, (g) => {
+      g.fillStyle(0xff8fab, 1)
+      const s = this.px(1)
+      g.fillCircle(9 * s, 12 * s, 7 * s)
+      g.fillCircle(23 * s, 12 * s, 7 * s)
+      g.fillTriangle(2 * s, 15 * s, 30 * s, 15 * s, 16 * s, 32 * s)
+    })
+  }
+
+  private emojiTexture(key: string, emoji: string, cssSize: number): void {
+    if (this.textures.exists(key)) return
+    const fontPx = Math.round(cssSize * this.dpr)
+    const pad = Math.ceil(fontPx * 0.25)
+    const side = fontPx + pad * 2
+    const tex = this.textures.createCanvas(key, side, side)
+    if (!tex) return
+    const ctx = tex.getContext()
+    ctx.font = `${fontPx}px "Apple Color Emoji", "Segoe UI Emoji", system-ui, sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(emoji, side / 2, side / 2 + fontPx * 0.03)
+    tex.refresh()
+  }
+
+  private graphicsTexture(
+    key: string,
+    wCss: number,
+    hCss: number,
+    draw: (g: Phaser.GameObjects.Graphics) => void,
+  ): void {
+    if (this.textures.exists(key)) return
+    const g = this.add.graphics()
+    draw(g)
+    g.generateTexture(key, this.px(wCss), this.px(hCss))
+    g.destroy()
+  }
+
+  // ─── Dynamic (L-scaled) textures ───────────────────────────────────────────
+
+  private dyn(
+    key: string,
+    wPx: number,
+    hPx: number,
+    draw: (g: Phaser.GameObjects.Graphics) => void,
+  ): void {
+    if (this.textures.exists(key)) return
+    const g = this.add.graphics()
+    draw(g)
+    g.generateTexture(key, Math.ceil(wPx), Math.ceil(hPx))
+    g.destroy()
+    this.dynTextureKeys.add(key)
+  }
+
+  private clearDynTextures(): void {
+    for (const key of this.dynTextureKeys) {
+      if (this.textures.exists(key)) this.textures.remove(key)
+    }
+    this.dynTextureKeys.clear()
+  }
+
+  private blockTextureKey(material: BlockMaterial, wPx: number, hPx: number, oh: boolean): string {
+    const key = `sl-blk-${material}-${Math.round(wPx)}x${Math.round(hPx)}-${oh ? 'oh' : 'z'}`
+    this.dyn(key, wPx, hPx, (g) => {
+      const base = MATERIALS[material].color
+      const r = Math.min(wPx, hPx) * 0.18
+      g.fillStyle(base, material === 'ice' ? 0.82 : 1)
+      g.fillRoundedRect(0, 0, wPx, hPx, r)
+      // Texture: wood grain, stone speckles, ice highlight.
+      if (material === 'wood') {
+        g.lineStyle(Math.max(1, wPx * 0.02), this.shade(base, 0.85), 0.7)
+        for (let i = 1; i <= 2; i++) {
+          g.beginPath()
+          g.moveTo(wPx * 0.15, (hPx * i) / 3)
+          g.lineTo(wPx * 0.85, (hPx * i) / 3)
+          g.strokePath()
+        }
+      } else if (material === 'stone') {
+        g.fillStyle(this.shade(base, 1.25), 0.8)
+        for (let i = 0; i < 5; i++) {
+          g.fillCircle(
+            wPx * (0.2 + 0.15 * i),
+            hPx * (0.3 + 0.12 * (i % 3)),
+            Math.max(1, wPx * 0.04),
+          )
+        }
+      } else {
+        g.fillStyle(0xffffff, 0.4)
+        g.fillRoundedRect(wPx * 0.12, hPx * 0.1, wPx * 0.28, hPx * 0.5, r * 0.6)
+      }
+      this.drawBlockFace(g, wPx, hPx, oh)
+    })
+    return key
+  }
+
+  private drawBlockFace(
+    g: Phaser.GameObjects.Graphics,
+    wPx: number,
+    hPx: number,
+    oh: boolean,
+  ): void {
+    const cx = wPx / 2
+    const cy = hPx * 0.5
+    const eye = Math.max(1.5, wPx * 0.05)
+    const dx = wPx * 0.16
+    g.fillStyle(INK, 0.9)
+    if (oh) {
+      // Surprised: round open eyes + O mouth.
+      g.fillCircle(cx - dx, cy - hPx * 0.08, eye)
+      g.fillCircle(cx + dx, cy - hPx * 0.08, eye)
+      g.strokeCircle(cx, cy + hPx * 0.16, wPx * 0.1)
+      g.lineStyle(Math.max(1.5, wPx * 0.03), INK, 0.9)
+      g.strokeCircle(cx, cy + hPx * 0.16, wPx * 0.1)
+    } else {
+      // Sleepy: two calm closed-eye arcs + tiny smile.
+      g.lineStyle(Math.max(1.5, wPx * 0.03), INK, 0.85)
+      g.beginPath()
+      g.arc(cx - dx, cy - hPx * 0.05, wPx * 0.07, 0.15 * Math.PI, 0.85 * Math.PI)
+      g.strokePath()
+      g.beginPath()
+      g.arc(cx + dx, cy - hPx * 0.05, wPx * 0.07, 0.15 * Math.PI, 0.85 * Math.PI)
+      g.strokePath()
+      g.beginPath()
+      g.arc(cx, cy + hPx * 0.12, wPx * 0.09, 0.1 * Math.PI, 0.9 * Math.PI)
+      g.strokePath()
+    }
+  }
+
+  private birdTexture(kind: BirdKind, rPx: number): string {
+    const key = `sl-bird-${kind}-${Math.round(rPx)}`
+    const d = rPx * 2
+    this.dyn(key, d, d, (g) => {
+      const color = kind === 'big' ? BIG_BIRD.color : BIRD.color
+      g.fillStyle(this.shade(color, 0.9), 1)
+      g.fillEllipse(rPx, rPx * 1.5, rPx * 0.5, rPx * 0.35) // shadow belly
+      g.fillStyle(color, 1)
+      g.fillCircle(rPx, rPx, rPx * 0.92)
+      // Feet.
+      g.lineStyle(Math.max(2, rPx * 0.08), 0xffa94d, 1)
+      g.beginPath()
+      g.moveTo(rPx * 0.7, rPx * 1.8)
+      g.lineTo(rPx * 0.7, rPx * 1.95)
+      g.moveTo(rPx * 1.3, rPx * 1.8)
+      g.lineTo(rPx * 1.3, rPx * 1.95)
+      g.strokePath()
+      // Eyes (big white with ink pupil).
+      const ex = rPx * 0.32
+      const ey = rPx * 0.78
+      g.fillStyle(0xffffff, 1)
+      g.fillCircle(rPx - ex, ey, rPx * 0.26)
+      g.fillCircle(rPx + ex, ey, rPx * 0.26)
+      g.fillStyle(INK, 1)
+      g.fillCircle(rPx - ex + rPx * 0.06, ey, rPx * 0.12)
+      g.fillCircle(rPx + ex + rPx * 0.06, ey, rPx * 0.12)
+      // Beak.
+      g.fillStyle(0xffd93d, 1)
+      g.fillTriangle(rPx - rPx * 0.14, rPx * 1.05, rPx + rPx * 0.14, rPx * 1.05, rPx, rPx * 1.28)
+      if (kind === 'big') {
+        // Bushy brows.
+        g.lineStyle(Math.max(2, rPx * 0.09), INK, 1)
+        g.beginPath()
+        g.moveTo(rPx - ex - rPx * 0.22, ey - rPx * 0.34)
+        g.lineTo(rPx - ex + rPx * 0.14, ey - rPx * 0.22)
+        g.moveTo(rPx + ex + rPx * 0.22, ey - rPx * 0.34)
+        g.lineTo(rPx + ex - rPx * 0.14, ey - rPx * 0.22)
+        g.strokePath()
+      }
+    })
+    return key
+  }
+
+  private piggyTexture(awake: boolean, rPx: number): string {
+    const key = `sl-piggy-${awake ? 'awake' : 'asleep'}-${Math.round(rPx)}`
+    const d = rPx * 2
+    this.dyn(key, d, d, (g) => {
+      g.fillStyle(PIGGY.color, 1)
+      g.fillCircle(rPx, rPx, rPx * 0.94)
+      g.fillStyle(this.shade(PIGGY.color, 0.9), 1)
+      g.fillEllipse(rPx, rPx * 1.2, rPx * 0.5, rPx * 0.36) // snout
+      g.fillStyle(INK, 0.8)
+      g.fillCircle(rPx - rPx * 0.14, rPx * 1.2, rPx * 0.07)
+      g.fillCircle(rPx + rPx * 0.14, rPx * 1.2, rPx * 0.07)
+      // Ears.
+      g.fillStyle(PIGGY.color, 1)
+      g.fillTriangle(rPx * 0.4, rPx * 0.4, rPx * 0.75, rPx * 0.3, rPx * 0.55, rPx * 0.72)
+      g.fillTriangle(rPx * 1.6, rPx * 0.4, rPx * 1.25, rPx * 0.3, rPx * 1.45, rPx * 0.72)
+      const ey = rPx * 0.82
+      const ex = rPx * 0.34
+      if (awake) {
+        g.fillStyle(0xffffff, 1)
+        g.fillCircle(rPx - ex, ey, rPx * 0.16)
+        g.fillCircle(rPx + ex, ey, rPx * 0.16)
+        g.fillStyle(INK, 1)
+        g.fillCircle(rPx - ex, ey, rPx * 0.08)
+        g.fillCircle(rPx + ex, ey, rPx * 0.08)
+      } else {
+        g.lineStyle(Math.max(1.5, rPx * 0.06), INK, 0.85)
+        for (const sx of [-ex, ex]) {
+          g.beginPath()
+          g.arc(rPx + sx, ey, rPx * 0.14, 0.12 * Math.PI, 0.88 * Math.PI)
+          g.strokePath()
+        }
+      }
+    })
+    return key
+  }
+
+  private ballTexture(rPx: number): string {
+    const key = `sl-ball-${Math.round(rPx)}`
+    const d = rPx * 2
+    this.dyn(key, d, d, (g) => {
+      g.fillStyle(BALL.color, 1)
+      g.fillCircle(rPx, rPx, rPx * 0.96)
+      g.fillStyle(0xffffff, 0.85)
+      // Simple 5-point star.
+      const star: Phaser.Math.Vector2[] = []
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * Math.PI * 2 - Math.PI / 2
+        const rad = i % 2 === 0 ? rPx * 0.5 : rPx * 0.22
+        star.push(new Phaser.Math.Vector2(rPx + Math.cos(a) * rad, rPx + Math.sin(a) * rad))
+      }
+      g.fillPoints(star, true)
+      g.fillStyle(0xffffff, 0.35)
+      g.fillCircle(rPx * 0.6, rPx * 0.6, rPx * 0.22)
+    })
+    return key
+  }
+
+  private trampolineTexture(wPx: number): string {
+    const hPx = wPx * 0.7
+    const key = `sl-tramp-${Math.round(wPx)}`
+    this.dyn(key, wPx, hPx, (g) => {
+      g.fillStyle(this.shade(TRAMPOLINE.color, 0.85), 1)
+      g.fillRoundedRect(wPx * 0.35, hPx * 0.45, wPx * 0.3, hPx * 0.55, wPx * 0.06) // stalk
+      g.fillStyle(TRAMPOLINE.color, 1)
+      g.fillEllipse(wPx * 0.5, hPx * 0.4, wPx, hPx * 0.75)
+      g.fillStyle(0xffffff, 0.6)
+      g.fillCircle(wPx * 0.32, hPx * 0.3, wPx * 0.06)
+      g.fillCircle(wPx * 0.62, hPx * 0.24, wPx * 0.05)
+    })
+    return key
+  }
+
+  private plankTexture(wPx: number, hPx: number): string {
+    const key = `sl-plank-${Math.round(wPx)}x${Math.round(hPx)}`
+    this.dyn(key, wPx, hPx, (g) => {
+      g.fillStyle(MATERIALS.wood.color, 1)
+      g.fillRoundedRect(0, 0, wPx, hPx, hPx * 0.4)
+      g.fillStyle(0x9b5de5, 1)
+      g.fillCircle(wPx / 2, hPx / 2, hPx * 0.4) // pivot cap
+    })
+    return key
+  }
+
+  private postTexture(wPx: number, hPx: number): string {
+    const key = `sl-post-${Math.round(wPx)}x${Math.round(hPx)}`
+    this.dyn(key, wPx, hPx, (g) => {
+      const arm = wPx * 0.22
+      g.fillStyle(this.shade(MATERIALS.wood.color, 0.8), 1)
+      g.fillRoundedRect(wPx / 2 - arm / 2, hPx * 0.3, arm, hPx * 0.7, arm * 0.4) // trunk
+      g.fillRoundedRect(wPx * 0.1, 0, arm, hPx * 0.5, arm * 0.4) // left fork
+      g.fillRoundedRect(wPx * 0.9 - arm, 0, arm, hPx * 0.5, arm * 0.4) // right fork
+    })
+    return key
+  }
+
+  private shade(color: number, factor: number): number {
+    const r = Math.min(255, Math.round(((color >> 16) & 0xff) * factor))
+    const g = Math.min(255, Math.round(((color >> 8) & 0xff) * factor))
+    const b = Math.min(255, Math.round((color & 0xff) * factor))
+    return (r << 16) | (g << 8) | b
+  }
+
+  // ─── Particles / trajectory ────────────────────────────────────────────────
+
+  private buildParticles(): void {
+    this.confetti = this.add
+      .particles(0, 0, 'sl-confetti', {
+        speed: { min: this.px(120), max: this.px(320) },
+        gravityY: this.px(600),
+        lifespan: { min: 900, max: 1500 },
+        scale: { start: 1.1, end: 0.2 },
+        rotate: { start: 0, end: 360 },
+        tint: RAINBOW,
+        emitting: false,
+      })
+      .setDepth(58)
+    this.hearts = this.add
+      .particles(0, 0, 'sl-heart', {
+        speed: { min: this.px(60), max: this.px(160) },
+        angle: { min: 250, max: 290 },
+        gravityY: this.px(200),
+        lifespan: { min: 900, max: 1400 },
+        scale: { start: 0.9, end: 0.1 },
+        alpha: { start: 1, end: 0 },
+        emitting: false,
+      })
+      .setDepth(58)
+    this.dustBurst = this.add
+      .particles(0, 0, 'sl-dust', {
+        speed: { min: this.px(40), max: this.px(140) },
+        lifespan: { min: 500, max: 900 },
+        scale: { start: 0.9, end: 0 },
+        alpha: { start: 0.6, end: 0 },
+        tint: 0xdccdb0,
+        emitting: false,
+      })
+      .setDepth(20)
+    this.sparkles = this.add
+      .particles(0, 0, 'sl-spark', {
+        speed: { min: this.px(60), max: this.px(180) },
+        lifespan: 420,
+        scale: { start: 0.8, end: 0 },
+        tint: [0xffd93d, 0xffffff, 0xff8fab],
+        emitting: false,
+      })
+      .setDepth(58)
+  }
+
+  private buildTrajectory(): void {
+    for (let i = 0; i < TRAJECTORY_DOTS; i++) {
+      this.trajDots.push(this.add.image(0, 0, 'sl-dot').setDepth(23).setVisible(false))
+    }
+  }
+
+  // ─── Level build / teardown ────────────────────────────────────────────────
+
+  private buildLevel(level: number): void {
+    this.clearLevelObjects()
+    this.level = Math.max(1, level)
+    this.spec = generateLevel(this.level, mulberry32(this.level))
+    reportLevel(this.level)
+
+    const w = this.scale.width
+    const h = this.scale.height
+    this.L = Math.min(w, h)
+    this.offX = (w - this.L) / 2
+    this.offY = h - this.L
+
+    // Gravity: field-units/s² → Matter gravity.y (scale 0.001, engine at 60fps).
+    const gy = (BASE_GRAVITY_NORM * this.spec.gravityScale * this.L) / 1000
+    this.matter.world.setGravity(0, gy)
+
+    this.drawBackground()
+    this.buildBounds()
+    this.buildSling()
+    this.buildStructures()
+    this.buildProps()
+
+    this.levelClearing = false
+    this.freedThisFlight = false
+    this.consecutiveMisses = 0
+    this.queueIndex = 0
+    this.loadBird(this.spec.birds[0])
+    this.canAim = false
+    this.lastInteraction = this.time.now
+
+    // "Blocks drop into place": everything stays static + fades in, then wakes.
+    this.staggerEntrance()
+  }
+
+  private clearLevelObjects(): void {
+    this.tweens.killAll()
+    this.clearTimers()
+    this.aiming = false
+    this.hideTrajectory()
+    this.bandGfx?.clear()
+    this.rainbowGfx?.clear()
+
+    for (const c of this.constraints) this.matter.world.removeConstraint(c)
+    this.constraints = []
+    for (const b of this.staticBodies) this.matter.world.remove(b)
+    this.staticBodies = []
+
+    const kill = (img?: Phaser.GameObjects.GameObject) => img?.destroy()
+    for (const b of this.blocks) kill(b.img)
+    for (const p of this.piggies) {
+      kill(p.img)
+      kill(p.zzz)
+    }
+    for (const b of this.balls) kill(b)
+    for (const t of this.trampolines) kill(t)
+    for (const s of this.seesawPlanks) kill(s)
+    // Freed piggies float off on balloons; a rebuild mid-float would kill the
+    // float tween (killAll above) and orphan the balloon — destroy them here.
+    for (const b of this.freedBalloons) kill(b)
+    this.freedBalloons = []
+    kill(this.slingPost)
+    this.slingPost = undefined
+    if (this.bird) {
+      kill(this.bird.body)
+      kill(this.bird.skin)
+    }
+
+    this.blocks = []
+    this.piggies = []
+    this.balls = []
+    this.trampolines = []
+    this.seesawPlanks = []
+    this.blockById.clear()
+    this.piggyById.clear()
+    this.trampolineById.clear()
+    this.clearDynTextures()
+  }
+
+  private clearTimers(): void {
+    for (const t of this.levelTimers) t.remove(false)
+    this.levelTimers = []
+  }
+
+  private delay(ms: number, fn: () => void): void {
+    this.levelTimers.push(this.time.delayedCall(ms, fn))
+  }
+
+  private drawBackground(): void {
+    const w = this.scale.width
+    const h = this.scale.height
+    this.bgGfx.clear()
+    if (this.spec.theme === 'moon') {
+      this.bgGfx.fillGradientStyle(0x141326, 0x141326, 0x2a2740, 0x2a2740, 1)
+      this.bgGfx.fillRect(0, 0, w, h)
+      // Procedural stars (seeded so they don't twinkle-jump on rebuild).
+      const rng = mulberry32(this.level * 97 + 7)
+      this.bgGfx.fillStyle(0xffffff, 0.9)
+      for (let i = 0; i < 60; i++) {
+        this.bgGfx.fillCircle(rng() * w, rng() * h * 0.8, this.px(1 + rng() * 1.6))
+      }
+    } else {
+      this.bgGfx.fillGradientStyle(SKY_TOP, SKY_TOP, 0xdff3ff, 0xdff3ff, 1)
+      this.bgGfx.fillRect(0, 0, w, h)
+      // Soft hills behind the ground line.
+      const gy = this.toY(GROUND_Y)
+      this.bgGfx.fillStyle(0xbfe8c8, 1)
+      this.bgGfx.fillEllipse(w * 0.3, gy + this.sz(0.1), w * 0.9, this.sz(0.4))
+      this.bgGfx.fillEllipse(w * 0.8, gy + this.sz(0.1), w * 0.8, this.sz(0.32))
+    }
+    // Ground strip.
+    const groundY = this.toY(GROUND_Y)
+    this.bgGfx.fillStyle(this.spec.theme === 'moon' ? 0x3b3a55 : 0x8fd6a0, 1)
+    this.bgGfx.fillRect(0, groundY, w, h - groundY)
+    this.bgGfx.fillStyle(this.spec.theme === 'moon' ? 0x4a4968 : 0x7ac48c, 1)
+    this.bgGfx.fillRect(0, groundY, w, this.sz(0.012))
+  }
+
+  private buildBounds(): void {
+    const w = this.scale.width
+    const h = this.scale.height
+    const groundY = this.toY(GROUND_Y)
+    const t = this.sz(0.3)
+    const floor = this.matter.add.rectangle(w / 2, groundY + t / 2, w * 2, t, {
+      isStatic: true,
+      label: 'ground',
+      friction: 0.9,
+    })
+    const left = this.matter.add.rectangle(-t / 2, h / 2, t, h * 3, {
+      isStatic: true,
+      label: 'wall',
+    })
+    const right = this.matter.add.rectangle(w + t / 2, h / 2, t, h * 3, {
+      isStatic: true,
+      label: 'wall',
+    })
+    const ceiling = this.matter.add.rectangle(w / 2, this.offY - this.sz(0.6), w * 2, t, {
+      isStatic: true,
+      label: 'wall',
+    })
+    this.staticBodies.push(floor, left, right, ceiling)
+  }
+
+  private buildSling(): void {
+    this.forkX = this.toX(SLING.x)
+    this.forkY = this.toY(SLING.y)
+    const postW = this.sz(0.11)
+    const postH = this.toY(GROUND_Y) - this.forkY + this.sz(0.02)
+    const key = this.postTexture(postW, postH)
+    this.slingPost = this.add
+      .image(this.forkX, this.forkY + postH / 2 - this.sz(0.02), key)
+      .setDepth(22)
+      .setOrigin(0.5, 0.5)
+  }
+
+  private buildStructures(): void {
+    for (const b of this.spec.blocks) this.addBlock(b)
+    for (const p of this.spec.piggies) this.addPiggy(p)
+  }
+
+  private addBlock(spec: BlockSpec): void {
+    const wPx = this.sz(spec.w)
+    const hPx = this.sz(spec.h)
+    const key = this.blockTextureKey(spec.material, wPx, hPx, false)
+    this.blockTextureKey(spec.material, wPx, hPx, true) // pre-bake the "oh" face
+    const img = this.matter.add.image(this.toX(spec.x), this.toY(spec.y), key, undefined, {
+      label: 'block',
+      density: MATERIALS[spec.material].density,
+      friction: MATERIALS[spec.material].friction,
+      restitution: MATERIALS[spec.material].restitution,
+    })
+    img.setAngle(Phaser.Math.RadToDeg(spec.angle))
+    img.setStatic(true).setAlpha(0).setDepth(14)
+    const block: Block = { img, material: spec.material, oh: false, wPx, hPx }
+    this.blocks.push(block)
+    this.blockById.set(this.bodyOf(img).id, block)
+
+    img.setInteractive()
+    img.on('pointerdown', () => {
+      this.bump()
+      // Tint toward warm yellow (multiply can only darken) for a tap flash.
+      img.setTint(0xfff0b0)
+      this.delay(110, () => img.clearTint())
+      this.sparkles.explode(4, img.x, img.y)
+      playTone(200, 60, 'square', 0.05)
+    })
+  }
+
+  private addPiggy(spec: PiggySpec): void {
+    const rPx = this.sz(PIGGY.radius)
+    const key = this.piggyTexture(false, rPx)
+    this.piggyTexture(true, rPx)
+    const img = this.matter.add.image(this.toX(spec.x), this.toY(spec.y), key, undefined, {
+      label: 'piggy',
+      density: PIGGY.density,
+      friction: PIGGY.friction,
+      restitution: PIGGY.restitution,
+    })
+    img.setCircle(rPx * 0.9, { label: 'piggy' })
+    img.setDensity(PIGGY.density).setFriction(PIGGY.friction).setBounce(PIGGY.restitution)
+    img.setStatic(true).setAlpha(0).setDepth(16)
+    const zzz = this.add
+      .image(img.x, img.y - rPx * 1.4, 'sl-zzz')
+      .setDepth(17)
+      .setAlpha(0)
+    const piggy: Piggy = { img, zzz, freed: false, rPx }
+    this.piggies.push(piggy)
+    this.piggyById.set(this.bodyOf(img).id, piggy)
+    this.tweens.add({
+      targets: zzz,
+      y: img.y - rPx * 2.1,
+      alpha: { from: 0.9, to: 0.2 },
+      duration: 1600,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    })
+
+    img.setInteractive()
+    img.on('pointerdown', () => {
+      if (piggy.freed) return
+      this.bump()
+      playTone(160, 200, 'sine', 0.05)
+      this.delay(120, () => playTone(120, 240, 'sine', 0.04))
+      img.setAngularVelocity(0.12)
+    })
+  }
+
+  private buildProps(): void {
+    for (const prop of this.spec.props) {
+      if (prop.kind === 'trampoline') this.addTrampoline(prop)
+      else if (prop.kind === 'ball') this.addBall(prop)
+      else this.addSeesaw(prop)
+    }
+  }
+
+  private addTrampoline(prop: PropSpec): void {
+    const wPx = this.sz(prop.w ?? 0.12)
+    const key = this.trampolineTexture(wPx)
+    const frame = this.textures.getFrame(key)
+    const img = this.matter.add
+      .image(this.toX(prop.x), this.toY(prop.y) - frame.height * 0.35, key, undefined, {
+        isStatic: true,
+        label: 'trampoline',
+        restitution: TRAMPOLINE.restitution,
+        friction: TRAMPOLINE.friction,
+      })
+      .setDepth(13)
+    // Bouncy cap: a slimmer sensor-free rectangle across the mushroom top.
+    img.setRectangle(wPx * 0.9, frame.height * 0.4, {
+      label: 'trampoline',
+      isStatic: true,
+      restitution: TRAMPOLINE.restitution,
+    })
+    img.setStatic(true).setAlpha(0)
+    this.trampolines.push(img)
+    this.trampolineById.set(this.bodyOf(img).id, img)
+  }
+
+  private addBall(prop: PropSpec): void {
+    const rPx = this.sz(prop.r ?? BALL.radius)
+    const key = this.ballTexture(rPx)
+    const img = this.matter.add.image(this.toX(prop.x), this.toY(prop.y), key, undefined, {
+      label: 'ball',
+    })
+    img.setCircle(rPx * 0.95, { label: 'ball' })
+    img.setDensity(BALL.density).setFriction(BALL.friction).setBounce(BALL.restitution)
+    img.setStatic(true).setAlpha(0).setDepth(15)
+    this.balls.push(img)
+  }
+
+  private addSeesaw(prop: PropSpec): void {
+    const wPx = this.sz(prop.w ?? 0.22)
+    const hPx = this.sz(prop.h ?? 0.026)
+    const key = this.plankTexture(wPx, hPx)
+    const pivotX = this.toX(prop.x)
+    const pivotY = this.toY(prop.y)
+    const img = this.matter.add.image(pivotX, pivotY, key, undefined, {
+      label: 'plank',
+      density: 0.4,
+      friction: 0.6,
+      frictionAir: 0.02,
+    })
+    img.setStatic(true).setAlpha(0).setDepth(13)
+    this.seesawPlanks.push(img)
+    // Revolute pivot: pin the plank center to a fixed world point (free to rotate).
+    const constraint = this.matter.add.worldConstraint(img.body as unknown as StaticBody, 0, 1, {
+      pointA: { x: pivotX, y: pivotY },
+    })
+    this.constraints.push(constraint)
+  }
+
+  private staggerEntrance(): void {
+    const movers: Phaser.Physics.Matter.Image[] = [
+      ...this.blocks.map((b) => b.img),
+      ...this.piggies.map((p) => p.img),
+      ...this.balls,
+      ...this.seesawPlanks,
+    ]
+    movers.forEach((img, i) => {
+      this.delay(80 + i * 55, () => {
+        this.tweens.add({ targets: img, alpha: 1, duration: 200, ease: 'Quad.easeOut' })
+      })
+    })
+    for (const p of this.piggies) {
+      this.delay(120, () => this.tweens.add({ targets: p.zzz, alpha: 0.9, duration: 300 }))
+    }
+    for (const t of this.trampolines) {
+      this.tweens.add({ targets: t, alpha: 1, duration: 300 })
+    }
+    // Wake the physics once everything has settled in visually.
+    this.delay(120 + movers.length * 55 + 220, () => {
+      for (const img of movers) img.setStatic(false)
+      this.canAim = true
+      this.lastInteraction = this.time.now
+    })
+  }
+
+  // ─── Bird lifecycle ────────────────────────────────────────────────────────
+
+  private loadBird(kind: BirdKind): void {
+    const rPx = this.sz(BIRD.radius) * (kind === 'big' ? BIG_BIRD.radiusScale : 1)
+    const key = this.birdTexture(kind, rPx)
+    // Invisible physics body — never scaled, so squash/stretch can't deform it.
+    const body = this.matter.add.image(this.forkX, this.forkY, key, undefined, { label: 'bird' })
+    body.setCircle(rPx * 0.88, { label: 'bird' })
+    body
+      .setDensity(kind === 'big' ? BIG_BIRD.density : BIRD.density)
+      .setFriction(BIRD.friction)
+      .setBounce(kind === 'big' ? BIG_BIRD.restitution : BIRD.restitution)
+      .setFrictionAir(0.0015)
+    body.setStatic(true).setVisible(false)
+    // Visible skin follows the body and carries all the squash/stretch.
+    const skin = this.add.image(this.forkX, this.forkY, key).setDepth(26)
+    this.bird = { body, skin, kind, state: 'loaded' }
+    // Little arrival hop (visual only).
+    this.tweens.add({
+      targets: skin,
+      scaleY: { from: 0.8, to: 1 },
+      scaleX: { from: 1.2, to: 1 },
+      duration: 260,
+      ease: 'Back.easeOut',
+    })
+    this.relaxBand()
+  }
+
+  private syncBird(): void {
+    // Glue the skin to the body while it flies (and while it rests, spent,
+    // before the poof). NOT while loaded: a loaded bird's skin is driven
+    // directly (aim pocket, arrival/boing/idle-hop tweens) and syncBird runs
+    // *after* the tween manager each frame — syncing here would stomp those
+    // tweens (the idle hop would never render). `active` goes false once the
+    // body is destroyed during the poof; after that the poof tween owns it.
+    if (!this.bird || this.bird.state === 'loaded' || !this.bird.body.active) return
+    this.bird.skin.setPosition(this.bird.body.x, this.bird.body.y)
+    this.bird.skin.rotation = this.bird.body.rotation
+  }
+
+  private reloadNext(): void {
+    if (this.levelClearing) return
+    this.queueIndex++
+    const kind = this.spec.birds[this.queueIndex % this.spec.birds.length]
+    this.loadBird(kind)
+    this.lastInteraction = this.time.now
+  }
+
+  private landBird(): void {
+    if (!this.bird || this.bird.state !== 'flying') return
+    this.bird.state = 'spent'
+    if (!this.freedThisFlight && !this.levelClearing) {
+      this.consecutiveMisses++
+      playTone(150, 200, 'sine', 0.05) // soft "whomp" — never harsh
+    }
+    const { body, skin } = this.bird
+    this.delay(POOF_MS, () => {
+      this.hearts.explode(6, skin.x, skin.y)
+      playTone(660, 90, 'sine', 0.05)
+      body.destroy() // removes the physics body from the world
+      this.tweens.add({
+        targets: skin,
+        scaleX: 0,
+        scaleY: 0,
+        duration: 220,
+        ease: 'Back.easeIn',
+        onComplete: () => {
+          skin.destroy()
+          this.reloadNext()
+        },
+      })
+    })
+  }
+
+  private flap(): void {
+    if (!this.bird || this.bird.state !== 'flying') return
+    const v = this.bodyOf(this.bird.body).velocity
+    const flapStep = (FLAP_NORM * this.L) / 60
+    this.bird.body.setVelocity(v.x, v.y - flapStep)
+    playTone(880, 90, 'triangle', 0.07)
+    this.sparkles.explode(4, this.bird.skin.x, this.bird.skin.y + this.sz(0.02))
+    this.tweens.add({
+      targets: this.bird.skin,
+      scaleY: { from: 1.2, to: 1 },
+      scaleX: { from: 0.85, to: 1 },
+      duration: 220,
+      ease: 'Quad.easeOut',
+    })
+  }
+
+  // ─── Aiming input ──────────────────────────────────────────────────────────
+
+  private wireInput(): void {
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      this.lastInteraction = this.time.now
+      if (this.aiming || this.levelClearing) return
+      if (this.bird?.state === 'flying') {
+        this.flap()
+        return
+      }
+      if (this.bird?.state === 'loaded' && this.canAim && pointer.x < this.scale.width * 0.55) {
+        this.aiming = true
+        this.dragStart = { x: pointer.x, y: pointer.y }
+        this.updateAim(pointer)
+      }
+    })
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (this.aiming) this.updateAim(pointer)
+    })
+    this.input.on('pointerup', () => {
+      if (this.aiming) this.release()
+    })
+  }
+
+  private updateAim(pointer: Phaser.Input.Pointer): void {
+    const dx = pointer.x - this.dragStart.x
+    const dy = pointer.y - this.dragStart.y
+    const len = Math.hypot(dx, dy)
+    const maxPull = MAX_PULL_NORM * this.L
+    const clamped = Math.min(len, maxPull)
+    this.lastPullPx = clamped
+    const dirX = len > 0 ? dx / len : 0
+    const dirY = len > 0 ? dy / len : 0
+    const pocketX = this.forkX + dirX * clamped
+    const pocketY = this.forkY + dirY * clamped
+    this.bird.body.setPosition(pocketX, pocketY)
+    this.bird.skin.setPosition(pocketX, pocketY)
+
+    const power = maxPull > 0 ? clamped / maxPull : 0
+    this.bird.skin.scaleX = 1 + power * 0.25
+    this.bird.skin.scaleY = 1 - power * 0.2
+
+    const speed = power * MAX_LAUNCH_SPEED_NORM * this.L
+    this.launchV = { x: -dirX * speed, y: -dirY * speed }
+
+    this.drawBand(pocketX, pocketY)
+    this.drawTrajectory(pocketX, pocketY, this.launchV)
+
+    // Creak rises with stretch.
+    const now = this.time.now
+    if (now - this.lastCreak > 90 && power > 0.05) {
+      playTone(90 + power * 220, 60, 'square', 0.04)
+      this.lastCreak = now
+    }
+  }
+
+  private release(): void {
+    this.aiming = false
+    this.hideTrajectory()
+    if (this.lastPullPx < MIN_PULL_NORM * this.L) {
+      // Sub-threshold: hop the bird back with a boing — no dud flight.
+      this.bird.body.setPosition(this.forkX, this.forkY)
+      this.bird.skin.setPosition(this.forkX, this.forkY)
+      this.bird.skin.scaleX = 1
+      this.bird.skin.scaleY = 1
+      this.tweens.add({
+        targets: this.bird.skin,
+        scaleX: { from: 0.7, to: 1 },
+        scaleY: { from: 1.3, to: 1 },
+        duration: 320,
+        ease: 'Elastic.easeOut',
+      })
+      playTone(300, 120, 'sine', 0.05)
+      this.relaxBand()
+      return
+    }
+    // Launch.
+    this.bird.state = 'flying'
+    this.bird.skin.scaleX = 1
+    this.bird.skin.scaleY = 1
+    this.bird.body.setStatic(false)
+    this.bird.body.setVelocity(this.launchV.x / 60, this.launchV.y / 60)
+    this.flightTime = 0
+    this.settleTime = 0
+    this.freedThisFlight = false
+    this.bandGfx.clear()
+    // Whoosh: descending sweep + chirp. Big Bird launches an octave deeper.
+    const p = this.bird.kind === 'big' ? 0.55 : 1
+    playTone(680 * p, 60, 'sine', 0.06)
+    this.delay(45, () => playTone(480 * p, 60, 'sine', 0.05))
+    this.delay(90, () => playTone(320 * p, 70, 'sine', 0.05))
+    this.delay(120, () => playTone(900 * p, 60, 'triangle', 0.05))
+    // Stretch on launch (visual only).
+    this.tweens.add({
+      targets: this.bird.skin,
+      scaleX: { from: 1.35, to: 1 },
+      scaleY: { from: 0.7, to: 1 },
+      duration: 260,
+      ease: 'Quad.easeOut',
+    })
+  }
+
+  private drawBand(pocketX: number, pocketY: number): void {
+    this.bandGfx.clear()
+    this.bandGfx.lineStyle(this.sz(0.012), INK, 1)
+    const tip = this.sz(0.035)
+    for (const sx of [-tip, tip]) {
+      this.bandGfx.beginPath()
+      this.bandGfx.moveTo(this.forkX + sx, this.forkY - this.sz(0.02))
+      this.bandGfx.lineTo(pocketX, pocketY)
+      this.bandGfx.strokePath()
+    }
+  }
+
+  private relaxBand(): void {
+    this.drawBand(this.forkX, this.forkY)
+  }
+
+  private drawTrajectory(x0: number, y0: number, v: { x: number; y: number }): void {
+    const g = BASE_GRAVITY_NORM * this.spec.gravityScale * this.L
+    for (let i = 0; i < TRAJECTORY_DOTS; i++) {
+      const t = (i + 1) * TRAJECTORY_DT
+      const px = x0 + v.x * t
+      const py = y0 + v.y * t + 0.5 * g * t * t
+      const dot = this.trajDots[i]
+      dot.setPosition(px, py).setVisible(true)
+      dot.setAlpha(1 - i / TRAJECTORY_DOTS)
+      dot.setScale(1 - (i / TRAJECTORY_DOTS) * 0.5)
+    }
+  }
+
+  private hideTrajectory(): void {
+    for (const dot of this.trajDots) dot.setVisible(false)
+  }
+
+  // ─── Collisions ────────────────────────────────────────────────────────────
+
+  private onCollisionStart = (event: {
+    pairs: { bodyA: MatterBodyLike; bodyB: MatterBodyLike }[]
+  }): void => {
+    for (const pair of event.pairs) this.handlePair(pair.bodyA, pair.bodyB)
+  }
+
+  private handlePair(a: MatterBodyLike, b: MatterBodyLike): void {
+    // Trampoline bounce.
+    const tramp = a.label === 'trampoline' ? a : b.label === 'trampoline' ? b : null
+    const other0 = tramp === a ? b : a
+    if (tramp && other0.label === 'bird') this.boing(tramp)
+
+    // Piggy freeing — generous: bird contact frees at any speed; a moving block
+    // (fall) or a shoved piggy frees it too.
+    const piggyBody = a.label === 'piggy' ? a : b.label === 'piggy' ? b : null
+    if (piggyBody) {
+      const hitter = piggyBody === a ? b : a
+      if (
+        hitter.label === 'bird' ||
+        hitter.speed > FREE_SPEED_STEP ||
+        piggyBody.speed > FREE_SPEED_STEP
+      ) {
+        const piggy = this.piggyById.get(piggyBody.id)
+        if (piggy) this.freePiggy(piggy)
+      }
+    }
+
+    // Knock / thud sounds, throttled.
+    const now = this.time.now
+    if (now - this.lastKnock > 55) {
+      const impact = Math.max(a.speed, b.speed)
+      if (impact > KNOCK_SPEED_STEP) {
+        const blockBody = a.label === 'block' ? a : b.label === 'block' ? b : null
+        if (blockBody) {
+          this.knock(this.blockById.get(blockBody.id)?.material ?? 'wood')
+          this.dustAt(blockBody.position.x, blockBody.position.y)
+          this.lastKnock = now
+        } else if (a.label === 'ground' || b.label === 'ground') {
+          playTone(150, 70, 'sine', 0.04)
+          this.lastKnock = now
+        }
+      }
+    }
+  }
+
+  private knock(material: BlockMaterial): void {
+    if (material === 'stone') playTone(95, 110, 'square', 0.06)
+    else if (material === 'ice') playTone(1200, 70, 'sine', 0.05)
+    else playTone(180, 90, 'square', 0.05)
+  }
+
+  private boing(trampBody: MatterBodyLike): void {
+    playTone(200, 70, 'sine', 0.06)
+    this.delay(70, () => playTone(600, 90, 'sine', 0.06))
+    const img = this.trampolineById.get(trampBody.id)
+    if (img) {
+      this.tweens.add({
+        targets: img,
+        scaleY: { from: 0.6, to: 1 },
+        duration: 260,
+        ease: 'Back.easeOut',
+      })
+    }
+  }
+
+  private dustAt(x: number, y: number): void {
+    this.dustBurst.explode(4, x, y)
+  }
+
+  /** Marks any tap as recent interaction (defers the idle nudge). */
+  private bump(): void {
+    this.lastInteraction = this.time.now
+  }
+
+  // ─── Piggy freeing / celebration ───────────────────────────────────────────
+
+  private freePiggy(piggy: Piggy): void {
+    if (piggy.freed) return
+    piggy.freed = true
+    this.freedThisFlight = true
+    this.consecutiveMisses = 0
+    this.piggyById.delete(this.bodyOf(piggy.img).id)
+    this.matter.world.remove(this.bodyOf(piggy.img) as unknown as StaticBody)
+
+    piggy.img.setTexture(this.piggyTexture(true, piggy.rPx))
+    piggy.zzz.destroy()
+
+    // Giggle: rising 3-note major arpeggio + pop.
+    ;[523, 659, 784].forEach((f, i) => this.delay(i * 90, () => playTone(f, 140, 'triangle', 0.08)))
+    this.delay(280, () => playTone(1047, 120, 'square', 0.05))
+    this.confetti.explode(16, piggy.img.x, piggy.img.y)
+
+    // Float away on a balloon with a happy spin.
+    const balloon = this.add
+      .image(piggy.img.x, piggy.img.y - piggy.rPx * 2.4, 'sl-balloon')
+      .setDepth(30)
+    this.freedBalloons.push(balloon)
+    const driftX = piggy.img.x + this.sz((Math.random() - 0.5) * 0.1)
+    this.tweens.add({
+      targets: [piggy.img, balloon],
+      y: `-=${this.sz(1.4)}`,
+      x: driftX,
+      duration: 2200,
+      ease: 'Sine.easeIn',
+      onComplete: () => {
+        piggy.img.destroy()
+        balloon.destroy()
+        this.freedBalloons = this.freedBalloons.filter((b) => b !== balloon)
+      },
+    })
+    this.tweens.add({ targets: piggy.img, angle: 360, duration: 2200, ease: 'Sine.easeInOut' })
+
+    if (this.piggies.every((p) => p.freed)) this.delay(320, () => this.celebrate())
+  }
+
+  private celebrate(): void {
+    if (this.levelClearing) return
+    this.levelClearing = true
+    this.canAim = false
+    this.aiming = false
+
+    const w = this.scale.width
+    const h = this.scale.height
+    const progress = { t: 0 }
+    this.rainbowGfx.setAlpha(1)
+    this.tweens.add({
+      targets: progress,
+      t: 1,
+      duration: 1300,
+      ease: 'Sine.easeInOut',
+      onUpdate: () => this.drawRainbow(progress.t),
+    })
+    this.confetti.explode(24, w * 0.3, h * 0.3)
+    this.confetti.explode(24, w * 0.7, h * 0.3)
+    this.delay(400, () => this.confetti.explode(20, w * 0.5, h * 0.22))
+    ;[523, 659, 784, 988, 1319].forEach((f, i) =>
+      this.delay(200 + i * 110, () => playTone(f, 170, 'triangle', 0.09)),
+    )
+
+    // Auto-advance to the next level (accepts input again on the new build).
+    this.delay(2500, () => {
+      this.rainbowGfx.clear()
+      this.buildLevel(this.level + 1)
+    })
+  }
+
+  private drawRainbow(t: number): void {
+    const w = this.scale.width
+    const h = this.scale.height
+    const cx = w / 2
+    const cy = h * 1.05
+    const base = Math.min(w * 0.55, h * 0.75)
+    this.rainbowGfx.clear()
+    RAINBOW.forEach((color, i) => {
+      this.rainbowGfx.lineStyle(this.px(10), color, 0.85)
+      this.rainbowGfx.beginPath()
+      this.rainbowGfx.arc(cx, cy, base - i * this.px(11), Math.PI, Math.PI + Math.PI * t, false)
+      this.rainbowGfx.strokePath()
+    })
+  }
+
+  // ─── Update loop ───────────────────────────────────────────────────────────
+
+  update(_time: number, delta: number): void {
+    const dt = delta / 1000
+
+    // Snooze bubbles follow their piggies; block faces react to tumbling.
+    for (const piggy of this.piggies) {
+      if (piggy.freed) continue
+      piggy.zzz.x = piggy.img.x
+    }
+    for (const block of this.blocks) {
+      const body = this.bodyOf(block.img)
+      const tumbling = Math.abs(body.angularVelocity) > 0.04 || body.speed > 0.5
+      if (tumbling !== block.oh) {
+        block.oh = tumbling
+        block.img.setTexture(this.blockTextureKey(block.material, block.wPx, block.hPx, tumbling))
+      }
+    }
+
+    // Keep the bird skin glued to its physics body.
+    this.syncBird()
+
+    if (this.bird && this.bird.state === 'flying') {
+      this.flightTime += dt
+      this.applyAssist()
+      const body = this.bodyOf(this.bird.body)
+      if (body.speed < SETTLE_SPEED_STEP) this.settleTime += dt
+      else this.settleTime = 0
+      if (
+        this.settleTime > SETTLE_S ||
+        this.flightTime > MAX_FLIGHT_S ||
+        this.bird.body.y > this.scale.height + this.sz(0.2)
+      ) {
+        this.landBird()
+      }
+    }
+
+    // Idle attract: chirp + hop the loaded bird after 10s of no interaction.
+    if (
+      this.bird &&
+      this.bird.state === 'loaded' &&
+      this.canAim &&
+      !this.aiming &&
+      !this.levelClearing &&
+      this.time.now - this.lastInteraction > IDLE_MS
+    ) {
+      this.lastInteraction = this.time.now
+      playTone(700, 90, 'triangle', 0.05)
+      this.tweens.add({
+        targets: this.bird.skin,
+        y: { from: this.forkY - this.sz(0.03), to: this.forkY },
+        duration: 320,
+        yoyo: true,
+        ease: 'Quad.easeOut',
+      })
+      this.tweens.add({
+        targets: this.bandGfx,
+        alpha: { from: 1, to: 0.4 },
+        duration: 160,
+        yoyo: true,
+        repeat: 1,
+      })
+    }
+  }
+
+  private applyAssist(): void {
+    const strength = assistStrength(this.consecutiveMisses)
+    if (strength <= 0) return
+    const bx = this.bird.body.x
+    const by = this.bird.body.y
+    let target: Piggy | null = null
+    let best = Infinity
+    for (const p of this.piggies) {
+      if (p.freed) continue
+      const d = Phaser.Math.Distance.Between(bx, by, p.img.x, p.img.y)
+      if (d < best) {
+        best = d
+        target = p
+      }
+    }
+    if (!target) return
+    const body = this.bodyOf(this.bird.body)
+    const dirX = target.img.x - bx
+    const dirY = target.img.y - by
+    const mag = Math.hypot(dirX, dirY) || 1
+    // Force for a target acceleration a: F = mass * a / 1e6 (Matter @60fps, px units).
+    const accel = strength * ASSIST_ACCEL_NORM * this.L
+    const f = (body.mass * accel) / 1e6
+    this.bird.body.applyForce(new Phaser.Math.Vector2((dirX / mag) * f, (dirY / mag) * f))
+  }
+
+  private bodyOf(img: Phaser.Physics.Matter.Image): MatterBodyLike {
+    return img.body as unknown as MatterBodyLike
+  }
+}

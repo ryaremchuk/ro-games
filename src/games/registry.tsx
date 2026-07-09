@@ -70,4 +70,12 @@ export const games: GameMeta[] = [
     emoji: '🎈',
     component: lazy(() => import('./balloon-pop/BalloonPopGame')),
   },
+  {
+    id: 'slingshot',
+    title: 'Slingshot Birds',
+    path: '/slingshot',
+    color: '#FFD93D',
+    emoji: '🐦',
+    component: lazy(() => import('./slingshot/SlingshotGame')),
+  },
 ]
