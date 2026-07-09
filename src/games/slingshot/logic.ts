@@ -56,22 +56,47 @@ export const MATERIALS: Readonly<Record<BlockMaterial, Material>> = {
   ice: { color: 0x4ecdc4, density: 0.7, friction: 0.05, restitution: 0.15 },
 }
 
-/** The hero bird: coral blob, launched by the sling. */
-export const BIRD: Material & { radius: number } = {
-  color: 0xff6b6b,
-  density: 1.5,
-  friction: 0.5,
-  restitution: 0.35,
-  radius: 0.033,
+// ─── Birds (five kinds; one is active at a time — see activeBird.ts) ──────────
+//
+// One bird flies per game; a reward (Feature 2) can promote the child to a
+// heavier, bouncier one. The five form a SEMANTIC progression (asserted by a
+// table test):
+//   green  = baseline
+//   blue   = +1 size, +1 weight vs green
+//   purple = +1 size vs blue, same weight, +1 bounce
+//   red    = same size/weight as purple, +2 bounce
+//   yellow = +1 size vs red, +2 weight, +1 bounce
+// Steps: size 0.25–0.3 (radiusScale), weight 1.0 (density), bounce 0.1
+// (restitution). Colors are the ART SPEC palette; the scene keys per-kind
+// textures + personalities off `kind`.
+
+export type BirdKind = 'green' | 'blue' | 'purple' | 'red' | 'yellow'
+
+/** Base bird radius (normalized). Effective radius = BIRD_RADIUS × radiusScale. */
+export const BIRD_RADIUS = 0.033
+
+export interface Bird {
+  /** Texture base color, 0xRRGGBB. */
+  color: number
+  /** Matter density (mass per unit area). */
+  density: number
+  /** Matter friction (0..1). */
+  friction: number
+  /** Matter restitution / bounciness (0..1). */
+  restitution: number
+  /** Radius multiplier over BIRD_RADIUS (size step of the progression). */
+  radiusScale: number
 }
 
-/** Big Bird (from level 5): heavier, larger, smashes stone. */
-export const BIG_BIRD: Material & { radiusScale: number } = {
-  color: 0x9b5de5,
-  density: 4.5,
-  friction: 0.5,
-  restitution: 0.25,
-  radiusScale: 1.8,
+/** The five launchable birds. Physics + look in one table, asserted by tests. */
+export const BIRDS: Readonly<Record<BirdKind, Bird>> = {
+  // Lime green — clearly distinct from the mint piggy (0x6bcb77).
+  green: { color: 0x8ac926, density: 1.5, friction: 0.5, restitution: 0.35, radiusScale: 1.0 },
+  blue: { color: 0x4d96ff, density: 2.5, friction: 0.5, restitution: 0.35, radiusScale: 1.25 },
+  purple: { color: 0x9b5de5, density: 2.5, friction: 0.5, restitution: 0.45, radiusScale: 1.5 },
+  red: { color: 0xff6b6b, density: 2.5, friction: 0.5, restitution: 0.65, radiusScale: 1.5 },
+  // Yellow gets an ORANGE beak in the scene (a yellow beak would vanish).
+  yellow: { color: 0xffd93d, density: 4.5, friction: 0.5, restitution: 0.75, radiusScale: 1.8 },
 }
 
 /** Sleeping piggy — freed on any generous contact. */
@@ -239,24 +264,6 @@ export function piggyCountFor(level: number): number {
   return 3
 }
 
-// ─── Bird queue (unlimited, auto-reloading; Big Bird from level 5) ───────────
-
-export type BirdKind = 'normal' | 'big'
-/** From this level the queue serves a Big Bird every 3rd launch. */
-export const BIG_BIRD_FROM_LEVEL = 5
-/** Big Bird cadence within the queue cycle. */
-export const BIG_BIRD_EVERY = 3
-
-/** The repeating bird queue for a level (scene cycles it forever). */
-export function birdCycleFor(level: number): BirdKind[] {
-  if (level < BIG_BIRD_FROM_LEVEL) return ['normal']
-  const cycle: BirdKind[] = []
-  for (let i = 0; i < BIG_BIRD_EVERY; i++) {
-    cycle.push((i + 1) % BIG_BIRD_EVERY === 0 ? 'big' : 'normal')
-  }
-  return cycle
-}
-
 // ─── Invisible aim assist ────────────────────────────────────────────────────
 
 /** Consecutive piggy-less launches before assist kicks in. */
@@ -335,7 +342,11 @@ export interface LevelSpec {
   level: number
   theme: Theme
   gravityScale: number
-  /** Repeating bird queue — scene cycles it, auto-reloading forever. */
+  /**
+   * Authored bird queue. Normal play IGNORES this and flies the player's active
+   * bird (see activeBird.ts); the editor honours it so a hand-tuned level can
+   * still exercise a specific bird. The generator emits `['green']`.
+   */
   birds: BirdKind[]
   blocks: BlockSpec[]
   piggies: PiggySpec[]
@@ -825,7 +836,9 @@ export function generateLevel(level: number, rng: Rng = Math.random): LevelSpec 
   const lvl = Math.max(1, Math.floor(level))
   const theme = themeFor(lvl)
   const gravityScale = gravityScaleFor(lvl, theme, rng)
-  const birds = birdCycleFor(lvl)
+  // Placeholder queue: normal play substitutes the active bird; the editor uses
+  // it verbatim. Kept valid (non-empty, known kind) so the parser round-trips.
+  const birds: BirdKind[] = ['green']
 
   const ctx: BuildCtx = {
     level: lvl,

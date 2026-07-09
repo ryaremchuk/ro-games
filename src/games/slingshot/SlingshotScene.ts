@@ -4,8 +4,8 @@ import { clearLevel, reportLevel } from '../../shared/level'
 import {
   BALL,
   BASE_GRAVITY_NORM,
-  BIG_BIRD,
-  BIRD,
+  BIRDS,
+  BIRD_RADIUS,
   FLAP_NORM,
   FREE_SPEED_NORM,
   GROUND_Y,
@@ -28,6 +28,9 @@ import {
   mulberry32,
 } from './logic'
 import type { BirdKind, BlockMaterial, BlockSpec, LevelSpec, PiggySpec, PropSpec } from './logic'
+import { getActiveBird, setActiveBird } from './activeBird'
+import { StarDropOverlay } from './StarDropOverlay'
+import { rollStarDropTarget, shouldShowStarDrop } from './starDrop'
 import { editRequested, emitEditorChange, getEditorApi, registerEditorApi } from './editor/bridge'
 import type { AddKind, EditorApi, EditorMode, SelectionKind } from './editor/bridge'
 import { clamp, parseLevelSpec, round3 } from './editor/parse'
@@ -160,6 +163,14 @@ export default class SlingshotScene extends Phaser.Scene {
   private dynTextureKeys = new Set<string>()
   private levelTimers: Phaser.Time.TimerEvent[] = []
 
+  // ─── Victory-star reward (Feature 2 — see StarDropOverlay / starDrop.ts) ────
+  // After every 3rd cleared level (normal play only) the celebration hands off
+  // to a full-screen star-drop overlay above the paused gameplay. `forcedStarDrop`
+  // pins the next drop's reward for e2e determinism (else it's rolled fresh).
+  private starDrop?: StarDropOverlay
+  private starDropPending = false
+  private forcedStarDrop: BirdKind | null = null
+
   // ─── Hidden level editor (adult tool, `#/slingshot?edit`) ──────────────────
   // The editor owns a mutable LevelSpec `draft`; in 'edit' mode the level is
   // built from it with every body static + draggable, in 'play' mode the same
@@ -197,6 +208,8 @@ export default class SlingshotScene extends Phaser.Scene {
       this.removeWindowListeners()
       this.matter.world.off('collisionstart', this.onCollisionStart)
       this.clearTimers()
+      this.starDrop?.destroy()
+      this.starDrop = undefined
       this.teardownTestApi()
       this.teardownEditorApi()
       clearLevel()
@@ -209,6 +222,8 @@ export default class SlingshotScene extends Phaser.Scene {
     // events fire.
     this.events.once(Phaser.Scenes.Events.DESTROY, () => {
       this.removeWindowListeners()
+      this.starDrop?.destroy()
+      this.starDrop = undefined
       this.teardownTestApi()
       this.teardownEditorApi()
     })
@@ -247,12 +262,16 @@ export default class SlingshotScene extends Phaser.Scene {
         levelClearing: this.levelClearing,
         birdState: this.bird?.state ?? null,
         birdKind: this.bird?.kind ?? null,
+        activeBirdKind: getActiveBird(),
         birdX: this.bird?.body.active ? this.bird.body.x : null,
         birdY: this.bird?.body.active ? this.bird.body.y : null,
         birdAsleep: this.bird?.body.active ? this.bodyOf(this.bird.body).isSleeping : null,
         piggiesTotal: this.piggies.length,
         piggiesFreed: this.piggies.filter((p) => p.freed).length,
         consecutiveMisses: this.consecutiveMisses,
+        starDropActive: this.starDrop?.isActive() ?? false,
+        starDropTier: this.starDrop?.currentTier() ?? null,
+        starDropTapsRemaining: this.starDrop?.tapsLeft() ?? null,
       }),
       flick: (dxN, dyN) => {
         if (!this.canAim || this.aiming || this.levelClearing || this.bird?.state !== 'loaded') {
@@ -266,6 +285,17 @@ export default class SlingshotScene extends Phaser.Scene {
         return true
       },
       flap: () => this.flap(),
+      // Pin the next star drop's reward (bypasses the weighted roll) so e2e is
+      // deterministic. Set before clearing the triggering level.
+      forceStarDrop: (kind) => {
+        this.forcedStarDrop = kind
+      },
+      // Jump straight to a level (skips slowly clearing the ones before it), so
+      // e2e can reach a star-drop level (multiple of 3) fast. Editor never jumps.
+      skipToLevel: (n) => {
+        if (this.editorOn) return
+        this.buildLevel(Math.max(1, Math.floor(n)))
+      },
     }
     this.testApi = api
     window.__slingshot = api
@@ -283,11 +313,24 @@ export default class SlingshotScene extends Phaser.Scene {
     const w = Math.max(window.innerWidth, 1) * this.dpr
     const h = Math.max(window.innerHeight, 1) * this.dpr
     this.scale.resize(w, h)
+    // While the star drop is up, never rebuild the level (that would advance
+    // and orphan/duplicate the overlay). Just re-cover the resized screen and
+    // re-center the overlay; the level rebuilds when it finishes.
+    if (this.starDrop) {
+      this.starDrop.relayout()
+      return
+    }
     // Relayout = rebuild the current level for the new aspect / size. If a
     // resize lands mid-celebration (iOS URL-bar churn, rotation), the rebuild
     // kills the pending auto-advance timer — so advance here instead of
     // silently replaying the level the child just cleared. The editor never
-    // advances: its draft is the level.
+    // advances: its draft is the level. But if a star drop is PENDING (the
+    // 2.5s rainbow before the overlay), replay this level so the reward isn't
+    // skipped past — the child clears it again and gets the drop.
+    if (this.starDropPending && !this.editorOn) {
+      this.buildLevel(this.level)
+      return
+    }
     this.buildLevel(this.levelClearing && !this.editorOn ? this.level + 1 : this.level)
   }
 
@@ -456,10 +499,21 @@ export default class SlingshotScene extends Phaser.Scene {
   }
 
   private birdTexture(kind: BirdKind, rPx: number): string {
+    // Key is kind + rounded radius, so a kind rendered at two sizes (or two
+    // kinds at one size) never collide — no stale-texture reuse.
     const key = `sl-bird-${kind}-${Math.round(rPx)}`
     const d = rPx * 2
     this.dyn(key, d, d, (g) => {
-      const color = kind === 'big' ? BIG_BIRD.color : BIRD.color
+      const { color } = BIRDS[kind]
+      const ex = rPx * 0.32
+      const ey = rPx * 0.78
+      // Crest / tuft on the crown, drawn first so the head overlaps its base and
+      // only the spikes poke out. blue: one jaunty feather; red: a small spiky
+      // crest; yellow: a big one. green/purple have a plain crown.
+      if (kind === 'blue') this.drawBirdCrest(g, color, rPx, 1, rPx * 0.42, rPx * 0.14)
+      else if (kind === 'red') this.drawBirdCrest(g, color, rPx, 2, rPx * 0.34, rPx * 0.12)
+      else if (kind === 'yellow') this.drawBirdCrest(g, color, rPx, 3, rPx * 0.5, rPx * 0.15)
+
       g.fillStyle(this.shade(color, 0.9), 1)
       g.fillEllipse(rPx, rPx * 1.5, rPx * 0.5, rPx * 0.35) // shadow belly
       g.fillStyle(color, 1)
@@ -473,29 +527,65 @@ export default class SlingshotScene extends Phaser.Scene {
       g.lineTo(rPx * 1.3, rPx * 1.95)
       g.strokePath()
       // Eyes (big white with ink pupil).
-      const ex = rPx * 0.32
-      const ey = rPx * 0.78
       g.fillStyle(0xffffff, 1)
       g.fillCircle(rPx - ex, ey, rPx * 0.26)
       g.fillCircle(rPx + ex, ey, rPx * 0.26)
       g.fillStyle(INK, 1)
       g.fillCircle(rPx - ex + rPx * 0.06, ey, rPx * 0.12)
       g.fillCircle(rPx + ex + rPx * 0.06, ey, rPx * 0.12)
-      // Beak.
-      g.fillStyle(0xffd93d, 1)
+      // Beak — orange on the yellow bird (a yellow beak would vanish on it).
+      g.fillStyle(kind === 'yellow' ? 0xff922b : 0xffd93d, 1)
       g.fillTriangle(rPx - rPx * 0.14, rPx * 1.05, rPx + rPx * 0.14, rPx * 1.05, rPx, rPx * 1.28)
-      if (kind === 'big') {
-        // Bushy brows.
-        g.lineStyle(Math.max(2, rPx * 0.09), INK, 1)
-        g.beginPath()
-        g.moveTo(rPx - ex - rPx * 0.22, ey - rPx * 0.34)
-        g.lineTo(rPx - ex + rPx * 0.14, ey - rPx * 0.22)
-        g.moveTo(rPx + ex + rPx * 0.22, ey - rPx * 0.34)
-        g.lineTo(rPx + ex - rPx * 0.14, ey - rPx * 0.22)
-        g.strokePath()
-      }
+      // Brows: green/blue none, purple bushy, red angry (steep V), yellow biggest.
+      this.drawBirdBrows(g, kind, rPx, ex, ey)
     })
     return key
+  }
+
+  /** Spiky crown feathers of a bird, in a darker shade of its body color. */
+  private drawBirdCrest(
+    g: Phaser.GameObjects.Graphics,
+    color: number,
+    rPx: number,
+    spikes: number,
+    len: number,
+    halfW: number,
+  ): void {
+    g.fillStyle(this.shade(color, 0.78), 1)
+    const baseY = rPx * 0.14
+    for (let i = 0; i < spikes; i++) {
+      const cx = rPx + (spikes === 1 ? 0 : (i - (spikes - 1) / 2) * halfW * 1.3)
+      g.fillTriangle(cx - halfW, baseY, cx + halfW, baseY, cx + halfW * 0.2, baseY - len)
+    }
+  }
+
+  /** Per-kind ink brows conveying personality (none / bushy / angry / biggest). */
+  private drawBirdBrows(
+    g: Phaser.GameObjects.Graphics,
+    kind: BirdKind,
+    rPx: number,
+    ex: number,
+    ey: number,
+  ): void {
+    if (kind === 'green' || kind === 'blue') return
+    const bushy = kind === 'purple' || kind === 'yellow'
+    const weight = kind === 'yellow' ? 0.12 : bushy ? 0.09 : 0.07
+    g.lineStyle(Math.max(2, rPx * weight), INK, 1)
+    g.beginPath()
+    if (bushy) {
+      // Heavy, mildly stern brow: outer-high to inner-low.
+      g.moveTo(rPx - ex - rPx * 0.24, ey - rPx * 0.36)
+      g.lineTo(rPx - ex + rPx * 0.16, ey - rPx * 0.2)
+      g.moveTo(rPx + ex + rPx * 0.24, ey - rPx * 0.36)
+      g.lineTo(rPx + ex - rPx * 0.16, ey - rPx * 0.2)
+    } else {
+      // Angry: steeper V — inner ends dive toward the beak.
+      g.moveTo(rPx - ex - rPx * 0.22, ey - rPx * 0.42)
+      g.lineTo(rPx - ex + rPx * 0.18, ey - rPx * 0.14)
+      g.moveTo(rPx + ex + rPx * 0.22, ey - rPx * 0.42)
+      g.lineTo(rPx + ex - rPx * 0.18, ey - rPx * 0.14)
+    }
+    g.strokePath()
   }
 
   private piggyTexture(awake: boolean, rPx: number): string {
@@ -655,6 +745,13 @@ export default class SlingshotScene extends Phaser.Scene {
   // ─── Level build / teardown ────────────────────────────────────────────────
 
   private buildLevel(level: number): void {
+    // Defensive: a rebuild while the overlay is somehow still up (e.g. an editor
+    // import) must not leave it orphaned above the fresh level.
+    if (this.starDrop) {
+      this.starDrop.destroy()
+      this.starDrop = undefined
+    }
+    this.starDropPending = false
     this.clearLevelObjects()
     this.level = Math.max(1, level)
     // Editor builds from its mutable draft; normal play from the generator.
@@ -699,7 +796,7 @@ export default class SlingshotScene extends Phaser.Scene {
       return
     }
 
-    this.loadBird(this.spec.birds[0])
+    this.loadBird(this.birdQueue()[0])
 
     // "Blocks drop into place": everything stays static + fades in, then wakes.
     this.staggerEntrance()
@@ -1011,16 +1108,27 @@ export default class SlingshotScene extends Phaser.Scene {
 
   // ─── Bird lifecycle ────────────────────────────────────────────────────────
 
+  /**
+   * The bird queue to fly. Normal play ignores the authored `spec.birds` and
+   * serves the player's active bird (read fresh, so a mid-game promotion takes
+   * effect on the next reload); the editor honours the authored queue so a
+   * hand-tuned level can test a specific bird.
+   */
+  private birdQueue(): BirdKind[] {
+    return this.editorOn ? this.spec.birds : [getActiveBird()]
+  }
+
   private loadBird(kind: BirdKind): void {
-    const rPx = this.sz(BIRD.radius) * (kind === 'big' ? BIG_BIRD.radiusScale : 1)
+    const bird = BIRDS[kind]
+    const rPx = this.sz(BIRD_RADIUS) * bird.radiusScale
     const key = this.birdTexture(kind, rPx)
     // Invisible physics body — never scaled, so squash/stretch can't deform it.
     const body = this.matter.add.image(this.forkX, this.forkY, key, undefined, { label: 'bird' })
     body.setCircle(rPx * 0.88, { label: 'bird' })
     body
-      .setDensity(kind === 'big' ? BIG_BIRD.density : BIRD.density)
-      .setFriction(BIRD.friction)
-      .setBounce(kind === 'big' ? BIG_BIRD.restitution : BIRD.restitution)
+      .setDensity(bird.density)
+      .setFriction(bird.friction)
+      .setBounce(bird.restitution)
       .setFrictionAir(0.0015)
     // The hero bird is exempt from sleeping (threshold 0): it waits loaded on
     // the sling far longer than the 60-step sleep countdown, and a slept body
@@ -1056,8 +1164,8 @@ export default class SlingshotScene extends Phaser.Scene {
   private reloadNext(): void {
     if (this.levelClearing) return
     this.queueIndex++
-    const kind = this.spec.birds[this.queueIndex % this.spec.birds.length]
-    this.loadBird(kind)
+    const queue = this.birdQueue()
+    this.loadBird(queue[this.queueIndex % queue.length])
     this.lastInteraction = this.time.now
   }
 
@@ -1202,8 +1310,9 @@ export default class SlingshotScene extends Phaser.Scene {
     this.settleTime = 0
     this.freedThisFlight = false
     this.bandGfx.clear()
-    // Whoosh: descending sweep + chirp. Big Bird launches an octave deeper.
-    const p = this.bird.kind === 'big' ? 0.55 : 1
+    // Whoosh: descending sweep + chirp. Bigger, heavier birds launch deeper —
+    // pitch is the inverse of the size scale (1.0→1.0, 1.8→~0.55).
+    const p = 1 / BIRDS[this.bird.kind].radiusScale
     playTone(680 * p, 60, 'sine', 0.06)
     this.delay(45, () => playTone(480 * p, 60, 'sine', 0.05))
     this.delay(90, () => playTone(320 * p, 70, 'sine', 0.05))
@@ -1382,6 +1491,9 @@ export default class SlingshotScene extends Phaser.Scene {
     this.levelClearing = true
     this.canAim = false
     this.aiming = false
+    // Arm the star-drop hand-off now (before the 2.5s rainbow) so a resize
+    // mid-celebration replays this level instead of skipping past the reward.
+    this.starDropPending = shouldShowStarDrop(this.level, this.editorOn)
 
     const w = this.scale.width
     const h = this.scale.height
@@ -1412,8 +1524,40 @@ export default class SlingshotScene extends Phaser.Scene {
         emitEditorChange()
         return
       }
+      // Every 3rd level: hand off to the star-drop reward instead of advancing.
+      // It persists the reward bird and advances when the child taps it open.
+      if (this.starDropPending) {
+        this.showStarDrop()
+        return
+      }
       this.buildLevel(this.level + 1)
     })
+  }
+
+  /**
+   * Launch the victory-star overlay. The reward is pre-rolled (or forced by the
+   * e2e hook), the overlay animates the open as pure theater, and on completion
+   * it promotes the active bird and advances to the next level — which then
+   * flies the new bird (birdQueue reads getActiveBird fresh on buildLevel).
+   */
+  private showStarDrop(): void {
+    this.starDropPending = false
+    const target = this.forcedStarDrop ?? rollStarDropTarget(Math.random)
+    this.forcedStarDrop = null
+    const rewardLevel = this.level
+    this.starDrop = new StarDropOverlay(this, {
+      target,
+      birdColor: BIRDS[target].color,
+      makeBirdImage: (rPx) => this.add.image(0, 0, this.birdTexture(target, rPx)),
+      onComplete: (reward) => {
+        setActiveBird(reward)
+        this.starDrop?.destroy()
+        this.starDrop = undefined
+        // levelClearing is still set from celebrate(); buildLevel clears it.
+        this.buildLevel(rewardLevel + 1)
+      },
+    })
+    this.starDrop.start()
   }
 
   private drawRainbow(t: number): void {
