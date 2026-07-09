@@ -123,8 +123,6 @@ const WOOD_H = 0.078
 /** Tall skinny domino footprint. */
 const DOMINO_W = 0.03
 const DOMINO_H = 0.115
-/** Column anchor x positions, left (closest, reachable) to right. */
-const COLUMN_X = [0.6, 0.735, 0.865] as const
 /** Tallest single column before blocks spill into the next column. */
 const MAX_COLUMN_HEIGHT = 4
 
@@ -344,13 +342,57 @@ export interface LevelSpec {
   props: PropSpec[]
 }
 
-// ─── Structure builders ──────────────────────────────────────────────────────
+// ─── Structure builders (seeded archetypes) ──────────────────────────────────
+//
+// Layout is archetype-based (towers / pyramid / pen), picked per level from a
+// hashed side-stream and jittered by the injected RNG. Design rules distilled
+// from the Angry-Birds PCG literature (Stephenson & Renz, CIG16/17) and the
+// old generator's failure mode:
+//   1. Consecutive levels must differ CATEGORICALLY (archetype, column count,
+//      silhouette), not just by positional jitter — jitter alone reads as "the
+//      same level again". Same-theme neighbours never repeat an archetype.
+//   2. Blocks always MATTER: piggies perch on structure tops, hide penned
+//      behind walls, or ride the apex — never scenery placed behind the pig.
+//   3. Stability by construction: blocks stack in exactly-aligned columns and
+//      centered pyramid rows (both edges supported), so nothing self-collapses
+//      when the level wakes.
+//   4. Nothing overlaps at spawn (Matter ejects interpenetrating bodies):
+//      ground piggies search for clear ground, props keep clearance from the
+//      structure.
 
 interface Accumulator {
   blocks: BlockSpec[]
   piggies: PiggySpec[]
   props: PropSpec[]
 }
+
+interface BuildCtx {
+  level: number
+  rng: Rng
+  /** Block budget for the level (2..10). */
+  nBlocks: number
+  /** Piggy budget for the level (1..3). */
+  nPiggies: number
+  /** Forced tower-column count (theme pairs alternate it for variety). */
+  colsHint?: number
+}
+
+/** Material for the i-th column (towers/pen) or row (pyramid). */
+type MaterialFn = (i: number) => BlockMaterial
+
+/** A structure builder mutating the accumulator; towers reports its column
+ *  xs/tops so prop themes (balls) can place relative to the front column. */
+type Archetype = (out: Accumulator, ctx: BuildCtx, matFor: MaterialFn) => ColumnInfo | void
+interface ColumnInfo {
+  xs: number[]
+  tops: number[]
+}
+
+// ─── Seeded random helpers ───────────────────────────────────────────────────
+
+const rand = (rng: Rng, min: number, max: number): number => min + (max - min) * rng()
+const randInt = (rng: Rng, min: number, max: number): number =>
+  min + Math.floor((max - min + 1) * rng())
 
 function clampBlockX(x: number, w: number): number {
   return Math.min(1 - w / 2, Math.max(RIGHT_ZONE_MIN + w / 2, x))
@@ -377,135 +419,402 @@ function stackColumn(
   return bottom
 }
 
-/** Split `n` blocks across up to `maxCols` columns, each ≤ MAX_COLUMN_HEIGHT. */
-function distributeColumns(n: number, maxCols: number): number[] {
-  const cols: number[] = []
-  let remaining = n
-  for (let c = 0; c < maxCols && remaining > 0; c++) {
-    const h = Math.min(MAX_COLUMN_HEIGHT, Math.ceil(remaining / (maxCols - c)))
-    cols.push(h)
-    remaining -= h
+/** Piggy perched on a surface at height `topY`, clamped into the right zone. */
+function piggyOn(x: number, topY: number): PiggySpec {
+  return {
+    x: Math.min(1 - PIGGY.radius, Math.max(RIGHT_ZONE_MIN + PIGGY.radius, x)),
+    y: topY - PIGGY.radius,
   }
-  // Overflow (n > maxCols * MAX_COLUMN_HEIGHT) never happens for n ≤ 10, but be safe.
-  while (remaining > 0 && cols.length > 0) {
-    cols[cols.length - 1] += 1
-    remaining -= 1
-  }
-  return cols
 }
 
-/** Piggy perched on a surface at height `topY`. */
-function piggyOn(x: number, topY: number): PiggySpec {
-  return { x: Math.min(1 - PIGGY.radius, x), y: topY - PIGGY.radius }
+/** Would a piggy body at (x, y) sit clear of every block and piggy?
+ *  A perched piggy touches its support at exactly its visual radius, so the
+ *  block margin must stay below r − bodyR (= 0.0036). */
+function circleFits(out: Accumulator, x: number, y: number): boolean {
+  const bodyR = PIGGY.radius * PIGGY_BODY_SCALE
+  return (
+    out.blocks.every((b) => {
+      const cx = Math.max(b.x - b.w / 2, Math.min(x, b.x + b.w / 2))
+      const cy = Math.max(b.y - b.h / 2, Math.min(y, b.y + b.h / 2))
+      return Math.hypot(x - cx, y - cy) > bodyR + 0.003
+    }) && out.piggies.every((p) => Math.hypot(x - p.x, y - p.y) > PIGGY.radius * 2 + 0.004)
+  )
+}
+
+/** Is this block's top face open sky (no block resting on it)? */
+function topIsFree(out: Accumulator, b: BlockSpec): boolean {
+  const topY = b.y - b.h / 2
+  return !out.blocks.some(
+    (s) =>
+      s !== b &&
+      Math.abs(s.y + s.h / 2 - topY) < 1e-9 &&
+      Math.abs(s.x - b.x) < (s.w + b.w) / 2 - 1e-9,
+  )
 }
 
 /**
- * Build columns + piggies for the given block/piggy budget. The first column is
- * closest (reachable) and always carries the first, exposed piggy. Materials
- * come from `materialFor(columnIndex)`. Returns nothing; mutates `out`.
+ * Drop a piggy near `startX` without interpenetrating anything (Matter ejects
+ * overlapping bodies). Three tiers, all deterministic:
+ *   1. clear ground, scanning outward from startX;
+ *   2. a free block top (nearest first) — piggies riding the structure are
+ *      the point of the game, so this is a feature, not a compromise;
+ *   3. stacked on another piggy (a snoozing totem) — crowded boards only.
  */
-function buildColumns(
-  out: Accumulator,
-  nBlocks: number,
-  nPiggies: number,
-  materialFor: (col: number) => BlockMaterial,
-  w: number,
-  h: number,
-): void {
-  const heights = distributeColumns(nBlocks, COLUMN_X.length)
-  const tops: number[] = []
-  heights.forEach((count, col) => {
-    tops[col] = stackColumn(out, COLUMN_X[col], count, materialFor(col), w, h)
-  })
-
-  // Piggy 1: exposed, on the closest column (guaranteed reachable).
-  out.piggies.push(piggyOn(COLUMN_X[0], tops[0]))
-
-  // Piggy 2: on the next tallest exposed column, else on the ground beside it.
-  if (nPiggies >= 2) {
-    const col = tops.length > 1 ? 1 : 0
-    out.piggies.push(piggyOn(COLUMN_X[col] + w * 0.1, tops[col] - (col === 0 ? h : 0)))
+function placePiggy(out: Accumulator, startX: number): void {
+  const r = PIGGY.radius
+  const lo = RIGHT_ZONE_MIN + r
+  const hi = 1 - r
+  // Tier 1: clear ground. Props are ground-level, so keep clear of them here.
+  const groundClear = (x: number): boolean =>
+    x >= lo &&
+    x <= hi &&
+    out.blocks.every((b) => Math.abs(x - b.x) > b.w / 2 + r + 0.008) &&
+    out.piggies.every((p) => Math.abs(x - p.x) > r * 2 + 0.006) &&
+    out.props.every((p) => {
+      const half =
+        p.kind === 'seesaw'
+          ? (p.w ?? 0.22) / 2
+          : p.kind === 'ball'
+            ? (p.r ?? BALL.radius)
+            : (p.w ?? 0.12) / 2
+      return Math.abs(x - p.x) > half + r + 0.01
+    })
+  for (let k = 0; k < 60; k++) {
+    const x = startX + Math.ceil(k / 2) * 0.024 * (k % 2 === 0 ? 1 : -1)
+    if (groundClear(x)) {
+      out.piggies.push({ x, y: GROUND_Y - r })
+      return
+    }
   }
-  // Piggy 3: tucked low behind the rightmost column (harder, still present).
-  if (nPiggies >= 3) {
-    const col = Math.min(tops.length - 1, 2)
-    out.piggies.push(piggyOn(COLUMN_X[col] + w * 1.2, GROUND_Y))
+  // Tier 2: nearest free block top that the piggy body actually fits on.
+  const perches = out.blocks
+    .filter((b) => topIsFree(out, b))
+    .sort((a, b) => Math.abs(a.x - startX) - Math.abs(b.x - startX))
+  for (const b of perches) {
+    const spot = piggyOn(b.x, b.y - b.h / 2)
+    if (circleFits(out, spot.x, spot.y)) {
+      out.piggies.push(spot)
+      return
+    }
+  }
+  // Tier 3: stack on the nearest piggy (never overlaps: exact 2r + gap).
+  const below = [...out.piggies].sort((a, b) => Math.abs(a.x - startX) - Math.abs(b.x - startX))
+  for (const p of below) {
+    const spot = { x: p.x, y: p.y - r * 2 - 0.006 }
+    if (circleFits(out, spot.x, spot.y)) {
+      out.piggies.push(spot)
+      return
+    }
+  }
+  out.piggies.push({ x: below[0].x, y: below[0].y - r * 2 - 0.006 })
+}
+
+/**
+ * Split `n` blocks into `k` columns, each 1..MAX_COLUMN_HEIGHT, deliberately
+ * uneven — equal columns read as a flat wall, a staggered skyline reads as a
+ * structure worth toppling.
+ */
+function splitUneven(rng: Rng, n: number, k: number): number[] {
+  const parts = new Array(Math.max(1, k)).fill(1)
+  let remaining = n - parts.length
+  let guard = 0
+  while (remaining > 0 && guard++ < 400) {
+    if (parts.every((p) => p >= MAX_COLUMN_HEIGHT)) break
+    const i = randInt(rng, 0, parts.length - 1)
+    if (parts[i] < MAX_COLUMN_HEIGHT) {
+      parts[i]++
+      remaining--
+    }
+  }
+  return parts
+}
+
+/**
+ * `n` column center xs spread across the reachable right zone, jittered and
+ * min-spaced by `gap`, sorted left→right so index 0 is the closest (front)
+ * column — the one the guaranteed-reachable piggy rides.
+ */
+function columnXs(rng: Rng, n: number, gap: number): number[] {
+  const lo = RIGHT_ZONE_MIN + 0.07
+  const hi = 0.92
+  if (n <= 1) return [rand(rng, lo, lo + 0.16)]
+  const xs: number[] = []
+  for (let i = 0; i < n; i++) {
+    const slot = lo + ((hi - lo) * i) / (n - 1)
+    xs.push(slot + rand(rng, -gap * 0.3, gap * 0.3))
+  }
+  xs.sort((a, b) => a - b)
+  for (let i = 1; i < xs.length; i++) {
+    if (xs[i] - xs[i - 1] < gap) xs[i] = xs[i - 1] + gap
+  }
+  return xs
+}
+
+/**
+ * Primary piggy on the front (closest) column top — always reachable. A second
+ * rides the tallest remaining column. Extras come from the ground filler.
+ */
+function piggiesOnColumns(out: Accumulator, ctx: BuildCtx, xs: number[], tops: number[]): void {
+  out.piggies.push(piggyOn(xs[0], tops[0]))
+  if (ctx.nPiggies >= 2 && xs.length >= 2) {
+    let best = 1
+    for (let i = 2; i < tops.length; i++) if (tops[i] < tops[best]) best = i
+    out.piggies.push(piggyOn(xs[best], tops[best]))
   }
 }
 
+/** A skyline of 1..3 uneven towers; piggies ride the tops. */
+const buildTowers = (out: Accumulator, ctx: BuildCtx, matFor: MaterialFn): ColumnInfo => {
+  const { rng, nBlocks } = ctx
+  const maxCols = Math.min(3, nBlocks)
+  const minCols = Math.min(maxCols, Math.ceil(nBlocks / MAX_COLUMN_HEIGHT))
+  // Tiny budgets build ONE vertical column — it reads as "a tower", instantly
+  // distinct from the pyramid's and pen's flat early-level shapes.
+  let cols = ctx.colsHint ?? (nBlocks <= 3 ? 1 : randInt(rng, 2, maxCols))
+  cols = Math.max(minCols, Math.min(maxCols, cols))
+  const heights = splitUneven(rng, nBlocks, cols)
+  const xs = columnXs(rng, heights.length, WOOD_W * 1.2)
+  const tops = heights.map((h, i) => stackColumn(out, xs[i], h, matFor(i), WOOD_W, WOOD_H))
+  piggiesOnColumns(out, ctx, xs, tops)
+  return { xs, tops }
+}
+
+/** A stepped pyramid; the primary piggy rides the apex. */
+const buildPyramid: Archetype = (out, ctx, matFor): void => {
+  const { rng, nBlocks, nPiggies } = ctx
+  // Base capped at 4 and centered so a full base never clamps onto the zone edge.
+  const base = Math.max(2, Math.min(4, Math.round(Math.sqrt(nBlocks * 1.6))))
+  const cx = rand(rng, 0.66, 0.8)
+  let placed = 0
+  let bottom = GROUND_Y
+  let row = 0
+  for (; row < base && placed < nBlocks; row++) {
+    const count = base - row
+    const startX = cx - ((count - 1) * WOOD_W) / 2
+    for (let i = 0; i < count && placed < nBlocks; i++) {
+      out.blocks.push({
+        material: matFor(row),
+        x: clampBlockX(startX + i * WOOD_W, WOOD_W),
+        y: bottom - WOOD_H / 2,
+        w: WOOD_W,
+        h: WOOD_H,
+        angle: 0,
+      })
+      placed++
+    }
+    bottom -= WOOD_H
+  }
+  out.piggies.push(piggyOn(cx, bottom))
+  // Second piggy on the ground at the pyramid's front-left foot (clear side).
+  if (nPiggies >= 2) placePiggy(out, cx - (base * WOOD_W) / 2 - PIGGY.radius - 0.02)
+}
+
+/**
+ * A low front wall with the primary piggy penned just behind it — arc over the
+ * wall (or knock it onto the piggy) to free it. A taller back wall carries the
+ * second piggy on top.
+ */
+const buildPen: Archetype = (out, ctx, matFor): void => {
+  const { rng, nBlocks, nPiggies } = ctx
+  const cx = rand(rng, 0.68, 0.8)
+  const gap = WOOD_W * 1.7
+  const front = Math.min(randInt(rng, 1, 2), Math.max(1, nBlocks - 1))
+  stackColumn(out, cx - gap, front, matFor(0), WOOD_W, WOOD_H)
+  const back = Math.max(1, Math.min(MAX_COLUMN_HEIGHT, nBlocks - front))
+  const backTop = stackColumn(out, cx + gap, back, matFor(1), WOOD_W, WOOD_H)
+  out.piggies.push(piggyOn(cx, GROUND_Y))
+  if (nPiggies >= 2) out.piggies.push(piggyOn(cx + gap, backTop))
+}
+
+/** Short reachable tower + a toppling row of tall dominoes. */
+function buildDominos(out: Accumulator, ctx: BuildCtx): void {
+  const { level, rng, nBlocks, nPiggies } = ctx
+  const tx = rand(rng, 0.56, 0.64)
+  // Level parity alternates the tower height so the two dominos levels of a
+  // theme pair differ categorically, not just by jitter.
+  const towerH = 2 + (level % 2)
+  const towerTop = stackColumn(out, tx, towerH, 'wood', WOOD_W, WOOD_H)
+  out.piggies.push(piggyOn(tx, towerTop))
+  const dominoes = Math.min(5, Math.max(2, nBlocks - towerH + 1))
+  const startX = tx + 0.09
+  // Fit the whole row inside the field so no domino clamps onto its neighbour.
+  const maxX = 1 - DOMINO_W / 2
+  const step = Math.min(DOMINO_W + rand(rng, 0.024, 0.036), (maxX - startX) / dominoes)
+  for (let i = 0; i < dominoes; i++) {
+    stackColumn(out, startX + i * step, 1, 'wood', DOMINO_W, DOMINO_H)
+  }
+  if (nPiggies >= 2) placePiggy(out, startX + dominoes * step + 0.012)
+}
+
+/** Reachable tower for piggy 1 + a lever: hit the near end, the far piggy pops. */
+function buildSeesaw(out: Accumulator, ctx: BuildCtx): void {
+  const { level, rng, nPiggies } = ctx
+  const tx = rand(rng, 0.55, 0.6)
+  // Same parity trick as dominos: the pair's towers are 2 vs 3 blocks tall.
+  const towerTop = stackColumn(out, tx, 2 + (level % 2), 'wood', WOOD_W, WOOD_H)
+  out.piggies.push(piggyOn(tx, towerTop))
+  const plankW = 0.22
+  // Plank keeps clear of the tower's right edge and of the field's right wall.
+  const plankX = Math.min(
+    0.98 - plankW / 2,
+    Math.max(tx + WOOD_W / 2 + plankW / 2 + 0.03, rand(rng, 0.74, 0.8)),
+  )
+  const plankY = GROUND_Y - 0.06
+  const plankH = 0.026
+  out.props.push({ kind: 'seesaw', x: plankX, y: plankY, w: plankW, h: plankH })
+  // A weight resting ON the plank's near end (small spawn gap so nothing
+  // interpenetrates), a piggy on the far (right) end. The old ground-stacked
+  // weight clipped straight through the plank and Matter ejected it at wake.
+  out.blocks.push({
+    material: 'wood',
+    x: plankX - plankW * 0.4,
+    y: plankY - plankH / 2 - WOOD_H / 2 - 0.004,
+    w: WOOD_W,
+    h: WOOD_H,
+    angle: 0,
+  })
+  if (nPiggies >= 2) {
+    out.piggies.push(piggyOn(plankX + plankW * 0.4, plankY - 0.02))
+  }
+}
+
+// ─── Archetype selection (categorical variety) ───────────────────────────────
+
+const TOWER_FAMILY: Archetype[] = [buildTowers, buildPyramid, buildPen]
+/** Materials theme skips the pen — its walls are too small to show 3 materials. */
+const MATERIALS_FAMILY: Archetype[] = [buildTowers, buildPyramid]
+
+function familyFor(theme: Theme): Archetype[] | null {
+  if (theme === 'towers' || theme === 'moon') return TOWER_FAMILY
+  if (theme === 'materials' || theme === 'trampoline') return MATERIALS_FAMILY
+  return null
+}
+
+/**
+ * Pick the archetype index for a level from a hashed side-stream (decoupled
+ * from the injected RNG so layout jitter can evolve without reshuffling the
+ * archetype schedule). Same-theme neighbours never repeat: theme pairs
+ * (levels 1–14 run each theme twice back-to-back) get two DIFFERENT shapes —
+ * the old generator's sameness came exactly from repeating one template.
+ */
+function archetypeIndexFor(level: number, theme: Theme, familySize: number): number {
+  const draw = mulberry32(level * 0x9e3779b9 + 0x5f356495)()
+  let idx = Math.min(familySize - 1, Math.floor(draw * familySize))
+  if (level > 1 && familySize > 1 && themeFor(level - 1) === theme) {
+    const prev = archetypeIndexFor(level - 1, theme, familySize)
+    if (prev === idx) idx = (idx + 1) % familySize
+  }
+  return idx
+}
+
+/** Rotated material cycle for the materials theme (columns differ per level). */
+const ALL_MATERIALS: readonly BlockMaterial[] = ['wood', 'stone', 'ice']
+/** Densest-first for pyramids: stone base, wood middle, ice top — stable AND colorful. */
+const PYRAMID_MATERIALS: readonly BlockMaterial[] = ['stone', 'wood', 'ice']
+
+/**
+ * Force at least one stone and one ice block into a materials-theme structure —
+ * the wood/stone/ice contrast is the whole point of that theme (tiny builds
+ * may cycle through fewer than 3 columns).
+ */
+function ensureMaterialMix(out: Accumulator): void {
+  if (out.blocks.length === 0) return
+  const has = (m: BlockMaterial) => out.blocks.some((b) => b.material === m)
+  if (!has('stone')) out.blocks[0].material = 'stone'
+  if (!has('ice')) out.blocks[out.blocks.length - 1].material = 'ice'
+}
+
 /** Fill `out` with the structure for one themed level. */
-function buildStructures(level: number, theme: Theme, out: Accumulator): void {
-  const nBlocks = targetBlockCount(level)
-  const nPiggies = piggyCountFor(level)
+function buildStructures(level: number, theme: Theme, out: Accumulator, ctx: BuildCtx): void {
+  const { rng } = ctx
+  const family = familyFor(theme)
+  const archetype = family ? family[archetypeIndexFor(level, theme, family.length)] : null
 
   switch (theme) {
-    case 'towers': {
-      buildColumns(out, nBlocks, nPiggies, () => 'wood', WOOD_W, WOOD_H)
-      break
-    }
-    case 'dominos': {
-      // A short reachable tower, then a toppling row of tall skinny dominoes.
-      const towerTop = stackColumn(out, COLUMN_X[0], 2, 'wood', WOOD_W, WOOD_H)
-      out.piggies.push(piggyOn(COLUMN_X[0], towerTop))
-      // Cap the row so it always fits inside the right zone (no clamp overlap).
-      const dominoes = Math.min(5, Math.max(2, nBlocks - 2))
-      const dominoStep = DOMINO_W + 0.028
-      for (let i = 0; i < dominoes; i++) {
-        stackColumn(out, 0.7 + i * dominoStep, 1, 'wood', DOMINO_W, DOMINO_H)
-      }
-      if (nPiggies >= 2) out.piggies.push(piggyOn(0.7 + dominoes * dominoStep, GROUND_Y))
+    case 'towers':
+    case 'moon': {
+      archetype?.(out, ctx, () => 'wood')
       break
     }
     case 'materials': {
       // Wood tumbles, stone anchors, ice slides — one of each guaranteed.
-      const mats: BlockMaterial[] = ['wood', 'stone', 'ice']
-      buildColumns(out, nBlocks, nPiggies, (col) => mats[col % mats.length], WOOD_W, WOOD_H)
+      const rot = randInt(rng, 0, 2)
+      const isPyramid = archetype === buildPyramid
+      archetype?.(out, ctx, (i) =>
+        isPyramid
+          ? PYRAMID_MATERIALS[Math.min(i, PYRAMID_MATERIALS.length - 1)]
+          : ALL_MATERIALS[(i + rot) % ALL_MATERIALS.length],
+      )
+      ensureMaterialMix(out)
       break
     }
     case 'trampoline': {
-      buildColumns(out, nBlocks, nPiggies, () => 'wood', WOOD_W, WOOD_H)
-      // Bouncy mushroom in front of the towers so the bird can bounce in/over.
-      out.props.push({ kind: 'trampoline', x: 0.44, y: GROUND_Y, w: 0.12 })
+      archetype?.(out, ctx, () => 'wood')
+      // Bouncy mushroom in front, kept clear of the structure AND any ground
+      // piggy the archetype dropped at its left foot.
+      const leftMost = Math.min(
+        ...out.blocks.map((b) => b.x - b.w / 2),
+        ...out.piggies.map((p) => p.x - PIGGY.radius),
+      )
+      out.props.push({
+        kind: 'trampoline',
+        x: Math.min(rand(rng, 0.4, 0.47), leftMost - 0.08),
+        y: GROUND_Y,
+        w: 0.12,
+      })
       break
     }
     case 'balls': {
-      buildColumns(out, Math.max(2, nBlocks - 1), nPiggies, () => 'wood', WOOD_W, WOOD_H)
-      // A loose ball resting just left of the tower — hit it, it rolls in.
+      // One fewer block leaves room for the loose ball to roll into the tower.
+      // Column-count parity keeps the theme pair categorically different.
+      const info = buildTowers(
+        out,
+        { ...ctx, nBlocks: Math.max(2, ctx.nBlocks - 1), colsHint: 2 + (level % 2) },
+        () => 'wood',
+      )
+      // Resting just left of the front column — hit it, it rolls in.
       out.props.push({
         kind: 'ball',
-        x: COLUMN_X[0] - 0.12,
+        x: info.xs[0] - 0.12,
         y: GROUND_Y - BALL.radius,
         r: BALL.radius,
       })
       break
     }
+    case 'dominos': {
+      buildDominos(out, ctx)
+      break
+    }
     case 'seesaw': {
-      // Reachable tower for piggy 1, plus a lever: hit the near end, far piggy pops.
-      const towerTop = stackColumn(out, COLUMN_X[0], 2, 'wood', WOOD_W, WOOD_H)
-      out.piggies.push(piggyOn(COLUMN_X[0], towerTop))
-      const plankX = 0.78
-      const plankW = 0.22
-      const plankY = GROUND_Y - 0.06
-      out.props.push({ kind: 'seesaw', x: plankX, y: plankY, w: plankW, h: 0.026 })
-      // A weight on the near end, a piggy on the far (right) end.
-      stackColumn(out, plankX - plankW * 0.4, 1, 'wood', WOOD_W, WOOD_H)
-      if (nPiggies >= 2) {
-        out.piggies.push(piggyOn(plankX + plankW * 0.4, plankY - 0.02))
-      }
-      break
-    }
-    case 'moon': {
-      // Ordinary towers, but gravity is set to MOON_GRAVITY_SCALE by the caller.
-      buildColumns(out, nBlocks, nPiggies, () => 'wood', WOOD_W, WOOD_H)
+      buildSeesaw(out, ctx)
       break
     }
   }
+}
 
-  // Guarantee the piggy budget across every theme (prop-heavy themes may not
-  // place enough on their own). Extras snooze on the ground, well spread.
-  for (let guard = 0; out.piggies.length < nPiggies && guard < 3; guard++) {
-    out.piggies.push(piggyOn(0.66 + guard * 0.09, GROUND_Y))
+/**
+ * Land the piggy list on exactly `nPiggies`: trim extras from the end (the
+ * front, reachable piggy is always index 0), pad shortfalls with snoozers on
+ * clear ground near the structure.
+ */
+function balancePiggies(out: Accumulator, ctx: BuildCtx): void {
+  if (out.piggies.length > ctx.nPiggies) out.piggies.length = ctx.nPiggies
+  let guard = 0
+  while (out.piggies.length < ctx.nPiggies && guard++ < 4) {
+    placePiggy(out, rand(ctx.rng, 0.58, 0.9))
   }
+}
+
+/**
+ * Guarantee at least one reachable piggy (the generator's core promise). Under
+ * normal gravity every in-zone perch is already inside the ballistic envelope,
+ * so this only fires for pathological combos — it drops the front piggy onto
+ * the ground where a full-power shot always lands.
+ */
+function ensureReachable(out: Accumulator, gravityScale: number): void {
+  if (out.piggies.length === 0) return
+  if (out.piggies.some((p) => isReachable(p.x, p.y, gravityScale))) return
+  out.piggies[0] = piggyOn(0.6, GROUND_Y)
 }
 
 /**
@@ -518,8 +827,16 @@ export function generateLevel(level: number, rng: Rng = Math.random): LevelSpec 
   const gravityScale = gravityScaleFor(lvl, theme, rng)
   const birds = birdCycleFor(lvl)
 
+  const ctx: BuildCtx = {
+    level: lvl,
+    rng,
+    nBlocks: targetBlockCount(lvl),
+    nPiggies: piggyCountFor(lvl),
+  }
   const out: Accumulator = { blocks: [], piggies: [], props: [] }
-  buildStructures(lvl, theme, out)
+  buildStructures(lvl, theme, out, ctx)
+  balancePiggies(out, ctx)
+  ensureReachable(out, gravityScale)
 
   return {
     level: lvl,
