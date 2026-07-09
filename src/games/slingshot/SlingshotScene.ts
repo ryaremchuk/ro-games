@@ -737,6 +737,10 @@ export default class SlingshotScene extends Phaser.Scene {
     if (this.bird) {
       kill(this.bird.body)
       kill(this.bird.skin)
+      // Drop the stale reference: the editor's buildLevel skips loadBird, so a
+      // leftover mid-flight bird would make update()'s flying branch read a
+      // destroyed Matter body (undefined .speed) and kill the RAF loop.
+      this.bird = undefined as unknown as Bird
     }
 
     this.blocks = []
@@ -1451,7 +1455,9 @@ export default class SlingshotScene extends Phaser.Scene {
     // Keep the bird skin glued to its physics body.
     this.syncBird()
 
-    if (this.bird && this.bird.state === 'flying') {
+    // `.active` belt: a flying bird whose body was destroyed by a rebuild must
+    // never be integrated (reading a dead body's speed throws and halts RAF).
+    if (this.bird && this.bird.state === 'flying' && this.bird.body.active) {
       this.flightTime += dt
       this.applyAssist()
       const body = this.bodyOf(this.bird.body)
