@@ -16,8 +16,13 @@ html {
      shorter than the physical screen; the strip below every CSS box is painted
      with the ROOT element's background (white by default — the "white bar at
      the bottom"). Mirror the launcher gradient there so any exposed strip
-     blends in instead of flashing white. */
-  background: linear-gradient(135deg, #dff3ff 0%, #ffe9f5 100%);
+     blends in instead of flashing white.
+     The explicit background-COLOR matters separately: iOS 26 Liquid Glass
+     tints its bottom system chrome by sampling background-color (never
+     background-image) off the root and fixed elements — a transparent sample
+     falls back to solid white. */
+  background-color: #dff3ff;
+  background-image: linear-gradient(135deg, #dff3ff 0%, #ffe9f5 100%);
 }
 
 body {
@@ -46,6 +51,9 @@ body {
 #root {
   position: fixed;
   inset: 0;
+  /* iOS 26 samples the bottom-edge fixed element's background-color for the
+     home-indicator chrome (see html above) — never leave it transparent. */
+  background-color: #dff3ff;
 }
 
 button {
