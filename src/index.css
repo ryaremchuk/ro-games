@@ -61,11 +61,10 @@ body {
   height: 100%;
   height: 100dvh;
   height: 100lvh;
-  /* ...but keep every view (home grid, game surfaces) laid out ABOVE the
-     system strip: the strip is exactly the large/small viewport difference.
-     One container-level inset — individual games never deal with it. Collapses
-     to the plain safe-area inset wherever the container is honest. */
-  padding-bottom: max(calc(100lvh - 100svh), env(safe-area-inset-bottom, 0px));
+  /* No bottom reserve: on-device numbers (see #/viewport-debug) proved the
+     strip below the ICB is ordinary page area that renders and hit-tests —
+     any reserved inset just shows up as a colored band. Views span the full
+     screen; the home grid keeps its own safe-area padding for the indicator. */
   /* iOS 26 samples the bottom-edge fixed element's background-color for the
      home-indicator chrome (see html above) — never leave it transparent. */
   background-color: #dff3ff;
