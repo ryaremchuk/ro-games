@@ -37,6 +37,8 @@ export interface CritterRig {
   applySpawn(spawn: CritterSpawn): void
   /** Toggle a sleeper's closed-eye overlay (waking reveals the emoji's eyes). */
   setAwake(awake: boolean): void
+  /** Punch a white FILL flash on all body parts for `ms`, then restore tints. */
+  flashWhite(ms: number): void
   /** Return to the hidden down pose (clear tints, hide sleeper parts + glow). */
   reset(): void
 }
@@ -199,9 +201,11 @@ export function buildCritterRig(scene: Phaser.Scene, px: Px): CritterRig {
   head.disableInteractive()
 
   let sleepy = false
+  let lastSpawn: CritterSpawn | null = null
 
   const applySpawn = (spawn: CritterSpawn): void => {
     sleepy = spawn.sleepy
+    lastSpawn = spawn
     head.setTexture(`was-critter-${spawn.critterId}`)
 
     if (spawn.golden) {
@@ -233,14 +237,26 @@ export function buildCritterRig(scene: Phaser.Scene, px: Px): CritterRig {
     eyes.setVisible(sleepy && !awake)
   }
 
+  const flashParts = [body, belly, pawL, pawR, head]
+
+  const flashWhite = (ms: number): void => {
+    for (const p of flashParts) p.setTint(0xffffff).setTintMode(Phaser.TintModes.FILL)
+    scene.time.delayedCall(ms, () => {
+      for (const p of flashParts) p.setTintMode(Phaser.TintModes.MULTIPLY)
+      if (lastSpawn) applySpawn(lastSpawn)
+    })
+  }
+
   const reset = (): void => {
     inner.setScale(1).setAngle(0).setAlpha(1).setVisible(false)
+    for (const p of flashParts) p.setTintMode(Phaser.TintModes.MULTIPLY)
     glow.setVisible(false)
     eyes.setVisible(false)
     cap.setVisible(false)
     head.clearTint()
     sleepy = false
+    lastSpawn = null
   }
 
-  return { outer, inner, head, glow, applySpawn, setAwake, reset }
+  return { outer, inner, head, glow, applySpawn, setAwake, flashWhite, reset }
 }

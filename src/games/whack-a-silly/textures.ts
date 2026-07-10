@@ -175,6 +175,18 @@ export function makeCloudTexture(scene: Phaser.Scene, px: Px): void {
   g.destroy()
 }
 
+/** Small irregular dirt chunk — flung up by the wake-up anticipation puff. */
+export function makeDirtChunkTexture(scene: Phaser.Scene, px: Px): void {
+  if (scene.textures.exists('was-dirt')) return
+  const g = scene.add.graphics()
+  g.fillStyle(0x9a7250, 1)
+  g.fillCircle(px(5), px(5), px(5))
+  g.fillStyle(0x7f5c40, 1)
+  g.fillCircle(px(7), px(7), px(3))
+  g.generateTexture('was-dirt', px(12), px(12))
+  g.destroy()
+}
+
 /** Little grass tuft (a few blades) scattered on the lawn for texture. */
 export function makeTuftTexture(scene: Phaser.Scene, px: Px): void {
   if (scene.textures.exists('was-tuft')) return

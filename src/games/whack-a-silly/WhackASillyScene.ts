@@ -5,6 +5,7 @@ import {
   CRITTERS,
   GRID_SIZE,
   HOLE_COUNT,
+  comboStep,
   gapMs,
   isConfettiBop,
   levelForBops,
@@ -16,11 +17,17 @@ import type { CritterRig } from './critterRig'
 import {
   MOUND_GEOM,
   makeCloudTexture,
+  makeDirtChunkTexture,
   makeLipTexture,
   makeMoundBackTexture,
   makeShadowTexture,
   makeTuftTexture,
 } from './textures'
+
+/** Thwack base pitch (D5); the combo step shifts it up in semitones. */
+const THWACK_BASE = 587
+/** Wake-up anticipation window before a critter actually rises. */
+const ANTICIPATE_MS = 240
 
 // ART SPEC palette — garden scene.
 const SKY_TOP = 0xbde3ff
@@ -62,9 +69,11 @@ interface Hole {
   rig: CritterRig
   skirt: Phaser.GameObjects.Graphics
   lip: Phaser.GameObjects.Image
-  state: 'down' | 'rising' | 'up' | 'leaving'
+  /** 'waking' = telegraphing (mound wiggle) before the critter actually rises. */
+  state: 'down' | 'waking' | 'rising' | 'up' | 'leaving'
   spawn: CritterSpawn | null
   upTimer: Phaser.Time.TimerEvent | null
+  wakeTimer: Phaser.Time.TimerEvent | null
 }
 
 export default class WhackASillyScene extends Phaser.Scene {
@@ -90,6 +99,8 @@ export default class WhackASillyScene extends Phaser.Scene {
   private stars!: Phaser.GameObjects.Particles.ParticleEmitter
   private sparkles!: Phaser.GameObjects.Particles.ParticleEmitter
   private poofs!: Phaser.GameObjects.Particles.ParticleEmitter
+  private dirt!: Phaser.GameObjects.Particles.ParticleEmitter
+  private hitStopTimer: Phaser.Time.TimerEvent | null = null
 
   constructor() {
     super('whack-a-silly')
@@ -122,7 +133,12 @@ export default class WhackASillyScene extends Phaser.Scene {
       window.removeEventListener('resize', this.handleWindowResize)
       window.removeEventListener('orientationchange', this.handleWindowResize)
       this.spawnTimer?.remove(false)
-      for (const hole of this.holes) hole.upTimer?.remove(false)
+      this.hitStopTimer?.remove(false)
+      this.tweens.timeScale = 1
+      for (const hole of this.holes) {
+        hole.upTimer?.remove(false)
+        hole.wakeTimer?.remove(false)
+      }
     })
 
     this.startTime = this.time.now
@@ -177,6 +193,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     makeShadowTexture(this, px)
     makeCloudTexture(this, px)
     makeTuftTexture(this, px)
+    makeDirtChunkTexture(this, px)
 
     // Soft golden halo behind the rare golden critter.
     if (!this.textures.exists('was-glow')) {
@@ -348,6 +365,7 @@ export default class WhackASillyScene extends Phaser.Scene {
         state: 'down',
         spawn: null,
         upTimer: null,
+        wakeTimer: null,
       }
       rig.head.on('pointerdown', () => this.onCritterTap(hole))
       this.holes.push(hole)
@@ -391,7 +409,17 @@ export default class WhackASillyScene extends Phaser.Scene {
       tint: DIRT_TINTS,
       emitting: false,
     })
-    for (const emitter of [this.confetti, this.stars, this.sparkles, this.poofs]) {
+    // Little dirt chunks kicked up as a critter starts to wake (anticipation).
+    this.dirt = this.add.particles(0, 0, 'was-dirt', {
+      speed: { min: this.px(90), max: this.px(210) },
+      angle: { min: 250, max: 290 },
+      gravityY: this.px(900),
+      lifespan: { min: 350, max: 600 },
+      scale: { start: 1, end: 0.4 },
+      rotate: { start: 0, end: 220 },
+      emitting: false,
+    })
+    for (const emitter of [this.confetti, this.stars, this.sparkles, this.poofs, this.dirt]) {
       emitter.setDepth(50)
     }
   }
@@ -559,9 +587,40 @@ export default class WhackASillyScene extends Phaser.Scene {
   private popCritter(hole: Hole, spawn: CritterSpawn, upTime: number): void {
     if (hole.state !== 'down') return
     hole.spawn = spawn
-    hole.state = 'rising'
+    hole.state = 'waking'
     this.activeCritters++
 
+    // Anticipation: the ground rumbles + spits dirt before anything appears, so
+    // the child's eye is already on the hole when the critter rises.
+    this.anticipate(hole)
+    hole.wakeTimer = this.time.delayedCall(ANTICIPATE_MS, () => {
+      if (hole.state !== 'waking') return
+      this.riseCritter(hole, spawn, upTime)
+    })
+  }
+
+  /** Telegraph a spawn: mound wiggle + dirt chunks + a low rumble. */
+  private anticipate(hole: Hole): void {
+    const s = this.moundScale
+    for (let i = 0; i < 3; i++) {
+      this.time.delayedCall(i * 80, () => playTone(98, 70, 'square', 0.05 - i * 0.005))
+    }
+    this.dirt.explode(5, hole.x, hole.y + this.px(4) * s)
+    this.tweens.killTweensOf(hole.moundBack)
+    this.tweens.add({
+      targets: hole.moundBack,
+      x: { from: hole.x - this.px(2) * s, to: hole.x + this.px(2) * s },
+      duration: 60,
+      yoyo: true,
+      repeat: 3,
+      ease: 'Sine.easeInOut',
+      onComplete: () => hole.moundBack.setX(hole.x),
+    })
+  }
+
+  /** The rig actually climbs out of the hole (Back.easeOut overshoot). */
+  private riseCritter(hole: Hole, spawn: CritterSpawn, upTime: number): void {
+    hole.state = 'rising'
     hole.rig.applySpawn(spawn)
     if (spawn.golden) this.sparkles.explode(10, hole.x, hole.y - this.px(30) * this.moundScale)
     hole.rig.head.setInteractive()
@@ -583,8 +642,22 @@ export default class WhackASillyScene extends Phaser.Scene {
       onComplete: () => {
         if (hole.state !== 'rising') return
         hole.state = 'up'
+        this.startIdle(hole)
         hole.upTimer = this.time.delayedCall(upTime, () => this.expire(hole))
       },
+    })
+  }
+
+  /** Alive-idle for a go critter: a gentle side-to-side head-tilt while up. */
+  private startIdle(hole: Hole): void {
+    if (hole.spawn?.sleepy || hole.spawn?.peek) return
+    this.tweens.add({
+      targets: hole.rig.inner,
+      angle: { from: -3, to: 3 },
+      duration: 600,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
     })
   }
 
@@ -615,6 +688,8 @@ export default class WhackASillyScene extends Phaser.Scene {
   private resetHole(hole: Hole): void {
     hole.state = 'down'
     hole.spawn = null
+    hole.wakeTimer?.remove(false)
+    hole.wakeTimer = null
     hole.rig.head.disableInteractive()
     hole.rig.reset()
     hole.shadow.setVisible(false)
@@ -627,7 +702,11 @@ export default class WhackASillyScene extends Phaser.Scene {
     for (const hole of this.holes) {
       hole.upTimer?.remove(false)
       hole.upTimer = null
+      hole.wakeTimer?.remove(false)
+      hole.wakeTimer = null
       this.tweens.killTweensOf(hole.rig.inner)
+      this.tweens.killTweensOf(hole.moundBack)
+      hole.moundBack.setX(hole.x)
       this.resetHole(hole)
     }
     this.activeCritters = 0
@@ -636,7 +715,19 @@ export default class WhackASillyScene extends Phaser.Scene {
   private stopCritterClock(hole: Hole): void {
     hole.upTimer?.remove(false)
     hole.upTimer = null
+    hole.wakeTimer?.remove(false)
+    hole.wakeTimer = null
     this.tweens.killTweensOf(hole.rig.inner)
+  }
+
+  /** Brief global hit-stop for a punchy bop; restores on the real-time clock. */
+  private hitStop(): void {
+    this.tweens.timeScale = 0.15
+    this.hitStopTimer?.remove(false)
+    this.hitStopTimer = this.time.delayedCall(50, () => {
+      this.tweens.timeScale = 1
+      this.hitStopTimer = null
+    })
   }
 
   // ─── Reactions ───────────────────────────────────────────────────────────
@@ -647,7 +738,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     else this.bop(hole)
   }
 
-  /** GO critter bopped: squash flat + dirt poof + descending boing → sinks. */
+  /** GO critter bopped: hit-stop + white flash + shake + squash → sinks. */
   private bop(hole: Hole): void {
     const golden = hole.spawn?.golden ?? false
     hole.state = 'leaving'
@@ -655,15 +746,23 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.bops++
     reportLevel(levelForBops(this.bops))
 
-    playTone(587, 70, 'square', 0.08)
-    this.time.delayedCall(70, () => playTone(294, 130, 'square', 0.06))
+    // Thwack pitch climbs with the combo streak (resets every 10 bops).
+    const thwack = THWACK_BASE * Math.pow(2, comboStep(this.bops) / 12)
+    playTone(thwack, 70, 'square', 0.08)
+    this.time.delayedCall(70, () => playTone(thwack / 2, 130, 'square', 0.06))
+
+    // Juice: freeze the frame, flash white, kick the camera, kick up dirt.
+    this.hitStop()
+    hole.rig.flashWhite(60)
+    this.cameras.main.shake(90, 0.002)
     this.poofs.explode(12, hole.x, hole.y)
 
+    // Volume-conserving squash, then the celebration (variants come next).
     this.tweens.add({
       targets: hole.rig.inner,
-      scaleX: 1.35,
-      scaleY: 0.3,
-      duration: 90,
+      scaleX: 1.3,
+      scaleY: 0.6,
+      duration: 70,
       ease: 'Quad.easeOut',
       onComplete: () => this.descend(hole, 140),
     })
