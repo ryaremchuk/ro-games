@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import PhaserGame from '../../shared/PhaserGame'
+import { viewportSize } from '../../shared/viewport'
 import WhackASillyScene from './WhackASillyScene'
 
 /**
@@ -15,13 +16,14 @@ import WhackASillyScene from './WhackASillyScene'
  */
 export default function WhackASillyGame() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3)
+  const vp = viewportSize()
   const config: Omit<Phaser.Types.Core.GameConfig, 'parent'> = {
     type: Phaser.AUTO,
     backgroundColor: '#BDE3FF',
     scale: {
       mode: Phaser.Scale.NONE,
-      width: Math.max(window.innerWidth, 1) * dpr,
-      height: Math.max(window.innerHeight, 1) * dpr,
+      width: vp.width * dpr,
+      height: vp.height * dpr,
       zoom: 1 / dpr,
     },
     scene: [WhackASillyScene],
