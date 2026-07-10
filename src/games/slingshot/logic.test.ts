@@ -4,7 +4,6 @@ import {
   BALL,
   BASE_GRAVITY_NORM,
   BIRDS,
-  FREE_SPEED_NORM,
   GROUND_Y,
   KNOCK_SPEED_NORM,
   MATERIALS,
@@ -344,29 +343,11 @@ describe('theme props appear on schedule', () => {
   })
 })
 
-describe('contact-speed thresholds (normalized — the self-free regression)', () => {
-  // Spawned piggies rest their visual radius above the perch but collide with
-  // a PIGGY_BODY_SCALE-sized circle, so at level wake they free-fall this gap.
-  const spawnGap = PIGGY.radius * (1 - PIGGY_BODY_SCALE)
-
-  it('level-entrance landing speed stays below the free threshold at any gravity', () => {
-    for (const scale of [1, MOON_GRAVITY_SCALE]) {
-      const landing = Math.sqrt(2 * BASE_GRAVITY_NORM * scale * spawnGap)
-      expect(landing).toBeLessThan(FREE_SPEED_NORM)
-    }
-  })
-
-  it('a block toppling from one block height still frees (generosity kept)', () => {
-    const blockH = level(1).blocks[0].h
-    const fall = Math.sqrt(2 * BASE_GRAVITY_NORM * blockH)
-    expect(fall).toBeGreaterThan(FREE_SPEED_NORM)
-  })
-
-  it('orders sanely: settle < knock < free < max launch speed', () => {
+describe('contact-speed thresholds (normalized)', () => {
+  it('orders sanely: settle < knock < max launch speed', () => {
     expect(SETTLE_SPEED_NORM).toBeGreaterThan(0)
     expect(SETTLE_SPEED_NORM).toBeLessThan(KNOCK_SPEED_NORM)
-    expect(KNOCK_SPEED_NORM).toBeLessThan(FREE_SPEED_NORM)
-    expect(FREE_SPEED_NORM).toBeLessThan(MAX_LAUNCH_SPEED_NORM)
+    expect(KNOCK_SPEED_NORM).toBeLessThan(MAX_LAUNCH_SPEED_NORM)
   })
 })
 
@@ -499,27 +480,24 @@ describe('variety (anti-oatmeal: consecutive levels must differ)', () => {
   })
 })
 
-describe('canFreePiggy arming (no zero-input frees)', () => {
-  it('unarmed: nothing frees, not even a fast direct bird hit', () => {
-    expect(canFreePiggy(false, 'bird', 99, 99, FREE_SPEED_NORM)).toBe(false)
-    expect(canFreePiggy(false, 'block', 99, 0, FREE_SPEED_NORM)).toBe(false)
-    expect(canFreePiggy(false, 'ground', 0, 99, FREE_SPEED_NORM)).toBe(false)
-    expect(canFreePiggy(false, 'plank', 99, 99, FREE_SPEED_NORM)).toBe(false)
+describe('canFreePiggy (bird-only frees, armed by first launch)', () => {
+  it('unarmed: nothing frees, not even a direct bird hit', () => {
+    expect(canFreePiggy(false, 'bird')).toBe(false)
+    expect(canFreePiggy(false, 'block')).toBe(false)
+    expect(canFreePiggy(false, 'ground')).toBe(false)
   })
 
-  it('armed: a bird frees at any speed, even resting contact', () => {
-    expect(canFreePiggy(true, 'bird', 0, 0, FREE_SPEED_NORM)).toBe(true)
+  it('armed: the flying bird frees on any contact', () => {
+    expect(canFreePiggy(true, 'bird')).toBe(true)
   })
 
-  it('armed: non-bird contact frees only above the threshold', () => {
-    expect(canFreePiggy(true, 'block', FREE_SPEED_NORM * 0.5, 0, FREE_SPEED_NORM)).toBe(false)
-    expect(canFreePiggy(true, 'block', FREE_SPEED_NORM * 2, 0, FREE_SPEED_NORM)).toBe(true)
-    expect(canFreePiggy(true, 'ground', 0, FREE_SPEED_NORM * 2, FREE_SPEED_NORM)).toBe(true)
-    expect(canFreePiggy(true, 'ground', 0, FREE_SPEED_NORM * 0.9, FREE_SPEED_NORM)).toBe(false)
+  it('armed: nothing but the bird ever frees — no matter the impact', () => {
+    for (const label of ['block', 'ground', 'wall', 'plank', 'ball', 'trampoline', 'piggy']) {
+      expect(canFreePiggy(true, label)).toBe(false)
+    }
   })
 
-  it('armed: the entrance-landing bump still cannot free (belt check)', () => {
-    const landing = Math.sqrt(2 * BASE_GRAVITY_NORM * PIGGY.radius * (1 - PIGGY_BODY_SCALE))
-    expect(canFreePiggy(true, 'block', landing, landing, FREE_SPEED_NORM)).toBe(false)
+  it('armed: a spent bird lying on the field cannot free', () => {
+    expect(canFreePiggy(true, 'spentBird')).toBe(false)
   })
 })

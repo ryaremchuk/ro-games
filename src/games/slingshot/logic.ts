@@ -173,16 +173,8 @@ export const MOON_COMBO_PROBABILITY = 0.22
 // Like every other *_NORM constant these are scaled by the resolution unit L
 // in the scene (px/step = norm · L / 60). A raw-pixel threshold here is a bug
 // class: the same physical nudge crosses it on one screen size and not on
-// another — and the level-entrance drop crossed the old raw threshold on
-// EVERY device, self-freeing piggies with zero input.
+// another.
 
-/**
- * Non-bird contact above this speed frees a piggy (once freeing is armed).
- * Sized between the level-entrance landing bump (√(2·g·spawn gap) = 0.12,
- * see PIGGY_BODY_SCALE) and a block toppling from one block height (≈ 0.56),
- * so settling can never free but a real knock always does.
- */
-export const FREE_SPEED_NORM = 0.25
 /** Impact speed above which block knocks / ground thuds sound. */
 export const KNOCK_SPEED_NORM = 0.15
 /** Below this speed the flying bird counts as settling (then it lands). */
@@ -191,30 +183,21 @@ export const SETTLE_SPEED_NORM = 0.01
 /**
  * Physics circle of a piggy as a fraction of its visual radius (forgiving
  * hull). Consequence: a spawned piggy rests its VISUAL radius above the perch
- * and free-falls the remaining (1 − scale)·radius gap when the level wakes —
- * that landing speed must stay below FREE_SPEED_NORM (tested).
+ * and free-falls the remaining (1 − scale)·radius gap when the level wakes.
  */
 export const PIGGY_BODY_SCALE = 0.9
 
 /**
- * May this contact free a piggy? Freeing is DISARMED until the first bird
- * launch of the current level, so build/entrance/settle collisions can never
- * free a piggy with zero player input (e.g. the spawn-gap landing, or a
- * seesaw tipping its far-end piggy off at wake — the latter exceeds any sane
- * speed threshold, which is why arming is the load-bearing guard). Once
- * armed: a bird frees at any speed — generous; anything else (falling block,
- * shoved piggy) frees above the threshold. Speeds and threshold must share
- * one unit (the scene passes px/step).
+ * May this contact free a piggy? ONLY a direct hit from the flying bird frees.
+ * Blocks, props, the ground, or another shoved piggy never do, no matter how
+ * fast — a toppling box brushing a piggy must not count as a rescue. Spent
+ * birds lying on the field are relabeled 'spentBird' by the scene, so they
+ * cannot free either. Freeing is additionally DISARMED until the first bird
+ * launch of the current level, so no build/entrance/settle collision can ever
+ * free a piggy with zero player input.
  */
-export function canFreePiggy(
-  armed: boolean,
-  hitterLabel: string,
-  hitterSpeed: number,
-  piggySpeed: number,
-  threshold: number,
-): boolean {
-  if (!armed) return false
-  return hitterLabel === 'bird' || hitterSpeed > threshold || piggySpeed > threshold
+export function canFreePiggy(armed: boolean, hitterLabel: string): boolean {
+  return armed && hitterLabel === 'bird'
 }
 
 // ─── Themes / schedule ───────────────────────────────────────────────────────

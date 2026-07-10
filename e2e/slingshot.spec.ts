@@ -60,6 +60,31 @@ test('slingshot: a real pointer drag launches the bird even after a slow aim', a
   }
 })
 
+test('slingshot: a fired bird stays on the field while the next one reloads', async ({ page }) => {
+  await page.goto('./#/slingshot')
+  await waitForAimable(page)
+
+  // A straight-up lob that can never reach the tower (zero horizontal pull):
+  // the bird must land, STAY on the field (no poof), and a fresh bird must
+  // hop onto the sling. A flatter arc is NOT safe here — it can free the
+  // level-1 piggy, clear the level, and reset spentBirds mid-assertion.
+  await dragLaunch(page, { x: 350, y: 700 }, { x: 0, y: 70 })
+  await page.waitForFunction(
+    () => {
+      const s = window.__slingshot?.state()
+      return s?.birdState === 'loaded' && s.spentBirds >= 1
+    },
+    undefined,
+    { timeout: 20_000 },
+  )
+
+  // The spent bird persists well past the old 900ms poof window.
+  await page.waitForTimeout(1500)
+  const s = await readState(page)
+  expect(s.spentBirds).toBeGreaterThanOrEqual(1)
+  expect(s.birdState).toBe('loaded')
+})
+
 test('slingshot: real drags play through level 1 and advance to level 2', async ({ page }) => {
   // A full playthrough can take many flights (the assist ramps after 5 misses).
   test.setTimeout(150_000)
