@@ -5,6 +5,7 @@ import {
   CRITTERS,
   GRID_SIZE,
   HOLE_COUNT,
+  bopVariantFor,
   comboStep,
   gapMs,
   isConfettiBop,
@@ -20,6 +21,7 @@ import {
   makeDirtChunkTexture,
   makeLipTexture,
   makeMoundBackTexture,
+  makeRingTexture,
   makeShadowTexture,
   makeTuftTexture,
 } from './textures'
@@ -74,6 +76,10 @@ interface Hole {
   spawn: CritterSpawn | null
   upTimer: Phaser.Time.TimerEvent | null
   wakeTimer: Phaser.Time.TimerEvent | null
+  /** Transient celebration FX (rings/hearts/notes) + their timers, for cleanup
+   *  on a hard reset (resize/shutdown); in normal play they self-destruct. */
+  fx: Phaser.GameObjects.GameObject[]
+  fxTimers: Phaser.Time.TimerEvent[]
 }
 
 export default class WhackASillyScene extends Phaser.Scene {
@@ -138,6 +144,7 @@ export default class WhackASillyScene extends Phaser.Scene {
       for (const hole of this.holes) {
         hole.upTimer?.remove(false)
         hole.wakeTimer?.remove(false)
+        for (const timer of hole.fxTimers) timer.remove(false)
       }
     })
 
@@ -186,6 +193,8 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.emojiTexture('was-flower-2', '🌻', 44)
     this.emojiTexture('was-butterfly', '🦋', 40)
     this.emojiTexture('was-bird', '🐦', 30)
+    this.emojiTexture('was-heart', '💖', 30)
+    this.emojiTexture('was-note', '🎵', 28)
 
     const px = (css: number) => this.px(css)
     makeMoundBackTexture(this, px)
@@ -194,6 +203,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     makeCloudTexture(this, px)
     makeTuftTexture(this, px)
     makeDirtChunkTexture(this, px)
+    makeRingTexture(this, px)
 
     // Soft golden halo behind the rare golden critter.
     if (!this.textures.exists('was-glow')) {
@@ -366,6 +376,8 @@ export default class WhackASillyScene extends Phaser.Scene {
         spawn: null,
         upTimer: null,
         wakeTimer: null,
+        fx: [],
+        fxTimers: [],
       }
       rig.head.on('pointerdown', () => this.onCritterTap(hole))
       this.holes.push(hole)
@@ -707,9 +719,18 @@ export default class WhackASillyScene extends Phaser.Scene {
       this.tweens.killTweensOf(hole.rig.inner)
       this.tweens.killTweensOf(hole.moundBack)
       hole.moundBack.setX(hole.x)
+      this.clearFx(hole)
       this.resetHole(hole)
     }
     this.activeCritters = 0
+  }
+
+  /** Dispose any in-flight celebration FX + their timers (hard reset only). */
+  private clearFx(hole: Hole): void {
+    for (const timer of hole.fxTimers) timer.remove(false)
+    hole.fxTimers.length = 0
+    for (const obj of [...hole.fx]) obj.destroy()
+    hole.fx.length = 0
   }
 
   private stopCritterClock(hole: Hole): void {
@@ -738,7 +759,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     else this.bop(hole)
   }
 
-  /** GO critter bopped: hit-stop + white flash + shake + squash → sinks. */
+  /** GO critter bopped: hit-stop + white flash + shake + squash → celebration. */
   private bop(hole: Hole): void {
     const golden = hole.spawn?.golden ?? false
     hole.state = 'leaving'
@@ -757,19 +778,153 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.cameras.main.shake(90, 0.002)
     this.poofs.explode(12, hole.x, hole.y)
 
-    // Volume-conserving squash, then the celebration (variants come next).
+    // Common hit squash, then one of three rotating celebrations (golden always
+    // launches). bopVariantFor cycles 0→1→2 so back-to-back bops feel different.
+    const variant = golden ? 0 : bopVariantFor(this.bops)
     this.tweens.add({
       targets: hole.rig.inner,
       scaleX: 1.3,
       scaleY: 0.6,
       duration: 70,
       ease: 'Quad.easeOut',
-      onComplete: () => this.descend(hole, 140),
+      onComplete: () => this.playBopVariant(hole, variant),
     })
 
     if (golden) this.goldenCelebration(hole)
     else if (isConfettiBop(this.bops)) this.miniCelebration(hole)
     this.onCritterGone()
+  }
+
+  /** Route to one of the three bop celebrations (guarded on the hole state). */
+  private playBopVariant(hole: Hole, variant: 0 | 1 | 2): void {
+    if (hole.state !== 'leaving') return
+    if (variant === 0) this.launchBop(hole)
+    else if (variant === 1) this.boingBop(hole)
+    else this.heartsBop(hole)
+  }
+
+  /** Track a transient FX object so a hard reset can dispose it. */
+  private addFx<T extends Phaser.GameObjects.GameObject>(hole: Hole, obj: T): T {
+    hole.fx.push(obj)
+    obj.once(Phaser.GameObjects.Events.DESTROY, () => {
+      const i = hole.fx.indexOf(obj)
+      if (i >= 0) hole.fx.splice(i, 1)
+    })
+    return obj
+  }
+
+  /** Variant A — launch: the critter rockets up spinning, then drops back in. */
+  private launchBop(hole: Hole): void {
+    const inner = hole.rig.inner
+    const s = this.moundScale
+    const spin = (Math.random() < 0.5 ? -1 : 1) * 360
+    hole.shadow.setVisible(true).setScale(s).setAlpha(0.85)
+    this.tweens.add({
+      targets: hole.shadow,
+      scale: s * 0.35,
+      duration: 360,
+      yoyo: true,
+      ease: 'Quad.easeOut',
+      onComplete: () => hole.shadow.setVisible(false),
+    })
+    this.tweens.add({
+      targets: inner,
+      y: this.px(-190),
+      scaleX: 1,
+      scaleY: 1,
+      angle: spin,
+      duration: 360,
+      ease: 'Quad.easeOut',
+      onComplete: () => {
+        if (hole.state !== 'leaving') return
+        this.stars.explode(8, hole.x, hole.y - this.px(210) * s)
+        this.tweens.add({
+          targets: inner,
+          y: this.px(UP_LOCAL),
+          angle: 0,
+          duration: 240,
+          ease: 'Quad.easeIn',
+          onComplete: () => {
+            if (hole.state !== 'leaving') return
+            this.poofs.explode(10, hole.x, hole.y)
+            this.descend(hole, 140)
+          },
+        })
+      },
+    })
+  }
+
+  /** Variant B — boing: springy overshoot back to shape + expanding rings. */
+  private boingBop(hole: Hole): void {
+    this.spawnRings(hole)
+    this.confetti.explode(12, hole.x, hole.y - this.px(40) * this.moundScale)
+    this.tweens.add({
+      targets: hole.rig.inner,
+      scaleX: 1,
+      scaleY: 1,
+      duration: 260,
+      ease: 'Back.easeOut',
+      onComplete: () => this.descend(hole, 150),
+    })
+  }
+
+  /** Variant C — hearts: love/music floaters sway up while the critter sinks. */
+  private heartsBop(hole: Hole): void {
+    const s = this.moundScale
+    this.sparkles.explode(10, hole.x, hole.y - this.px(30) * s)
+    for (let i = 0; i < 7; i++) {
+      const timer = this.time.delayedCall(i * 70, () => {
+        const key = Math.random() < 0.5 ? 'was-heart' : 'was-note'
+        const dir = i % 2 === 0 ? 1 : -1
+        const fx = this.addFx(
+          hole,
+          this.add
+            .image(hole.x + Phaser.Math.Between(-22, 22) * s, hole.y - this.px(20) * s, key)
+            .setDepth(40)
+            .setScale(0.5),
+        )
+        this.tweens.add({
+          targets: fx,
+          x: fx.x + dir * this.px(28) * s,
+          y: fx.y - this.px(170) * s,
+          scale: 0.9,
+          alpha: { from: 1, to: 0 },
+          duration: 900,
+          ease: 'Sine.easeOut',
+          onComplete: () => fx.destroy(),
+        })
+      })
+      hole.fxTimers.push(timer)
+    }
+    this.descend(hole, 150)
+  }
+
+  /** Two staggered shockwave rings that expand and fade at the hole. */
+  private spawnRings(hole: Hole): void {
+    const s = this.moundScale
+    const tints = [0xffffff, 0xffd93d]
+    ;[0, 120].forEach((delay, i) => {
+      const timer = this.time.delayedCall(delay, () => {
+        const ring = this.addFx(
+          hole,
+          this.add
+            .image(hole.x, hole.y - this.px(18) * s, 'was-ring')
+            .setDepth(40)
+            .setScale(0.3 * s)
+            .setAlpha(0.9)
+            .setTint(tints[i]),
+        )
+        this.tweens.add({
+          targets: ring,
+          scale: 2.2 * s,
+          alpha: 0,
+          duration: 500,
+          ease: 'Quad.easeOut',
+          onComplete: () => ring.destroy(),
+        })
+      })
+      hole.fxTimers.push(timer)
+    })
   }
 
   /**

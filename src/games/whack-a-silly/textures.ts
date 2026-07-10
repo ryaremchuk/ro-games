@@ -175,6 +175,16 @@ export function makeCloudTexture(scene: Phaser.Scene, px: Px): void {
   g.destroy()
 }
 
+/** Thin white ring (tinted per instance) — the expanding shockwave rings. */
+export function makeRingTexture(scene: Phaser.Scene, px: Px): void {
+  if (scene.textures.exists('was-ring')) return
+  const g = scene.add.graphics()
+  g.lineStyle(px(7), 0xffffff, 1)
+  g.strokeCircle(px(60), px(60), px(50))
+  g.generateTexture('was-ring', px(120), px(120))
+  g.destroy()
+}
+
 /** Small irregular dirt chunk — flung up by the wake-up anticipation puff. */
 export function makeDirtChunkTexture(scene: Phaser.Scene, px: Px): void {
   if (scene.textures.exists('was-dirt')) return
