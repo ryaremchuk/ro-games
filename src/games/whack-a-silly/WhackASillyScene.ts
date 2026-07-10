@@ -11,6 +11,8 @@ import {
   planSpawn,
 } from './logic'
 import type { CritterSpawn, RampState } from './logic'
+import { buildCritterRig } from './critterRig'
+import type { CritterRig } from './critterRig'
 import { MOUND_GEOM, makeLipTexture, makeMoundBackTexture, makeShadowTexture } from './textures'
 
 // ART SPEC palette — garden scene.
@@ -19,7 +21,6 @@ const SKY_BOTTOM = 0xe8f6ff
 const GRASS_TOP = 0x8fd14f
 const GRASS_BOTTOM = 0x6bcb77
 const GOLD = 0xffd93d
-const PINK = 0xff8fab
 const CONFETTI_TINTS = [0xff6b6b, 0xffd93d, 0x6bcb77, 0x4d96ff, 0xff8fab, 0x9b5de5]
 const DIRT_TINTS = [0xb08968, 0xa0785a, 0x8c6a4f]
 
@@ -46,13 +47,9 @@ interface Hole {
   y: number
   moundBack: Phaser.GameObjects.Image
   shadow: Phaser.GameObjects.Image
-  /** Carries hole position + moundScale + depth; NEVER tweened. */
-  outer: Phaser.GameObjects.Container
-  /** The critter; tweened, and hidden (setVisible(false)) whenever down. */
-  inner: Phaser.GameObjects.Container
-  body: Phaser.GameObjects.Image
-  glow: Phaser.GameObjects.Image
-  hat: Phaser.GameObjects.Image
+  /** Full-body critter rig: rig.outer carries position/scale/depth (never
+   *  tweened); rig.inner is tweened + hidden whenever the critter is down. */
+  rig: CritterRig
   skirt: Phaser.GameObjects.Graphics
   lip: Phaser.GameObjects.Image
   state: 'down' | 'rising' | 'up' | 'leaving'
@@ -163,20 +160,6 @@ export default class WhackASillyScene extends Phaser.Scene {
     makeLipTexture(this, px)
     makeShadowTexture(this, px)
 
-    // Party hat (NO-GO marker, temporary — replaced by the sleeper rig later).
-    if (!this.textures.exists('was-hat')) {
-      const g = this.add.graphics()
-      g.fillStyle(PINK, 1)
-      g.fillTriangle(this.px(23), this.px(10), this.px(3), this.px(48), this.px(43), this.px(48))
-      g.fillStyle(GOLD, 1)
-      g.fillCircle(this.px(23), this.px(27), this.px(4))
-      g.fillCircle(this.px(16), this.px(40), this.px(4))
-      g.fillCircle(this.px(30), this.px(40), this.px(4))
-      g.fillCircle(this.px(23), this.px(8), this.px(7))
-      g.generateTexture('was-hat', this.px(46), this.px(52))
-      g.destroy()
-    }
-
     // Soft golden halo behind the rare golden critter.
     if (!this.textures.exists('was-glow')) {
       const g = this.add.graphics()
@@ -276,7 +259,7 @@ export default class WhackASillyScene extends Phaser.Scene {
   }
 
   private buildHoles(): void {
-    const frame = this.textures.getFrame('was-critter-hamster')
+    const px = (css: number) => this.px(css)
     for (let i = 0; i < HOLE_COUNT; i++) {
       const row = Math.floor(i / GRID_SIZE)
       const band = this.band(row)
@@ -302,25 +285,14 @@ export default class WhackASillyScene extends Phaser.Scene {
         .setDepth(band + 1)
         .setVisible(false)
 
-      // Critter rig: outer (position/scale/depth) → inner (tweened, hideable).
-      const glow = this.add.image(0, this.px(-46), 'was-glow').setVisible(false)
-      const body = this.add.image(0, this.px(-40), `was-critter-hamster`)
-      const hat = this.add.image(0, this.px(-82), 'was-hat').setVisible(false).setAngle(8)
-      const inner = this.add.container(0, 0, [glow, body, hat])
-      const outer = this.add.container(0, 0, [inner]).setDepth(band + 2)
-      inner.setVisible(false)
+      // Full-body critter rig (outer = position/scale/depth; inner = tweened).
+      const rig = buildCritterRig(this, px)
+      rig.outer.setDepth(band + 2)
 
       // Grass skirt (matches bg grass) hides the critter's below-rim transit.
       const skirt = this.add.graphics().setDepth(band + 3)
       // Front dirt lip — drawn over the critter so it emerges from inside.
       const lip = this.add.image(0, 0, 'was-lip').setDepth(band + 4)
-
-      // Generous hit target (~120 css px circle) around the critter's head.
-      body.setInteractive(
-        new Phaser.Geom.Circle(frame.width / 2, frame.height / 2, this.px(58)),
-        Phaser.Geom.Circle.Contains,
-      )
-      body.disableInteractive()
 
       const hole: Hole = {
         index: i,
@@ -329,18 +301,14 @@ export default class WhackASillyScene extends Phaser.Scene {
         y: 0,
         moundBack,
         shadow,
-        outer,
-        inner,
-        body,
-        glow,
-        hat,
+        rig,
         skirt,
         lip,
         state: 'down',
         spawn: null,
         upTimer: null,
       }
-      body.on('pointerdown', () => this.onCritterTap(hole))
+      rig.head.on('pointerdown', () => this.onCritterTap(hole))
       this.holes.push(hole)
     }
   }
@@ -429,7 +397,7 @@ export default class WhackASillyScene extends Phaser.Scene {
 
       hole.moundBack.setPosition(cx, cy + this.px(MOUND_OFFSET_Y) * s).setScale(s)
       hole.lip.setPosition(cx, cy).setScale(s)
-      hole.outer.setPosition(cx, cy).setScale(s)
+      hole.rig.outer.setPosition(cx, cy).setScale(s)
       hole.shadow.setPosition(cx, cy + this.px(6) * s).setScale(s)
       this.drawSkirt(hole, skyH, h)
       if (hole.state === 'down') this.parkDown(hole)
@@ -501,28 +469,21 @@ export default class WhackASillyScene extends Phaser.Scene {
     hole.state = 'rising'
     this.activeCritters++
 
-    hole.body.setTexture(`was-critter-${spawn.critterId}`)
-    if (spawn.golden) {
-      hole.body.setTint(GOLD)
-      hole.glow.setVisible(true)
-      this.sparkles.explode(10, hole.x, hole.y - this.px(30))
-    } else {
-      hole.body.clearTint()
-      hole.glow.setVisible(false)
-    }
-    hole.hat.setVisible(spawn.sleepy)
-    hole.body.setInteractive()
+    hole.rig.applySpawn(spawn)
+    if (spawn.golden) this.sparkles.explode(10, hole.x, hole.y - this.px(30) * this.moundScale)
+    hole.rig.head.setInteractive()
 
+    const inner = hole.rig.inner
     const peekDir = Math.random() < 0.5 ? -1 : 1
     const peekX = spawn.peek ? peekDir * this.px(20) : 0
-    hole.inner.setPosition(peekX, this.px(DOWN_LOCAL))
-    hole.inner.setScale(1).setAlpha(1)
-    hole.inner.setAngle(spawn.peek ? peekDir * 12 : 0)
-    hole.inner.setVisible(true)
+    inner.setPosition(peekX, this.px(DOWN_LOCAL))
+    inner.setScale(1).setAlpha(1)
+    inner.setAngle(spawn.peek ? peekDir * 12 : 0)
+    inner.setVisible(true)
 
     playTone(523, 40, 'sine', 0.03)
     this.tweens.add({
-      targets: hole.inner,
+      targets: inner,
       y: this.px(spawn.peek ? PEEK_LOCAL : UP_LOCAL),
       duration: 280,
       ease: 'Back.easeOut',
@@ -543,7 +504,7 @@ export default class WhackASillyScene extends Phaser.Scene {
   /** Duck back into the hole, then reset for reuse. */
   private descend(hole: Hole, duration: number): void {
     this.tweens.add({
-      targets: hole.inner,
+      targets: hole.rig.inner,
       y: this.px(DOWN_LOCAL),
       duration,
       ease: 'Quad.easeIn',
@@ -553,17 +514,16 @@ export default class WhackASillyScene extends Phaser.Scene {
 
   /** Snap the (down) critter to its hidden rest pose. */
   private parkDown(hole: Hole): void {
-    hole.inner.setPosition(0, this.px(DOWN_LOCAL))
-    hole.inner.setScale(1).setAlpha(1).setAngle(0)
-    hole.inner.setVisible(false)
+    hole.rig.inner.setPosition(0, this.px(DOWN_LOCAL))
+    hole.rig.inner.setScale(1).setAlpha(1).setAngle(0)
+    hole.rig.inner.setVisible(false)
   }
 
   private resetHole(hole: Hole): void {
     hole.state = 'down'
     hole.spawn = null
-    hole.body.disableInteractive()
-    hole.glow.setVisible(false)
-    hole.hat.setVisible(false)
+    hole.rig.head.disableInteractive()
+    hole.rig.reset()
     hole.shadow.setVisible(false)
     this.parkDown(hole)
   }
@@ -574,7 +534,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     for (const hole of this.holes) {
       hole.upTimer?.remove(false)
       hole.upTimer = null
-      this.tweens.killTweensOf(hole.inner)
+      this.tweens.killTweensOf(hole.rig.inner)
       this.resetHole(hole)
     }
     this.activeCritters = 0
@@ -583,7 +543,7 @@ export default class WhackASillyScene extends Phaser.Scene {
   private stopCritterClock(hole: Hole): void {
     hole.upTimer?.remove(false)
     hole.upTimer = null
-    this.tweens.killTweensOf(hole.inner)
+    this.tweens.killTweensOf(hole.rig.inner)
   }
 
   // ─── Reactions ───────────────────────────────────────────────────────────
@@ -607,7 +567,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.poofs.explode(12, hole.x, hole.y)
 
     this.tweens.add({
-      targets: hole.inner,
+      targets: hole.rig.inner,
       scaleX: 1.35,
       scaleY: 0.3,
       duration: 90,
@@ -634,14 +594,14 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.orbitStars(hole)
 
     this.tweens.add({
-      targets: hole.inner,
+      targets: hole.rig.inner,
       angle: { from: -14, to: 14 },
       duration: 80,
       yoyo: true,
       repeat: 3,
       ease: 'Sine.easeInOut',
       onComplete: () => {
-        hole.inner.setAngle(0)
+        hole.rig.inner.setAngle(0)
         this.descend(hole, 180)
       },
     })
@@ -660,14 +620,14 @@ export default class WhackASillyScene extends Phaser.Scene {
       this.time.delayedCall(120, () => playTone(988, 140, 'triangle', 0.09))
       this.sparkles.explode(12, hole.x, hole.y - this.px(30) * this.moundScale)
       this.tweens.add({
-        targets: hole.inner,
+        targets: hole.rig.inner,
         angle: { from: -8, to: 8 },
         duration: 110,
         yoyo: true,
         repeat: 2,
         ease: 'Sine.easeInOut',
         onComplete: () => {
-          hole.inner.setAngle(0)
+          hole.rig.inner.setAngle(0)
           this.descend(hole, 200)
         },
       })
