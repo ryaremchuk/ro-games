@@ -94,3 +94,68 @@ test('slingshot: real drags play through level 1 and advance to level 2', async 
   await expect(page.getByLabel('Level 2')).toBeVisible()
   await page.screenshot({ path: 'e2e/__screenshots__/slingshot-level2.png' })
 })
+
+test('slingshot: clearing level 3 opens a star drop that rewards a new bird', async ({ page }) => {
+  test.setTimeout(120_000)
+  await page.goto('./#/slingshot')
+  await waitForAimable(page)
+
+  // Jump straight to level 3 (the first star-drop level) instead of playing the
+  // first two, and pin the reward so the assertion is deterministic. The reward
+  // must be set BEFORE the level is cleared (it's consumed when the drop shows).
+  await page.evaluate(() => window.__slingshot!.skipToLevel(3))
+  await waitForAimable(page)
+  await page.evaluate(() => window.__slingshot!.forceStarDrop('red'))
+  expect((await readState(page)).level).toBe(3)
+
+  // Clear level 3 with the flick hook; the invisible aim assist (ramps after 5
+  // piggy-less launches) guarantees the single piggy is eventually freed. Note
+  // freeing only ARMS after the first launch — so the first flick can't free.
+  let attempt = 0
+  await expect
+    .poll(
+      async () => {
+        const s = await readState(page)
+        if (s.starDropActive) return true
+        if (s.birdState === 'loaded' && s.canAim && !s.aiming && !s.levelClearing) {
+          const dy = 0.05 + (attempt++ % 4) * 0.025
+          await page.evaluate((dyN) => window.__slingshot!.flick(-0.2, dyN), dy)
+        }
+        return (await readState(page)).starDropActive
+      },
+      { timeout: 90_000, intervals: [500] },
+    )
+    .toBe(true)
+
+  const dropped = await readState(page)
+  expect(dropped.starDropActive).toBe(true)
+  expect(dropped.starDropTapsRemaining).toBeGreaterThan(0)
+  await page.screenshot({ path: 'e2e/__screenshots__/slingshot-stardrop.png' })
+
+  // The whole screen is the tap target. Tap the center with real pointer events
+  // at human-ish gaps until the star opens and the overlay dismisses. Taps that
+  // land mid-animation are ignored, so the loop just keeps tapping.
+  const cx = 834 / 2
+  const cy = 1112 / 2
+  await expect
+    .poll(
+      async () => {
+        if ((await readState(page)).starDropActive) {
+          await page.mouse.click(cx, cy)
+          await page.waitForTimeout(450 + Math.floor(Math.random() * 250))
+        }
+        return (await readState(page)).starDropActive
+      },
+      { timeout: 45_000, intervals: [400] },
+    )
+    .toBe(false)
+
+  // The reward promoted the active bird, the game advanced, and the new level
+  // flies the rewarded bird.
+  await expect
+    .poll(async () => (await readState(page)).activeBirdKind, { timeout: 5_000 })
+    .toBe('red')
+  await expect.poll(async () => (await readState(page)).level, { timeout: 5_000 }).toBe(4)
+  await expect.poll(async () => (await readState(page)).birdKind, { timeout: 10_000 }).toBe('red')
+  await page.screenshot({ path: 'e2e/__screenshots__/slingshot-rewarded.png' })
+})

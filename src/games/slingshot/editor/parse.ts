@@ -32,7 +32,9 @@ const COORD_MAX = 1.2
 export type ParseResult = { ok: true; spec: LevelSpec } | { ok: false; error: string }
 
 const PROP_KINDS: readonly PropKind[] = ['trampoline', 'ball', 'seesaw']
-const BIRD_KINDS: readonly BirdKind[] = ['normal', 'big']
+const BIRD_KINDS: readonly BirdKind[] = ['green', 'blue', 'purple', 'red', 'yellow']
+/** Old two-bird drafts still import: 'normal' → green, 'big' → yellow. */
+const LEGACY_BIRD_KINDS: Readonly<Record<string, BirdKind>> = { normal: 'green', big: 'yellow' }
 
 export function round3(v: number): number {
   return Math.round(v * 1000) / 1000
@@ -125,9 +127,10 @@ export function parseLevelSpec(json: string): ParseResult {
   }
   const birds: BirdKind[] = []
   for (const b of o.birds) {
-    if (!BIRD_KINDS.includes(b as BirdKind))
+    const kind = typeof b === 'string' && b in LEGACY_BIRD_KINDS ? LEGACY_BIRD_KINDS[b] : b
+    if (!BIRD_KINDS.includes(kind as BirdKind))
       return fail(`birds entries must be ${BIRD_KINDS.join('/')}`)
-    birds.push(b as BirdKind)
+    birds.push(kind as BirdKind)
   }
 
   if (!Array.isArray(o.blocks) || o.blocks.length > MAX_BLOCKS) {
