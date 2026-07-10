@@ -470,7 +470,7 @@ export default class WhackASillyScene extends Phaser.Scene {
       hole.body.clearTint()
       hole.glow.setVisible(false)
     }
-    hole.hat.setVisible(spawn.hat)
+    hole.hat.setVisible(spawn.sleepy)
     hole.body.setInteractive()
 
     const peekDir = Math.random() < 0.5 ? -1 : 1
@@ -541,7 +541,7 @@ export default class WhackASillyScene extends Phaser.Scene {
 
   private onCritterTap(hole: Hole): void {
     if (hole.state !== 'rising' && hole.state !== 'up') return
-    if (hole.spawn?.hat) this.dizzy(hole)
+    if (hole.spawn?.sleepy) this.dizzy(hole)
     else this.bop(hole)
   }
 
@@ -605,7 +605,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     hole.state = 'leaving'
     hole.upTimer = null
 
-    if (hole.spawn?.hat) {
+    if (hole.spawn?.sleepy) {
       // Withholding the tap is the win: wave + sparkle + happy chime.
       playTone(659, 90, 'triangle', 0.08)
       this.time.delayedCall(120, () => playTone(988, 140, 'triangle', 0.09))
