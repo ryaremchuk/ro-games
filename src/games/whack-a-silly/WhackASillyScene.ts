@@ -76,6 +76,8 @@ interface Hole {
   spawn: CritterSpawn | null
   upTimer: Phaser.Time.TimerEvent | null
   wakeTimer: Phaser.Time.TimerEvent | null
+  /** Looping Zzz emitter while a sleeper naps (stopped the moment it wakes). */
+  sleepTimer: Phaser.Time.TimerEvent | null
   /** Transient celebration FX (rings/hearts/notes) + their timers, for cleanup
    *  on a hard reset (resize/shutdown); in normal play they self-destruct. */
   fx: Phaser.GameObjects.GameObject[]
@@ -88,6 +90,8 @@ export default class WhackASillyScene extends Phaser.Scene {
 
   private startTime = 0
   private bops = 0
+  /** Sleepers left to nap in peace — the go/no-go "win" (never punished). */
+  private spared = 0
   private lastHole: number | null = null
   private activeCritters = 0
   private spawnTimer: Phaser.Time.TimerEvent | null = null
@@ -144,6 +148,7 @@ export default class WhackASillyScene extends Phaser.Scene {
       for (const hole of this.holes) {
         hole.upTimer?.remove(false)
         hole.wakeTimer?.remove(false)
+        hole.sleepTimer?.remove(false)
         for (const timer of hole.fxTimers) timer.remove(false)
       }
     })
@@ -195,6 +200,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.emojiTexture('was-bird', '🐦', 30)
     this.emojiTexture('was-heart', '💖', 30)
     this.emojiTexture('was-note', '🎵', 28)
+    this.emojiTexture('was-zzz', '💤', 30)
 
     const px = (css: number) => this.px(css)
     makeMoundBackTexture(this, px)
@@ -376,6 +382,7 @@ export default class WhackASillyScene extends Phaser.Scene {
         spawn: null,
         upTimer: null,
         wakeTimer: null,
+        sleepTimer: null,
         fx: [],
         fxTimers: [],
       }
@@ -630,7 +637,11 @@ export default class WhackASillyScene extends Phaser.Scene {
     })
   }
 
-  /** The rig actually climbs out of the hole (Back.easeOut overshoot). */
+  /**
+   * The rig climbs out of the hole. A go critter springs up (Back.easeOut) with
+   * a bright pop; a sleeper drifts up slower (Sine.easeOut) on a lullaby, so it
+   * reads as calm/"don't touch" from the very first frame.
+   */
   private riseCritter(hole: Hole, spawn: CritterSpawn, upTime: number): void {
     hole.state = 'rising'
     hole.rig.applySpawn(spawn)
@@ -645,12 +656,18 @@ export default class WhackASillyScene extends Phaser.Scene {
     inner.setAngle(spawn.peek ? peekDir * 12 : 0)
     inner.setVisible(true)
 
-    playTone(523, 40, 'sine', 0.03)
+    if (spawn.sleepy) {
+      // Lullaby: two soft descending notes as it settles in to nap.
+      playTone(392, 260, 'sine', 0.05)
+      this.time.delayedCall(190, () => playTone(330, 320, 'sine', 0.05))
+    } else {
+      playTone(523, 40, 'sine', 0.03)
+    }
     this.tweens.add({
       targets: inner,
       y: this.px(spawn.peek ? PEEK_LOCAL : UP_LOCAL),
-      duration: 280,
-      ease: 'Back.easeOut',
+      duration: spawn.sleepy ? 380 : 280,
+      ease: spawn.sleepy ? 'Sine.easeOut' : 'Back.easeOut',
       onComplete: () => {
         if (hole.state !== 'rising') return
         hole.state = 'up'
@@ -660,9 +677,13 @@ export default class WhackASillyScene extends Phaser.Scene {
     })
   }
 
-  /** Alive-idle for a go critter: a gentle side-to-side head-tilt while up. */
+  /** Choose the alive-idle: a sleeper breathes + puffs Zzz; a go critter tilts. */
   private startIdle(hole: Hole): void {
-    if (hole.spawn?.sleepy || hole.spawn?.peek) return
+    if (hole.spawn?.sleepy) {
+      this.startSleeperIdle(hole)
+      return
+    }
+    if (hole.spawn?.peek) return
     this.tweens.add({
       targets: hole.rig.inner,
       angle: { from: -3, to: 3 },
@@ -670,6 +691,47 @@ export default class WhackASillyScene extends Phaser.Scene {
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut',
+    })
+  }
+
+  /** Sleeper idle: slow breathing (scaleY) + a looping stream of Zzz. */
+  private startSleeperIdle(hole: Hole): void {
+    this.tweens.add({
+      targets: hole.rig.inner,
+      scaleY: 1.045,
+      duration: 900,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    })
+    this.emitZzz(hole)
+    hole.sleepTimer = this.time.addEvent({
+      delay: 650,
+      loop: true,
+      callback: () => this.emitZzz(hole),
+    })
+  }
+
+  /** One 💤 that floats up-right and fades over the sleeper. */
+  private emitZzz(hole: Hole): void {
+    const s = this.moundScale
+    const zzz = this.addFx(
+      hole,
+      this.add
+        .image(hole.x + this.px(26) * s, hole.y - this.px(66) * s, 'was-zzz')
+        .setDepth(40)
+        .setScale(0.45 * s)
+        .setAlpha(0.9),
+    )
+    this.tweens.add({
+      targets: zzz,
+      x: zzz.x + this.px(40) * s,
+      y: zzz.y - this.px(90) * s,
+      scale: 0.85 * s,
+      alpha: { from: 0.9, to: 0 },
+      duration: 1200,
+      ease: 'Sine.easeOut',
+      onComplete: () => zzz.destroy(),
     })
   }
 
@@ -702,6 +764,8 @@ export default class WhackASillyScene extends Phaser.Scene {
     hole.spawn = null
     hole.wakeTimer?.remove(false)
     hole.wakeTimer = null
+    hole.sleepTimer?.remove(false)
+    hole.sleepTimer = null
     hole.rig.head.disableInteractive()
     hole.rig.reset()
     hole.shadow.setVisible(false)
@@ -716,6 +780,8 @@ export default class WhackASillyScene extends Phaser.Scene {
       hole.upTimer = null
       hole.wakeTimer?.remove(false)
       hole.wakeTimer = null
+      hole.sleepTimer?.remove(false)
+      hole.sleepTimer = null
       this.tweens.killTweensOf(hole.rig.inner)
       this.tweens.killTweensOf(hole.moundBack)
       hole.moundBack.setX(hole.x)
@@ -738,6 +804,8 @@ export default class WhackASillyScene extends Phaser.Scene {
     hole.upTimer = null
     hole.wakeTimer?.remove(false)
     hole.wakeTimer = null
+    hole.sleepTimer?.remove(false)
+    hole.sleepTimer = null
     this.tweens.killTweensOf(hole.rig.inner)
   }
 
@@ -755,7 +823,9 @@ export default class WhackASillyScene extends Phaser.Scene {
 
   private onCritterTap(hole: Hole): void {
     if (hole.state !== 'rising' && hole.state !== 'up') return
-    if (hole.spawn?.sleepy) this.dizzy(hole)
+    // Tapping a sleeper is NOT a bop — it just wakes it grumpily (no score, no
+    // punishment). Only go critters count.
+    if (hole.spawn?.sleepy) this.wakeGrumpy(hole)
     else this.bop(hole)
   }
 
@@ -870,11 +940,17 @@ export default class WhackASillyScene extends Phaser.Scene {
 
   /** Variant C — hearts: love/music floaters sway up while the critter sinks. */
   private heartsBop(hole: Hole): void {
+    this.sparkles.explode(10, hole.x, hole.y - this.px(30) * this.moundScale)
+    this.floatUp(hole, 7, ['was-heart', 'was-note'])
+    this.descend(hole, 150)
+  }
+
+  /** Spawn `count` emoji floaters that sway up and fade above the hole. */
+  private floatUp(hole: Hole, count: number, keys: string[]): void {
     const s = this.moundScale
-    this.sparkles.explode(10, hole.x, hole.y - this.px(30) * s)
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < count; i++) {
       const timer = this.time.delayedCall(i * 70, () => {
-        const key = Math.random() < 0.5 ? 'was-heart' : 'was-note'
+        const key = keys[Math.floor(Math.random() * keys.length)]
         const dir = i % 2 === 0 ? 1 : -1
         const fx = this.addFx(
           hole,
@@ -896,7 +972,6 @@ export default class WhackASillyScene extends Phaser.Scene {
       })
       hole.fxTimers.push(timer)
     }
-    this.descend(hole, 150)
   }
 
   /** Two staggered shockwave rings that expand and fade at the hole. */
@@ -928,87 +1003,68 @@ export default class WhackASillyScene extends Phaser.Scene {
   }
 
   /**
-   * NO-GO (sleepy) critter tapped — soft, funny, zero punishment: dizzy wobble,
-   * stars circling its head, giggle two-tone, and it just ducks back down.
+   * A sleeper was tapped — the NO-GO "mistake". Soft, never punished and NOT
+   * scored: it wakes grumpy (eyes open, cross head-shake, whimper) and ducks
+   * back down. Deliberately less fun than sparing it, so the child learns.
    */
-  private dizzy(hole: Hole): void {
+  private wakeGrumpy(hole: Hole): void {
     hole.state = 'leaving'
     this.stopCritterClock(hole)
+    hole.rig.setAwake(true)
+    hole.rig.inner.setScale(1)
 
-    playTone(784, 55, 'sine', 0.06)
-    this.time.delayedCall(80, () => playTone(880, 60, 'sine', 0.06))
-    this.time.delayedCall(240, () => playTone(262, 130, 'sine', 0.05))
-    this.orbitStars(hole)
+    playTone(330, 120, 'sine', 0.05)
+    this.time.delayedCall(120, () => playTone(262, 160, 'sine', 0.05))
 
     this.tweens.add({
       targets: hole.rig.inner,
-      angle: { from: -14, to: 14 },
-      duration: 80,
+      angle: { from: -10, to: 10 },
+      duration: 90,
       yoyo: true,
-      repeat: 3,
+      repeat: 2,
       ease: 'Sine.easeInOut',
       onComplete: () => {
         hole.rig.inner.setAngle(0)
-        this.descend(hole, 180)
+        this.descend(hole, 200)
       },
     })
     this.onCritterGone()
   }
 
-  /** Up-time over. Sleepy critter left in peace gets celebrated for it. */
+  /**
+   * A sleeper woke happy because it was left to nap in peace — the go/no-go win.
+   * It hops with delight, showers hearts and a rising chime, and `spared` ticks
+   * up. A tapped-out go critter just sinks.
+   */
   private expire(hole: Hole): void {
     if (hole.state !== 'up') return
     hole.state = 'leaving'
     hole.upTimer = null
+    hole.sleepTimer?.remove(false)
+    hole.sleepTimer = null
+    this.tweens.killTweensOf(hole.rig.inner)
 
     if (hole.spawn?.sleepy) {
-      // Withholding the tap is the win: wave + sparkle + happy chime.
-      playTone(659, 90, 'triangle', 0.08)
-      this.time.delayedCall(120, () => playTone(988, 140, 'triangle', 0.09))
-      this.sparkles.explode(12, hole.x, hole.y - this.px(30) * this.moundScale)
+      this.spared++
+      hole.rig.setAwake(true)
+      hole.rig.inner.setScale(1).setAngle(0)
+      ;[659, 988, 1319].forEach((freq, i) =>
+        this.time.delayedCall(i * 90, () => playTone(freq, 140, 'triangle', 0.08)),
+      )
+      this.floatUp(hole, 6, ['was-heart'])
       this.tweens.add({
         targets: hole.rig.inner,
-        angle: { from: -8, to: 8 },
-        duration: 110,
+        y: `-=${this.px(22) * this.moundScale}`,
+        duration: 160,
         yoyo: true,
-        repeat: 2,
-        ease: 'Sine.easeInOut',
-        onComplete: () => {
-          hole.rig.inner.setAngle(0)
-          this.descend(hole, 200)
-        },
+        repeat: 1,
+        ease: 'Sine.easeOut',
+        onComplete: () => this.descend(hole, 200),
       })
     } else {
       this.descend(hole, 220)
     }
     this.onCritterGone()
-  }
-
-  /** Three stars circle the dizzy critter's head, then fade. */
-  private orbitStars(hole: Hole): void {
-    const cx = hole.x
-    const cy = hole.y - this.px(60) * this.moundScale
-    const radius = this.px(38) * this.moundScale
-    const orbiters = [0, 1, 2].map(() =>
-      this.add.image(cx, cy, 'was-star').setDepth(40).setScale(0.8),
-    )
-    const spin = { t: 0 }
-    this.tweens.add({
-      targets: spin,
-      t: 1,
-      duration: 750,
-      ease: 'Linear',
-      onUpdate: () => {
-        orbiters.forEach((star, i) => {
-          const angle = spin.t * Math.PI * 3 + (i * Math.PI * 2) / 3
-          star.setPosition(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius * 0.45)
-          star.setAlpha(spin.t < 0.7 ? 1 : 1 - (spin.t - 0.7) / 0.3)
-        })
-      },
-      onComplete: () => {
-        for (const star of orbiters) star.destroy()
-      },
-    })
   }
 
   /** Every ~10 bops: quick confetti that never pauses spawning. */
