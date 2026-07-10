@@ -2,22 +2,27 @@
   height: 100%;
   width: 100%;
   display: flex;
-  /* Scrollable so the grid can grow beyond one screen as games are added. */
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  padding: max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom));
+  /* The grid never scrolls: tiles shrink to fit (see --tile below). */
+  overflow: hidden;
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
   background: linear-gradient(135deg, #dff3ff 0%, #ffe9f5 100%);
+  /* Query container so --tile can react to the padded content area (cqw/cqh). */
+  container-type: size;
 }
 
 .home-grid {
   display: grid;
-  /* Always 3 tiles per row, on every screen size. */
-  grid-template-columns: repeat(3, 1fr);
-  gap: clamp(16px, 4vw, 32px);
-  width: min(960px, 100%);
-  /* Centers when the grid fits; unlike justify/align-content centering, it
-     never clips the top edge once the grid overflows and scrolls. */
+  --gap: clamp(16px, 4cqw, 32px);
+  /* Width-limited tile: always 3 across, grid capped at 960px (the previous
+     max tile size). */
+  --tile-w: calc((min(960px, 100cqw) - 2 * var(--gap)) / 3);
+  /* Height-limited tile: every row must fit on screen — no scrolling, ever.
+     --rows is set inline by HomePage.tsx from the registry size. */
+  --tile-h: calc((100cqh - (var(--rows, 3) - 1) * var(--gap)) / var(--rows, 3));
+  --tile: min(var(--tile-w), var(--tile-h));
+  grid-template-columns: repeat(3, var(--tile));
+  gap: var(--gap);
   margin: auto;
 }
 
