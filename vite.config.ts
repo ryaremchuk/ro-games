@@ -21,7 +21,7 @@ export default defineConfig({
         description: 'Fun games for kids',
         lang: 'en',
         theme_color: '#5b8def',
-        background_color: '#ffffff',
+        background_color: '#dff3ff',
         display: 'standalone',
         start_url: BASE,
         scope: BASE,

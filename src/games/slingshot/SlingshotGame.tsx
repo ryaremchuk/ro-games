@@ -2,6 +2,7 @@ import { Suspense, lazy } from 'react'
 import { useLocation } from 'react-router-dom'
 import Phaser from 'phaser'
 import PhaserGame from '../../shared/PhaserGame'
+import { viewportSize } from '../../shared/viewport'
 import SlingshotScene from './SlingshotScene'
 
 // Hidden adult tool (`#/slingshot?edit`) — lazy so the child's play path never
@@ -29,13 +30,14 @@ export default function SlingshotGame() {
   const { search } = useLocation()
   const editOn = new URLSearchParams(search).has('edit')
   const dpr = Math.min(window.devicePixelRatio || 1, 3)
+  const vp = viewportSize()
   const config: Omit<Phaser.Types.Core.GameConfig, 'parent'> = {
     type: Phaser.AUTO,
     backgroundColor: '#8fd0ff',
     scale: {
       mode: Phaser.Scale.NONE,
-      width: Math.max(window.innerWidth, 1) * dpr,
-      height: Math.max(window.innerHeight, 1) * dpr,
+      width: vp.width * dpr,
+      height: vp.height * dpr,
       zoom: 1 / dpr,
     },
     physics: {

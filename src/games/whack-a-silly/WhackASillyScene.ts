@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
+import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   CRITTERS,
   GRID_SIZE,
@@ -139,11 +140,9 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.layout()
     reportLevel(levelForBops(this.bops))
 
-    window.addEventListener('resize', this.handleWindowResize)
-    window.addEventListener('orientationchange', this.handleWindowResize)
+    const offViewport = onViewportResize(this.handleWindowResize)
     const teardown = (): void => {
-      window.removeEventListener('resize', this.handleWindowResize)
-      window.removeEventListener('orientationchange', this.handleWindowResize)
+      offViewport()
       this.spawnTimer?.remove(false)
       this.hitStopTimer?.remove(false)
       this.tweens.timeScale = 1
@@ -218,8 +217,10 @@ export default class WhackASillyScene extends Phaser.Scene {
   }
 
   private handleWindowResize = (): void => {
-    const w = Math.max(window.innerWidth, 1) * this.dpr
-    const h = Math.max(window.innerHeight, 1) * this.dpr
+    const vp = viewportSize()
+    const w = vp.width * this.dpr
+    const h = vp.height * this.dpr
+    if (w === this.scale.width && h === this.scale.height) return
     this.scale.resize(w, h)
     this.resetAllCritters()
     this.layout()
