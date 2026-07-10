@@ -856,6 +856,14 @@ export default class WhackASillyScene extends Phaser.Scene {
     hole.fx.length = 0
   }
 
+  /** Drop a just-fired staggered FX timer so `fxTimers` only holds pending ones
+   *  (it is pruned wholesale only on a hard reset — this keeps it from growing
+   *  by a few dead TimerEvents every celebration across a long play session). */
+  private dropFxTimer(hole: Hole, timer: Phaser.Time.TimerEvent): void {
+    const i = hole.fxTimers.indexOf(timer)
+    if (i >= 0) hole.fxTimers.splice(i, 1)
+  }
+
   private stopCritterClock(hole: Hole): void {
     hole.upTimer?.remove(false)
     hole.upTimer = null
@@ -1007,6 +1015,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     const s = this.moundScale
     for (let i = 0; i < count; i++) {
       const timer = this.time.delayedCall(i * 70, () => {
+        this.dropFxTimer(hole, timer)
         const key = keys[Math.floor(Math.random() * keys.length)]
         const dir = i % 2 === 0 ? 1 : -1
         const fx = this.addFx(
@@ -1037,6 +1046,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     const tints = [0xffffff, 0xffd93d]
     ;[0, 120].forEach((delay, i) => {
       const timer = this.time.delayedCall(delay, () => {
+        this.dropFxTimer(hole, timer)
         const ring = this.addFx(
           hole,
           this.add
