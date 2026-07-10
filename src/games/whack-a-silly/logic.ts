@@ -3,9 +3,9 @@
  * Phaser imports — everything here is deterministic given an injected RNG
  * and is unit-tested in plain jsdom (see logic.test.ts).
  *
- * Numbers come from the go/no-go research brief: 75:25 go:no-go once hats
- * appear, stimulus up-time 2000ms ramping to a 1400ms floor (hard floor
- * 1200ms — never clip a legit 4yo reaction), inter-pop gap 1000ms → 600ms.
+ * Numbers come from the go/no-go research brief: 75:25 go:no-go once sleeping
+ * critters appear, stimulus up-time 2000ms ramping to a 1400ms floor (hard
+ * floor 1200ms — never clip a legit 4yo reaction), inter-pop gap 1000ms → 600ms.
  */
 
 /** Injectable random source, [0, 1). Defaults to Math.random in the game. */
@@ -49,8 +49,8 @@ export const UP_TIME_HARD_FLOOR_MS = 1200
 export const GAP_START_MS = 1000
 export const GAP_FLOOR_MS = 600
 
-/** Go:no-go 75:25 once party hats appear (phase 2+). */
-export const HAT_PROBABILITY = 0.25
+/** Go:no-go 75:25 once sleeping critters appear (phase 2+). */
+export const SLEEPY_PROBABILITY = 0.25
 /** Golden critter — rare celebration spawn, phase 4 only. */
 export const GOLDEN_PROBABILITY = 0.05
 /** Chance a second critter pops at the same time, phase 3+ only. */
@@ -71,6 +71,29 @@ export const BOPS_PER_LEVEL = CONFETTI_EVERY_BOPS
 /** 1-based level for a total bop count (0-9 → L1, 10-19 → L2, …). */
 export function levelForBops(bops: number): number {
   return Math.floor(Math.max(bops, 0) / BOPS_PER_LEVEL) + 1
+}
+
+// ─── Celebration variety (pure, so the scene stays dumb) ─────────────────────
+
+/**
+ * Which of the three bop celebrations to play for the (1-based) count of the
+ * bop just scored. Rotates 0 → 1 → 2 → 0 so back-to-back bops feel different;
+ * golden critters override this to always launch (variant 0).
+ */
+export function bopVariantFor(bops: number): 0 | 1 | 2 {
+  const n = Math.max(Math.floor(bops), 1)
+  return ((((n - 1) % 3) + 3) % 3) as 0 | 1 | 2
+}
+
+/**
+ * Rising thwack-pitch step 0..7 for the (1-based) bop count. Climbs one step per
+ * bop, caps at 7, and resets every CONFETTI_EVERY_BOPS bops (aligned with the
+ * confetti/level cadence) so a streak audibly builds and then restarts.
+ */
+export function comboStep(bops: number): number {
+  const cycle = CONFETTI_EVERY_BOPS
+  const inCycle = (((Math.floor(bops) - 1) % cycle) + cycle) % cycle
+  return Math.min(Math.max(inCycle, 0), 7)
 }
 
 // ─── Phase / ramp state machine ──────────────────────────────────────────────
@@ -98,7 +121,7 @@ const PHASE_GATES: readonly { phase: Phase; timeMs: number; bops: number }[] = [
 ]
 
 /**
- * P1 warm-up (all go, slow) → P2 hats appear (25% no-go) → P3 faster +
+ * P1 warm-up (all go, slow) → P2 sleepers appear (25% no-go) → P3 faster +
  * occasional double-pop → P4 variety (golden critter, sideways peeker).
  * Monotonic: elapsedMs and bops only ever grow, so the phase never regresses.
  */
@@ -145,9 +168,9 @@ export interface CritterSpawn {
   /** Hole index 0..HOLE_COUNT-1. */
   hole: number
   critterId: string
-  /** Party hat = NO-GO: the child is celebrated for NOT bopping it. */
-  hat: boolean
-  /** Rare golden celebration critter (always a go — never wears a hat). */
+  /** Sleeping critter = NO-GO: the child is celebrated for NOT waking it. */
+  sleepy: boolean
+  /** Rare golden celebration critter (always a go — never sleeps). */
   golden: boolean
   /** Peeks sideways from the hole edge (visual variety, phase 4). */
   peek: boolean
@@ -179,13 +202,13 @@ function pickHole(rng: Rng, blocked: ReadonlySet<number>): number | null {
 
 function rollCritter(phase: Phase, hole: number, rng: Rng): CritterSpawn {
   const golden = phase >= 4 && rng() < GOLDEN_PROBABILITY
-  const hat = !golden && phase >= 2 && rng() < HAT_PROBABILITY
+  const sleepy = !golden && phase >= 2 && rng() < SLEEPY_PROBABILITY
   const peek = !golden && phase >= 4 && rng() < PEEK_PROBABILITY
-  return { hole, critterId: pickOne(rng, CRITTERS).id, hat, golden, peek }
+  return { hole, critterId: pickOne(rng, CRITTERS).id, sleepy, golden, peek }
 }
 
 /**
- * Plan the next spawn: which hole(s), which critter(s), hat or not, and the
+ * Plan the next spawn: which hole(s), which critter(s), sleepy or not, and the
  * current up-time/gap. Never reuses the previous spawn's hole (no same-hole
  * back-to-back) nor any currently-occupied hole.
  */

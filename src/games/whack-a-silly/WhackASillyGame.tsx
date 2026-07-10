@@ -4,8 +4,8 @@ import WhackASillyScene from './WhackASillyScene'
 
 /**
  * Whack-a-Silly — garden whack-a-mole with a go/no-go inhibition twist:
- * bop the critters popping out of the dirt mounds, but critters wearing
- * party hats must be left alone (letting one leave in peace is celebrated).
+ * bop the critters popping out of the dirt mounds, but sleeping critters
+ * (in nightcaps) must be left alone (letting one nap in peace is celebrated).
  * Phaser-rendered; all spawn-scheduling/ramp logic lives in logic.ts
  * (pure, tested).
  *
@@ -30,7 +30,7 @@ export default function WhackASillyGame() {
   return (
     <div
       role="img"
-      aria-label="Bop the critters popping out of the garden holes, but let the ones wearing party hats go free"
+      aria-label="Bop the critters popping out of the garden holes, but let the sleeping critters in nightcaps nap in peace"
       style={{ width: '100%', height: '100%' }}
     >
       <PhaserGame config={config} />

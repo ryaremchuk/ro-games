@@ -13,8 +13,68 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Ro Games" />
     <title>Ro Games</title>
+    <style>
+      /* Boot loader: covers the JS bundle download before React mounts.
+         Invisible for the first 400ms so a fast (precached) start never
+         flashes it; App.tsx fades it out and removes it once mounted.
+         Visuals mirror src/shared/AppLoader.css. */
+      #boot-loader {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #dff3ff;
+        opacity: 0;
+        animation: boot-appear 250ms ease-out 400ms forwards;
+        transition: opacity 250ms ease-out;
+      }
+      #boot-loader.boot-loader-done {
+        animation: none;
+        opacity: 0;
+        pointer-events: none;
+      }
+      #boot-loader .boot-track {
+        width: min(60vw, 320px);
+        height: 16px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.08);
+        overflow: hidden;
+      }
+      #boot-loader .boot-fill {
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #4d96ff, #4ecdc4, #6bcb77);
+        transform-origin: left center;
+        transform: scaleX(0);
+        animation: boot-fill 8s ease-out 400ms forwards;
+      }
+      @keyframes boot-appear {
+        to {
+          opacity: 1;
+        }
+      }
+      @keyframes boot-fill {
+        0% {
+          transform: scaleX(0);
+        }
+        12% {
+          transform: scaleX(0.5);
+        }
+        35% {
+          transform: scaleX(0.75);
+        }
+        100% {
+          transform: scaleX(0.95);
+        }
+      }
+    </style>
   </head>
   <body>
+    <div id="boot-loader" aria-hidden="true">
+      <div class="boot-track"><div class="boot-fill"></div></div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

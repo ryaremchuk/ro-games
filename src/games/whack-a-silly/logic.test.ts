@@ -13,6 +13,8 @@ import {
   PHASE4_TIME_MS,
   UP_TIME_HARD_FLOOR_MS,
   UP_TIME_START_MS,
+  bopVariantFor,
+  comboStep,
   critterById,
   gapMs,
   isConfettiBop,
@@ -91,24 +93,24 @@ describe('phase progression', () => {
   })
 })
 
-describe('go:no-go hat ratio', () => {
-  it('spawns no hats during warm-up (all go)', () => {
+describe('go:no-go sleepy ratio', () => {
+  it('spawns no sleepers during warm-up (all go)', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
       for (const plan of manySpawns(P1, 300, rng)) {
-        expect(plan.primary.hat).toBe(false)
+        expect(plan.primary.sleepy).toBe(false)
         expect(plan.double).toBeNull()
       }
     }
   })
 
-  it('holds ~75:25 go:no-go once hats appear', () => {
+  it('holds ~75:25 go:no-go once sleepers appear', () => {
     for (const state of [P2, P3]) {
       const rng = mulberry32(42)
       const plans = manySpawns(state, 4000, rng)
-      const hatRate = plans.filter((p) => p.primary.hat).length / plans.length
-      expect(hatRate).toBeGreaterThan(0.21)
-      expect(hatRate).toBeLessThan(0.29)
+      const sleepyRate = plans.filter((p) => p.primary.sleepy).length / plans.length
+      expect(sleepyRate).toBeGreaterThan(0.21)
+      expect(sleepyRate).toBeLessThan(0.29)
     }
   })
 })
@@ -204,7 +206,7 @@ describe('golden critter', () => {
     expect(rate).toBeGreaterThan(0.02)
     expect(rate).toBeLessThan(0.08)
     for (const plan of golden) {
-      expect(plan.primary.hat).toBe(false)
+      expect(plan.primary.sleepy).toBe(false)
       expect(plan.primary.peek).toBe(false)
     }
   })
@@ -306,6 +308,44 @@ describe('levels', () => {
       const level = levelForBops(bops)
       expect(level).toBeGreaterThanOrEqual(last)
       last = level
+    }
+  })
+})
+
+describe('celebration helpers', () => {
+  it('bopVariantFor rotates 0 → 1 → 2 across consecutive bops', () => {
+    expect(bopVariantFor(1)).toBe(0)
+    expect(bopVariantFor(2)).toBe(1)
+    expect(bopVariantFor(3)).toBe(2)
+    expect(bopVariantFor(4)).toBe(0)
+    expect(bopVariantFor(5)).toBe(1)
+  })
+
+  it('bopVariantFor only ever returns 0, 1, or 2', () => {
+    for (let bops = -3; bops <= 200; bops++) {
+      expect([0, 1, 2]).toContain(bopVariantFor(bops))
+    }
+  })
+
+  it('comboStep climbs one step per bop then caps at 7', () => {
+    expect(comboStep(1)).toBe(0)
+    expect(comboStep(2)).toBe(1)
+    expect(comboStep(8)).toBe(7)
+    expect(comboStep(9)).toBe(7)
+    expect(comboStep(10)).toBe(7)
+  })
+
+  it('comboStep resets every 10 bops (aligned with the confetti cadence)', () => {
+    expect(comboStep(11)).toBe(0)
+    expect(comboStep(12)).toBe(1)
+    expect(comboStep(21)).toBe(0)
+  })
+
+  it('comboStep stays within 0..7 for any bop count', () => {
+    for (let bops = -3; bops <= 500; bops++) {
+      const step = comboStep(bops)
+      expect(step).toBeGreaterThanOrEqual(0)
+      expect(step).toBeLessThanOrEqual(7)
     }
   })
 })

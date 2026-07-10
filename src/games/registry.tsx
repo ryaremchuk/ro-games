@@ -1,5 +1,5 @@
-import { lazy } from 'react'
 import type { ComponentType, LazyExoticComponent } from 'react'
+import { lazyWithReload } from '../shared/lazyWithReload'
 
 export interface GameMeta {
   /** Stable unique id; also the folder name under src/games/. */
@@ -28,7 +28,7 @@ export const games: GameMeta[] = [
     path: '/drawing',
     color: '#ff6b6b',
     emoji: '🖍️',
-    component: lazy(() => import('./drawing/DrawingGame')),
+    component: lazyWithReload(() => import('./drawing/DrawingGame')),
   },
   {
     id: 'feed-the-monster',
@@ -36,7 +36,7 @@ export const games: GameMeta[] = [
     path: '/feed-the-monster',
     color: '#FFA94D',
     emoji: '👾',
-    component: lazy(() => import('./feed-the-monster/FeedTheMonsterGame')),
+    component: lazyWithReload(() => import('./feed-the-monster/FeedTheMonsterGame')),
   },
   {
     id: 'animal-band',
@@ -44,7 +44,7 @@ export const games: GameMeta[] = [
     path: '/animal-band',
     color: '#9B5DE5',
     emoji: '🥁',
-    component: lazy(() => import('./animal-band/AnimalBandGame')),
+    component: lazyWithReload(() => import('./animal-band/AnimalBandGame')),
   },
   {
     id: 'whack-a-silly',
@@ -52,7 +52,7 @@ export const games: GameMeta[] = [
     path: '/whack-a-silly',
     color: '#6BCB77',
     emoji: '🐹',
-    component: lazy(() => import('./whack-a-silly/WhackASillyGame')),
+    component: lazyWithReload(() => import('./whack-a-silly/WhackASillyGame')),
   },
   {
     id: 'odd-one-out',
@@ -60,7 +60,7 @@ export const games: GameMeta[] = [
     path: '/odd-one-out',
     color: '#4ECDC4',
     emoji: '🧩',
-    component: lazy(() => import('./odd-one-out/OddOneOutGame')),
+    component: lazyWithReload(() => import('./odd-one-out/OddOneOutGame')),
   },
   {
     id: 'balloon-pop',
@@ -68,7 +68,7 @@ export const games: GameMeta[] = [
     path: '/balloon-pop',
     color: '#4D96FF',
     emoji: '🎈',
-    component: lazy(() => import('./balloon-pop/BalloonPopGame')),
+    component: lazyWithReload(() => import('./balloon-pop/BalloonPopGame')),
   },
   {
     id: 'slingshot',
@@ -76,6 +76,6 @@ export const games: GameMeta[] = [
     path: '/slingshot',
     color: '#FFD93D',
     emoji: '🐦',
-    component: lazy(() => import('./slingshot/SlingshotGame')),
+    component: lazyWithReload(() => import('./slingshot/SlingshotGame')),
   },
 ]
