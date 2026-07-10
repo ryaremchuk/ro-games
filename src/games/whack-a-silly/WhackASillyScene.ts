@@ -11,10 +11,12 @@ import {
   isConfettiBop,
   levelForBops,
   planSpawn,
+  upTimeMs,
 } from './logic'
 import type { CritterSpawn, RampState } from './logic'
 import { buildCritterRig } from './critterRig'
 import type { CritterRig } from './critterRig'
+import type { WhackTestApi } from './testHook'
 import {
   MOUND_GEOM,
   makeCloudTexture,
@@ -139,7 +141,7 @@ export default class WhackASillyScene extends Phaser.Scene {
 
     window.addEventListener('resize', this.handleWindowResize)
     window.addEventListener('orientationchange', this.handleWindowResize)
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+    const teardown = (): void => {
       window.removeEventListener('resize', this.handleWindowResize)
       window.removeEventListener('orientationchange', this.handleWindowResize)
       this.spawnTimer?.remove(false)
@@ -151,13 +153,68 @@ export default class WhackASillyScene extends Phaser.Scene {
         hole.sleepTimer?.remove(false)
         for (const timer of hole.fxTimers) timer.remove(false)
       }
-    })
+      this.teardownTestApi()
+    }
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, teardown)
+    // React unmount calls game.destroy(), which emits DESTROY (not SHUTDOWN).
+    this.events.once(Phaser.Scenes.Events.DESTROY, teardown)
 
     this.startTime = this.time.now
     this.flyButterfly()
     this.driftClouds()
     this.flyBird()
     this.scheduleNext(700)
+
+    // Dev/e2e hook (tree-shaken from production). Lets Playwright read state and
+    // force a deterministic spawn — the canvas is opaque to the DOM. See testHook.
+    if (import.meta.env.DEV || location.search.includes('e2e')) this.exposeTestApi()
+  }
+
+  // ─── E2E test hook (dev-only) ──────────────────────────────────────────────
+
+  private testApi?: WhackTestApi
+
+  private exposeTestApi(): void {
+    const api: WhackTestApi = {
+      state: () => ({
+        bops: this.bops,
+        level: levelForBops(this.bops),
+        spared: this.spared,
+        activeCritters: this.activeCritters,
+        holes: this.holes.map((h) => ({
+          state: h.state,
+          critterVisible: h.rig.inner.visible,
+          sleepy: h.spawn?.sleepy ?? false,
+          xCss: h.x / this.dpr,
+          yCss: h.y / this.dpr,
+        })),
+      }),
+      forceSpawn: (hole, opts) => {
+        const h = this.holes[hole]
+        if (!h || h.state !== 'down') return false
+        // Cancel the pending random wave so the forced critter is deterministic.
+        this.spawnTimer?.remove(false)
+        this.spawnTimer = null
+        const spawn: CritterSpawn = {
+          hole,
+          critterId: CRITTERS[hole % CRITTERS.length].id,
+          sleepy: !!opts?.sleepy && !opts?.golden,
+          golden: !!opts?.golden,
+          peek: false,
+        }
+        this.popCritter(h, spawn, upTimeMs(this.rampState()))
+        return true
+      },
+    }
+    this.testApi = api
+    window.__whackASilly = api
+  }
+
+  private teardownTestApi(): void {
+    // Identity guard: React StrictMode double-mounts in dev and Phaser defers
+    // destroy() to the next step, so a late DESTROY can fire after the remount
+    // installed its own hook. Only remove ours, never the live one.
+    if (this.testApi && window.__whackASilly === this.testApi) delete window.__whackASilly
   }
 
   private handleWindowResize = (): void => {
