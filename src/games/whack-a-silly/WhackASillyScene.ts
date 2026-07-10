@@ -13,13 +13,23 @@ import {
 import type { CritterSpawn, RampState } from './logic'
 import { buildCritterRig } from './critterRig'
 import type { CritterRig } from './critterRig'
-import { MOUND_GEOM, makeLipTexture, makeMoundBackTexture, makeShadowTexture } from './textures'
+import {
+  MOUND_GEOM,
+  makeCloudTexture,
+  makeLipTexture,
+  makeMoundBackTexture,
+  makeShadowTexture,
+  makeTuftTexture,
+} from './textures'
 
 // ART SPEC palette — garden scene.
 const SKY_TOP = 0xbde3ff
 const SKY_BOTTOM = 0xe8f6ff
 const GRASS_TOP = 0x8fd14f
 const GRASS_BOTTOM = 0x6bcb77
+const HILL = 0xa7d98a // pale hill band on the horizon
+const HORIZON_SHADE = 0x74be49 // darker grass band under the horizon
+const SUN_GLOW = 0xfff3c0
 const GOLD = 0xffd93d
 const CONFETTI_TINTS = [0xff6b6b, 0xffd93d, 0x6bcb77, 0x4d96ff, 0xff8fab, 0x9b5de5]
 const DIRT_TINTS = [0xb08968, 0xa0785a, 0x8c6a4f]
@@ -71,6 +81,9 @@ export default class WhackASillyScene extends Phaser.Scene {
   private holes: Hole[] = []
   private sun!: Phaser.GameObjects.Image
   private flowers: Phaser.GameObjects.Image[] = []
+  private tufts: Phaser.GameObjects.Image[] = []
+  private clouds: Phaser.GameObjects.Image[] = []
+  private bird!: Phaser.GameObjects.Image
   private butterfly!: Phaser.GameObjects.Image
 
   private confetti!: Phaser.GameObjects.Particles.ParticleEmitter
@@ -114,6 +127,8 @@ export default class WhackASillyScene extends Phaser.Scene {
 
     this.startTime = this.time.now
     this.flyButterfly()
+    this.driftClouds()
+    this.flyBird()
     this.scheduleNext(700)
   }
 
@@ -154,11 +169,14 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.emojiTexture('was-flower-1', '🌷', 44)
     this.emojiTexture('was-flower-2', '🌻', 44)
     this.emojiTexture('was-butterfly', '🦋', 40)
+    this.emojiTexture('was-bird', '🐦', 30)
 
     const px = (css: number) => this.px(css)
     makeMoundBackTexture(this, px)
     makeLipTexture(this, px)
     makeShadowTexture(this, px)
+    makeCloudTexture(this, px)
+    makeTuftTexture(this, px)
 
     // Soft golden halo behind the rare golden critter.
     if (!this.textures.exists('was-glow')) {
@@ -195,6 +213,19 @@ export default class WhackASillyScene extends Phaser.Scene {
   // ─── Build ───────────────────────────────────────────────────────────────
 
   private buildScenery(): void {
+    // Drifting clouds (depth 1) — soft parallax behind the sun and holes.
+    for (let i = 0; i < 3; i++) {
+      const cloud = this.add
+        .image(0, 0, 'was-cloud')
+        .setDepth(1)
+        .setAlpha(0.9)
+        .setScale(0.7 + i * 0.25)
+      this.clouds.push(cloud)
+    }
+
+    // Ambient bird drifts slowly across the far sky (non-interactive).
+    this.bird = this.add.image(0, 0, 'was-bird').setDepth(1).setAlpha(0.85)
+
     // Sun (easter egg: tap → spin + chime).
     this.sun = this.add.image(0, 0, 'was-sun').setDepth(2)
     this.sun.setInteractive()
@@ -238,6 +269,16 @@ export default class WhackASillyScene extends Phaser.Scene {
         })
       })
       this.flowers.push(flower)
+    }
+
+    // Grass tufts (depth 3) — non-interactive lawn texture, placed in layout().
+    for (let i = 0; i < 7; i++) {
+      this.tufts.push(
+        this.add
+          .image(0, 0, 'was-tuft')
+          .setDepth(3)
+          .setScale(0.8 + (i % 3) * 0.25),
+      )
     }
 
     // Butterfly drifts around the sky; tapping it makes it dart away.
@@ -375,11 +416,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     const skyH = h * 0.4
     const grassH = h - skyH
 
-    this.bgGfx.clear()
-    this.bgGfx.fillGradientStyle(SKY_TOP, SKY_TOP, SKY_BOTTOM, SKY_BOTTOM, 1)
-    this.bgGfx.fillRect(0, 0, w, skyH)
-    this.bgGfx.fillGradientStyle(GRASS_TOP, GRASS_TOP, GRASS_BOTTOM, GRASS_BOTTOM, 1)
-    this.bgGfx.fillRect(0, skyH, w, grassH)
+    this.drawBackground(w, skyH, grassH)
 
     // Mound scale: fit 3 columns/rows with generous spacing, but never let the
     // hole opening shrink below ~110 css px (touch-target floor).
@@ -408,10 +445,66 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.flowers[0].setPosition(w * 0.07, skyH + grassH * 0.39)
     this.flowers[1].setPosition(w * 0.93, skyH + grassH * 0.69)
     this.flowers[2].setPosition(w * 0.35, skyH + grassH * 0.96)
+
+    // Grass tufts nestle between the holes (non-interactive lawn texture).
+    const tuftSpots: [number, number][] = [
+      [0.35, 0.33],
+      [0.65, 0.29],
+      [0.1, 0.62],
+      [0.9, 0.58],
+      [0.34, 0.71],
+      [0.66, 0.75],
+      [0.5, 0.99],
+    ]
+    this.tufts.forEach((tuft, i) => {
+      const [fx, fy] = tuftSpots[i] ?? [0.5, 0.5]
+      tuft.setPosition(w * fx, skyH + grassH * fy)
+    })
+
+    // Clouds drift horizontally (driftClouds owns x); layout sets their sky band.
+    const cloudYs = [skyH * 0.22, skyH * 0.44, skyH * 0.32]
+    this.clouds.forEach((cloud, i) => {
+      cloud.y = cloudYs[i] ?? skyH * 0.3
+    })
+    this.bird.y = Phaser.Math.Clamp(this.bird.y || skyH * 0.34, this.px(30), skyH * 0.7)
+
     this.butterfly.setPosition(
       Phaser.Math.Clamp(this.butterfly.x, this.px(30), w - this.px(30)),
       Phaser.Math.Clamp(this.butterfly.y, this.px(30), skyH),
     )
+  }
+
+  /** Sky + sun glow + horizon hills + grass + horizon shading (all depth 0). */
+  private drawBackground(w: number, skyH: number, grassH: number): void {
+    const g = this.bgGfx
+    g.clear()
+
+    g.fillGradientStyle(SKY_TOP, SKY_TOP, SKY_BOTTOM, SKY_BOTTOM, 1)
+    g.fillRect(0, 0, w, skyH)
+
+    // Soft sun glow disc behind the interactive sun (top-right).
+    const sunX = w - this.px(64)
+    const sunY = this.px(64)
+    for (const [r, a] of [
+      [150, 0.1],
+      [104, 0.13],
+      [66, 0.18],
+    ] as [number, number][]) {
+      g.fillStyle(SUN_GLOW, a)
+      g.fillCircle(sunX, sunY, this.px(r))
+    }
+
+    // Pale hills poking above the horizon (the lower halves are hidden by grass).
+    g.fillStyle(HILL, 0.7)
+    g.fillEllipse(w * 0.28, skyH, w * 0.82, this.px(150))
+    g.fillEllipse(w * 0.82, skyH, w * 0.7, this.px(120))
+
+    g.fillGradientStyle(GRASS_TOP, GRASS_TOP, GRASS_BOTTOM, GRASS_BOTTOM, 1)
+    g.fillRect(0, skyH, w, grassH)
+
+    // Darker grass band right under the skyline for depth.
+    g.fillStyle(HORIZON_SHADE, 0.45)
+    g.fillRect(0, skyH, w, this.px(30))
   }
 
   /** Grass apron in front of the critter, gradient-matched to the bg grass. */
@@ -708,6 +801,66 @@ export default class WhackASillyScene extends Phaser.Scene {
       duration: dartMs ?? Phaser.Math.Between(2600, 4200),
       ease: dartMs ? 'Quad.easeOut' : 'Sine.easeInOut',
       onComplete: () => this.flyButterfly(),
+    })
+  }
+
+  // ─── Ambient scenery drift ────────────────────────────────────────────────
+
+  /** Slowly slide the clouds across the sky, wrapping around forever. */
+  private driftClouds(): void {
+    const w = this.scale.width
+    this.clouds.forEach((cloud, i) => {
+      cloud.x = w * ((i + 0.5) / this.clouds.length)
+      this.driftCloud(cloud, 44000 + i * 9000)
+    })
+  }
+
+  /** Drift one cloud to the right edge, wrap to the left, and repeat. `fullMs`
+   *  is the time for a full offscreen-to-offscreen traverse (constant speed). */
+  private driftCloud(cloud: Phaser.GameObjects.Image, fullMs: number): void {
+    const left = -this.px(120)
+    const right = this.scale.width + this.px(120)
+    const duration = fullMs * Phaser.Math.Clamp((right - cloud.x) / (right - left), 0.02, 1)
+    this.tweens.add({
+      targets: cloud,
+      x: right,
+      duration,
+      ease: 'Linear',
+      onComplete: () => {
+        cloud.x = left
+        this.driftCloud(cloud, fullMs)
+      },
+    })
+  }
+
+  /** A little bird drifts across the far sky, then loops back the other way. */
+  private flyBird(): void {
+    const w = this.scale.width
+    const skyH = this.scale.height * 0.4
+    const fromLeft = this.bird.x < w / 2
+    const targetX = fromLeft ? w + this.px(40) : -this.px(40)
+    this.bird.setFlipX(!fromLeft)
+    const baseY = Phaser.Math.FloatBetween(skyH * 0.2, skyH * 0.5)
+    this.bird.y = baseY
+    this.tweens.killTweensOf(this.bird)
+    // Gentle bobbing while it crosses.
+    this.tweens.add({
+      targets: this.bird,
+      y: baseY - this.px(14),
+      duration: 900,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    })
+    this.tweens.add({
+      targets: this.bird,
+      x: targetX,
+      duration: Phaser.Math.Between(9000, 13000),
+      ease: 'Linear',
+      onComplete: () => {
+        this.bird.x = fromLeft ? -this.px(40) : w + this.px(40)
+        this.time.delayedCall(Phaser.Math.Between(1500, 4000), () => this.flyBird())
+      },
     })
   }
 }

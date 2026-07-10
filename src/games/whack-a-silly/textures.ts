@@ -152,3 +152,40 @@ export function makeShadowTexture(scene: Phaser.Scene, px: Px): void {
   g.generateTexture('was-shadow', px(160), px(56))
   g.destroy()
 }
+
+/** Fluffy cartoon cloud (overlapping white puffs on a flat base). */
+export function makeCloudTexture(scene: Phaser.Scene, px: Px): void {
+  if (scene.textures.exists('was-cloud')) return
+  const g = scene.add.graphics()
+  const w = px(170)
+  const h = px(84)
+  // Soft shadow underside.
+  g.fillStyle(0xd7ecff, 0.9)
+  g.fillRoundedRect(px(26), px(50), px(118), px(26), px(13))
+  g.fillCircle(px(52), px(52), px(26))
+  g.fillCircle(px(88), px(44), px(31))
+  g.fillCircle(px(120), px(52), px(24))
+  // White puffs on top.
+  g.fillStyle(0xffffff, 1)
+  g.fillRoundedRect(px(28), px(44), px(114), px(24), px(12))
+  g.fillCircle(px(52), px(46), px(24))
+  g.fillCircle(px(88), px(38), px(30))
+  g.fillCircle(px(120), px(46), px(22))
+  g.generateTexture('was-cloud', w, h)
+  g.destroy()
+}
+
+/** Little grass tuft (a few blades) scattered on the lawn for texture. */
+export function makeTuftTexture(scene: Phaser.Scene, px: Px): void {
+  if (scene.textures.exists('was-tuft')) return
+  const g = scene.add.graphics()
+  const w = px(32)
+  const h = px(26)
+  g.fillStyle(0x4e9c37, 1)
+  g.fillTriangle(px(3), px(26), px(8), px(5), px(13), px(26))
+  g.fillTriangle(px(19), px(26), px(24), px(7), px(29), px(26))
+  g.fillStyle(0x5cb54a, 1)
+  g.fillTriangle(px(10), px(26), px(16), px(1), px(22), px(26))
+  g.generateTexture('was-tuft', w, h)
+  g.destroy()
+}
