@@ -1,0 +1,48 @@
+.error-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  background: #dff3ff;
+}
+
+.error-screen-face {
+  font-size: 96px;
+  line-height: 1;
+}
+
+.error-screen-reload {
+  width: 128px;
+  height: 128px;
+  border: none;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+  font-size: 64px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Wobble the emoji, not the button: an animated button never goes "stable"
+   for pointer automation (Playwright e2e) and the hit target should not move. */
+.error-screen-reload span {
+  display: inline-block;
+  animation: error-reload-wobble 2s ease-in-out infinite;
+}
+
+.error-screen-reload:active {
+  transform: scale(0.92);
+}
+
+@keyframes error-reload-wobble {
+  0%,
+  100% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(-8deg) scale(1.06);
+  }
+}
