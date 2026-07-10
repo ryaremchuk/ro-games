@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
+import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   BALLOON_COLORS,
   dotPositions,
@@ -141,15 +142,16 @@ export default class BalloonPopScene extends Phaser.Scene {
     this.wireBackgroundTaps()
     this.layout()
 
-    window.addEventListener('resize', this.handleWindowResize)
-    window.addEventListener('orientationchange', this.handleWindowResize)
+    const offViewport = onViewportResize(this.handleWindowResize)
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      window.removeEventListener('resize', this.handleWindowResize)
-      window.removeEventListener('orientationchange', this.handleWindowResize)
+      offViewport()
       for (const timer of this.waveTimers) timer.remove(false)
       for (const timer of this.beepTimers) timer.remove(false)
       this.blinkTimer?.remove(false)
     })
+    // React unmount calls game.destroy(), which emits DESTROY (not SHUTDOWN) —
+    // without this the viewport listener leaks and fires on a dead scene.
+    this.events.once(Phaser.Scenes.Events.DESTROY, offViewport)
 
     this.scheduleBlink()
     reportLevel(levelFor(this.roundsCompleted))
@@ -157,8 +159,10 @@ export default class BalloonPopScene extends Phaser.Scene {
   }
 
   private handleWindowResize = (): void => {
-    const w = Math.max(window.innerWidth, 1) * this.dpr
-    const h = Math.max(window.innerHeight, 1) * this.dpr
+    const vp = viewportSize()
+    const w = vp.width * this.dpr
+    const h = vp.height * this.dpr
+    if (w === this.scale.width && h === this.scale.height) return
     this.scale.resize(w, h)
     this.layout()
   }

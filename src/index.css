@@ -11,6 +11,15 @@ body {
   overscroll-behavior: none;
 }
 
+html {
+  /* Document-canvas backstop. On iOS PWAs the layout viewport can come up
+     shorter than the physical screen; the strip below every CSS box is painted
+     with the ROOT element's background (white by default — the "white bar at
+     the bottom"). Mirror the launcher gradient there so any exposed strip
+     blends in instead of flashing white. */
+  background: linear-gradient(135deg, #dff3ff 0%, #ffe9f5 100%);
+}
+
 body {
   overflow: hidden;
   font-family:
@@ -19,9 +28,8 @@ body {
     'Segoe UI',
     Roboto,
     sans-serif;
-  /* Backstop for any transient viewport gap (iOS toolbar/rotation animations):
-     match the launcher sky tint instead of flashing white. */
-  background: #dff3ff;
+  /* Transparent so the html backstop gradient shows through any gap. */
+  background: transparent;
   color: #1a1a1a;
   touch-action: manipulation;
   -webkit-user-select: none;

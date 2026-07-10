@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
+import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   COLOR_HEX,
   FOODS,
@@ -110,19 +111,20 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.layout()
     this.scheduleBlink()
 
-    window.addEventListener('resize', this.handleWindowResize)
-    window.addEventListener('orientationchange', this.handleWindowResize)
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      window.removeEventListener('resize', this.handleWindowResize)
-      window.removeEventListener('orientationchange', this.handleWindowResize)
-    })
+    const offViewport = onViewportResize(this.handleWindowResize)
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, offViewport)
+    // React unmount calls game.destroy(), which emits DESTROY (not SHUTDOWN) —
+    // without this the viewport listener leaks and fires on a dead scene.
+    this.events.once(Phaser.Scenes.Events.DESTROY, offViewport)
 
     this.time.delayedCall(350, () => this.startRound(1))
   }
 
   private handleWindowResize = (): void => {
-    const w = Math.max(window.innerWidth, 1) * this.dpr
-    const h = Math.max(window.innerHeight, 1) * this.dpr
+    const vp = viewportSize()
+    const w = vp.width * this.dpr
+    const h = vp.height * this.dpr
+    if (w === this.scale.width && h === this.scale.height) return
     this.scale.resize(w, h)
     this.layout()
   }

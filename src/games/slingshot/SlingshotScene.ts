@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { clearLevel, reportLevel } from '../../shared/level'
+import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   BALL,
   BASE_GRAVITY_NORM,
@@ -96,6 +97,7 @@ type Constraint = ReturnType<Phaser.Physics.Matter.Factory['worldConstraint']>
 
 export default class SlingshotScene extends Phaser.Scene {
   private dpr = 1
+  private offViewport?: () => void
 
   // Resolution-independent mapping: normalized [0,1] field → backing pixels.
   private L = 1
@@ -200,8 +202,7 @@ export default class SlingshotScene extends Phaser.Scene {
     this.buildTrajectory()
     this.wireInput()
 
-    window.addEventListener('resize', this.handleResize)
-    window.addEventListener('orientationchange', this.handleResize)
+    this.offViewport = onViewportResize(this.handleResize)
     this.matter.world.on('collisionstart', this.onCollisionStart)
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -245,8 +246,8 @@ export default class SlingshotScene extends Phaser.Scene {
   }
 
   private removeWindowListeners = (): void => {
-    window.removeEventListener('resize', this.handleResize)
-    window.removeEventListener('orientationchange', this.handleResize)
+    this.offViewport?.()
+    this.offViewport = undefined
   }
 
   // ─── E2E test hook (dev-only) ──────────────────────────────────────────────
@@ -311,8 +312,12 @@ export default class SlingshotScene extends Phaser.Scene {
   }
 
   private handleResize = (): void => {
-    const w = Math.max(window.innerWidth, 1) * this.dpr
-    const h = Math.max(window.innerHeight, 1) * this.dpr
+    const vp = viewportSize()
+    const w = vp.width * this.dpr
+    const h = vp.height * this.dpr
+    // visualViewport fires resize more often than window does (e.g. transient
+    // iOS chrome churn) — a same-size event must not rebuild the level.
+    if (w === this.scale.width && h === this.scale.height) return
     this.scale.resize(w, h)
     // While the star drop is up, never rebuild the level (that would advance
     // and orphan/duplicate the overlay). Just re-cover the resized screen and
