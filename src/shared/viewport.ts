@@ -9,17 +9,17 @@
  * the user really sees, so prefer it and fall back to `window.inner*`.
  */
 export function viewportSize(): { width: number; height: number } {
+  // Canvases must match the app shell's CONTENT box: #root spans 100lvh but
+  // reserves the iOS bottom-chrome strip via padding, so the usable area is
+  // the ICB (small viewport). Take the smaller of the ICB and visualViewport
+  // on each axis — the layout viewport over-reports width in landscape iOS 26
+  // (that cropped the corner sun), and visualViewport over-reports height in
+  // portrait (under the browser-chrome strip).
   const vv = window.visualViewport
-  // Width: visualViewport is the truth — the layout viewport can be WIDER than
-  // the screen (landscape iOS 26), which cropped the right edge of canvases.
-  // Height: the app shell (#root) is sized with 100lvh because the portrait
-  // iOS 26 web-app container reports a SMALL viewport that stops above the
-  // home-indicator strip — there the shell is taller than visualViewport and
-  // is the truth, otherwise the two agree.
-  const shellHeight = document.getElementById('root')?.clientHeight ?? 0
+  const icb = document.documentElement
   return {
-    width: Math.max(Math.round(vv?.width ?? window.innerWidth), 1),
-    height: Math.max(Math.round(vv?.height ?? window.innerHeight), shellHeight, 1),
+    width: Math.max(Math.round(Math.min(vv?.width ?? Infinity, icb.clientWidth)), 1),
+    height: Math.max(Math.round(Math.min(vv?.height ?? Infinity, icb.clientHeight)), 1),
   }
 }
 

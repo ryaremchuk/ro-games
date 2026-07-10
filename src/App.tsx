@@ -43,8 +43,17 @@ export default function App() {
             />
           )
         })}
-        {/* Hidden adult-only diagnostics for iOS viewport bugs (no tile). */}
-        <Route path="/viewport-debug" element={<ViewportDebug />} />
+        {/* Hidden adult-only diagnostics for iOS viewport bugs (no tile;
+            reached by 7 fast taps on the launcher background). GameFrame
+            supplies the home button — standalone PWAs have no URL bar. */}
+        <Route
+          path="/viewport-debug"
+          element={
+            <GameFrame title="Viewport debug">
+              <ViewportDebug />
+            </GameFrame>
+          }
+        />
         {/* Unknown routes fall back to the launcher. */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
