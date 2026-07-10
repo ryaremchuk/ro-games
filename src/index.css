@@ -19,7 +19,9 @@ body {
     'Segoe UI',
     Roboto,
     sans-serif;
-  background: #ffffff;
+  /* Backstop for any transient viewport gap (iOS toolbar/rotation animations):
+     match the launcher sky tint instead of flashing white. */
+  background: #dff3ff;
   color: #1a1a1a;
   touch-action: manipulation;
   -webkit-user-select: none;
@@ -28,9 +30,14 @@ body {
   -webkit-touch-callout: none;
 }
 
+/* iOS Safari/PWA: `height: 100%` resolves against the ICB, which excludes the
+   bottom safe-area / collapsed-toolbar strip, so the white body background
+   showed through as a bar at the bottom (iPhone/iPad only). Pinning the app to
+   the viewport with fixed positioning tracks the real visible area; combined
+   with viewport-fit=cover it spans the whole screen. */
 #root {
-  height: 100%;
-  width: 100%;
+  position: fixed;
+  inset: 0;
 }
 
 button {
