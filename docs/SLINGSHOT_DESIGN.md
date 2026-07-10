@@ -41,12 +41,13 @@ iterated based on play sessions.
    squashes, eyes widen, a rising creak tone plays, trajectory dots update live.
 3. Release → launch (whoosh). **Tap during flight = one small flap boost
    upward** (chirp) — playful mid-air agency.
-4. Impact: blocks knock, tumble, chain-react. Any meaningful contact with a
-   piggy (direct hit OR a block falling on it — generous, low impulse
-   threshold) frees it: it wakes, giggles (rising 3-note), spins, and floats
-   off-screen on a balloon with a confetti puff.
-5. Landed bird poofs into hearts after ~1s; the next bird hops onto the sling
-   automatically. No action needed to continue.
+4. Impact: blocks knock, tumble, chain-react. ONLY a direct hit from the
+   flying bird frees a piggy — blocks or props shoving it never do: it wakes,
+   giggles (rising 3-note), spins, and floats off-screen on a balloon with a
+   confetti puff.
+5. The landed bird stays lying on the field for the rest of the level (a
+   physics prop later shots can shove around); the next bird hops onto the
+   sling automatically. No action needed to continue.
 6. All piggies freed → celebration (rainbow arc + confetti + arpeggio,
    ~2.5s) → level badge +1 → next level auto-builds with a fun "blocks drop
    into place" entrance.
@@ -185,7 +186,7 @@ src/games/slingshot/
 - [ ] Drag-anywhere aiming with live trajectory dots; release launches; capped
       power; sub-threshold pull hops back.
 - [ ] Tap-in-flight flap works.
-- [ ] Towers tumble believably; piggies free generously (block-fall counts);
+- [ ] Towers tumble believably; piggies free only on a direct bird hit;
       celebration → auto next level; badge increments.
 - [ ] Levels 1–14 visibly walk the theme table (materials, trampolines, balls,
       seesaws, moon gravity all appear); 15+ keeps generating.
