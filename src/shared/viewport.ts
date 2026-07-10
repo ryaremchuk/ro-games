@@ -10,9 +10,16 @@
  */
 export function viewportSize(): { width: number; height: number } {
   const vv = window.visualViewport
+  // Width: visualViewport is the truth — the layout viewport can be WIDER than
+  // the screen (landscape iOS 26), which cropped the right edge of canvases.
+  // Height: the app shell (#root) is sized with 100lvh because the portrait
+  // iOS 26 web-app container reports a SMALL viewport that stops above the
+  // home-indicator strip — there the shell is taller than visualViewport and
+  // is the truth, otherwise the two agree.
+  const shellHeight = document.getElementById('root')?.clientHeight ?? 0
   return {
     width: Math.max(Math.round(vv?.width ?? window.innerWidth), 1),
-    height: Math.max(Math.round(vv?.height ?? window.innerHeight), 1),
+    height: Math.max(Math.round(vv?.height ?? window.innerHeight), shellHeight, 1),
   }
 }
 
