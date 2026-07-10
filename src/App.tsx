@@ -4,6 +4,7 @@ import HomePage from './launcher/HomePage'
 import AppLoader from './shared/AppLoader'
 import ErrorBoundary from './shared/ErrorBoundary'
 import GameFrame from './shared/GameFrame'
+import ViewportDebug from './shared/ViewportDebug'
 import { games } from './games/registry'
 
 export default function App() {
@@ -42,6 +43,8 @@ export default function App() {
             />
           )
         })}
+        {/* Hidden adult-only diagnostics for iOS viewport bugs (no tile). */}
+        <Route path="/viewport-debug" element={<ViewportDebug />} />
         {/* Unknown routes fall back to the launcher. */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
