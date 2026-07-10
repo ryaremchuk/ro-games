@@ -7,7 +7,6 @@ import {
   BIRDS,
   BIRD_RADIUS,
   FLAP_NORM,
-  FREE_SPEED_NORM,
   GROUND_Y,
   KNOCK_SPEED_NORM,
   MATERIALS,
@@ -48,7 +47,8 @@ const SETTLE_S = 0.5
 /** Post-entrance grace: no freeing / knock sounds while the level settles. */
 const SETTLE_GRACE_MS = 1000
 const MAX_FLIGHT_S = 4.5
-const POOF_MS = 900
+/** Pause between a bird coming to rest and the next one hopping onto the sling. */
+const RELOAD_MS = 600
 const IDLE_MS = 10000
 const TRAJECTORY_DOTS = 16
 const TRAJECTORY_DT = 0.055
@@ -113,6 +113,8 @@ export default class SlingshotScene extends Phaser.Scene {
   private trampolines: Phaser.Physics.Matter.Image[] = []
   private seesawPlanks: Phaser.Physics.Matter.Image[] = []
   private bird!: Bird
+  /** Fired birds resting on the field — plain physics props until the level ends. */
+  private spentBirds: Bird[] = []
   private slingPost?: Phaser.GameObjects.Image
   private freedBalloons: Phaser.GameObjects.Image[] = []
   private staticBodies: StaticBody[] = []
@@ -129,7 +131,6 @@ export default class SlingshotScene extends Phaser.Scene {
 
   // Particles.
   private confetti!: Phaser.GameObjects.Particles.ParticleEmitter
-  private hearts!: Phaser.GameObjects.Particles.ParticleEmitter
   private dustBurst!: Phaser.GameObjects.Particles.ParticleEmitter
   private sparkles!: Phaser.GameObjects.Particles.ParticleEmitter
 
@@ -156,7 +157,6 @@ export default class SlingshotScene extends Phaser.Scene {
   // build from the *_NORM constants.
   private freeingArmed = false
   private settleGraceUntil = Infinity
-  private freeSpeedPx = 0
   private knockSpeedPx = 0
   private settleSpeedPx = 0
 
@@ -266,6 +266,7 @@ export default class SlingshotScene extends Phaser.Scene {
         birdX: this.bird?.body.active ? this.bird.body.x : null,
         birdY: this.bird?.body.active ? this.bird.body.y : null,
         birdAsleep: this.bird?.body.active ? this.bodyOf(this.bird.body).isSleeping : null,
+        spentBirds: this.spentBirds.length,
         piggiesTotal: this.piggies.length,
         piggiesFreed: this.piggies.filter((p) => p.freed).length,
         consecutiveMisses: this.consecutiveMisses,
@@ -370,13 +371,6 @@ export default class SlingshotScene extends Phaser.Scene {
     this.graphicsTexture('sl-dust', 30, 30, (g) => {
       g.fillStyle(0xffffff, 0.5)
       g.fillCircle(this.px(9), this.px(9), this.px(9))
-    })
-    this.graphicsTexture('sl-heart', 40, 40, (g) => {
-      g.fillStyle(0xff8fab, 1)
-      const s = this.px(1)
-      g.fillCircle(9 * s, 12 * s, 7 * s)
-      g.fillCircle(23 * s, 12 * s, 7 * s)
-      g.fillTriangle(2 * s, 15 * s, 30 * s, 15 * s, 16 * s, 32 * s)
     })
   }
 
@@ -704,17 +698,6 @@ export default class SlingshotScene extends Phaser.Scene {
         emitting: false,
       })
       .setDepth(58)
-    this.hearts = this.add
-      .particles(0, 0, 'sl-heart', {
-        speed: { min: this.px(60), max: this.px(160) },
-        angle: { min: 250, max: 290 },
-        gravityY: this.px(200),
-        lifespan: { min: 900, max: 1400 },
-        scale: { start: 0.9, end: 0.1 },
-        alpha: { start: 1, end: 0 },
-        emitting: false,
-      })
-      .setDepth(58)
     this.dustBurst = this.add
       .particles(0, 0, 'sl-dust', {
         speed: { min: this.px(40), max: this.px(140) },
@@ -771,7 +754,6 @@ export default class SlingshotScene extends Phaser.Scene {
     this.matter.world.setGravity(0, gy)
 
     // Contact thresholds: field-units/s → px/step (Matter speeds are px/step).
-    this.freeSpeedPx = (FREE_SPEED_NORM * this.L) / 60
     this.knockSpeedPx = (KNOCK_SPEED_NORM * this.L) / 60
     this.settleSpeedPx = (SETTLE_SPEED_NORM * this.L) / 60
 
@@ -831,6 +813,13 @@ export default class SlingshotScene extends Phaser.Scene {
     this.freedBalloons = []
     kill(this.slingPost)
     this.slingPost = undefined
+    // Spent birds live until the level ends — this is where they leave.
+    for (const spent of this.spentBirds) {
+      if (spent === this.bird) continue // the block below owns the live ref
+      kill(spent.body)
+      kill(spent.skin)
+    }
+    this.spentBirds = []
     if (this.bird) {
       kill(this.bird.body)
       kill(this.bird.skin)
@@ -974,6 +963,11 @@ export default class SlingshotScene extends Phaser.Scene {
     })
     img.setCircle(rPx * PIGGY_BODY_SCALE, { label: 'piggy' })
     img.setDensity(PIGGY.density).setFriction(PIGGY.friction).setBounce(PIGGY.restitution)
+    // Piggies never sleep (threshold 0): Matter only wakes a sleeping body via
+    // collision impulses — removing its support wakes nothing. A piggy that
+    // dozed off on a box would hang frozen mid-air when the box is knocked out
+    // from under it. Same guard the bird carries.
+    img.setSleepThreshold(0)
     img.setStatic(true).setAlpha(0).setDepth(16)
     const zzz = this.add
       .image(img.x, img.y - rPx * 1.4, 'sl-zzz')
@@ -1150,15 +1144,22 @@ export default class SlingshotScene extends Phaser.Scene {
   }
 
   private syncBird(): void {
-    // Glue the skin to the body while it flies (and while it rests, spent,
-    // before the poof). NOT while loaded: a loaded bird's skin is driven
-    // directly (aim pocket, arrival/boing/idle-hop tweens) and syncBird runs
-    // *after* the tween manager each frame — syncing here would stomp those
-    // tweens (the idle hop would never render). `active` goes false once the
-    // body is destroyed during the poof; after that the poof tween owns it.
-    if (!this.bird || this.bird.state === 'loaded' || !this.bird.body.active) return
-    this.bird.skin.setPosition(this.bird.body.x, this.bird.body.y)
-    this.bird.skin.rotation = this.bird.body.rotation
+    // Glue each skin to its body while it flies or rests spent on the field.
+    // NOT while loaded: a loaded bird's skin is driven directly (aim pocket,
+    // arrival/boing/idle-hop tweens) and syncBird runs *after* the tween
+    // manager each frame — syncing here would stomp those tweens (the idle
+    // hop would never render). `active` goes false once a body is destroyed
+    // by a level rebuild.
+    if (this.bird && this.bird.state !== 'loaded' && this.bird.body.active) {
+      this.bird.skin.setPosition(this.bird.body.x, this.bird.body.y)
+      this.bird.skin.rotation = this.bird.body.rotation
+    }
+    // Spent birds keep reacting to physics (later shots can shove them).
+    for (const spent of this.spentBirds) {
+      if (spent === this.bird || !spent.body.active) continue
+      spent.skin.setPosition(spent.body.x, spent.body.y)
+      spent.skin.rotation = spent.body.rotation
+    }
   }
 
   private reloadNext(): void {
@@ -1176,23 +1177,13 @@ export default class SlingshotScene extends Phaser.Scene {
       this.consecutiveMisses++
       playTone(150, 200, 'sine', 0.05) // soft "whomp" — never harsh
     }
-    const { body, skin } = this.bird
-    this.delay(POOF_MS, () => {
-      this.hearts.explode(6, skin.x, skin.y)
-      playTone(660, 90, 'sine', 0.05)
-      body.destroy() // removes the physics body from the world
-      this.tweens.add({
-        targets: skin,
-        scaleX: 0,
-        scaleY: 0,
-        duration: 220,
-        ease: 'Back.easeIn',
-        onComplete: () => {
-          skin.destroy()
-          this.reloadNext()
-        },
-      })
-    })
+    // The spent bird stays on the field until the level ends — a plain physics
+    // prop the next shots can shove around. Relabel its body so collisions no
+    // longer treat it as the bird: only the currently flying bird may free a
+    // piggy or boing a trampoline.
+    this.bodyOf(this.bird.body).label = 'spentBird'
+    this.spentBirds.push(this.bird)
+    this.delay(RELOAD_MS, () => this.reloadNext())
   }
 
   private flap(): void {
@@ -1378,21 +1369,13 @@ export default class SlingshotScene extends Phaser.Scene {
     // may free a piggy or thud — second belt behind the launch arming.
     if (this.time.now < this.settleGraceUntil) return
 
-    // Piggy freeing — armed by the first launch of the level; then generous:
-    // bird contact frees at any speed; a moving block (fall) or a shoved piggy
-    // frees above the L-scaled threshold.
+    // Piggy freeing — armed by the first launch of the level, and ONLY a
+    // direct hit from the flying bird frees. Blocks, props, the ground or a
+    // spent bird lying around never do, no matter how hard they bump the piggy.
     const piggyBody = a.label === 'piggy' ? a : b.label === 'piggy' ? b : null
     if (piggyBody) {
       const hitter = piggyBody === a ? b : a
-      if (
-        canFreePiggy(
-          this.freeingArmed,
-          hitter.label,
-          hitter.speed,
-          piggyBody.speed,
-          this.freeSpeedPx,
-        )
-      ) {
+      if (canFreePiggy(this.freeingArmed, hitter.label)) {
         const piggy = this.piggyById.get(piggyBody.id)
         if (piggy) this.freePiggy(piggy)
       }

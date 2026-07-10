@@ -28,6 +28,8 @@ export interface SlingshotTestState {
    * so a slept "launch" freezes mid-air (the regression this flag guards).
    */
   birdAsleep: boolean | null
+  /** Fired birds resting on the field (they persist until the level ends). */
+  spentBirds: number
   piggiesTotal: number
   piggiesFreed: number
   consecutiveMisses: number

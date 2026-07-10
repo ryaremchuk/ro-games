@@ -7,6 +7,45 @@ test('launcher shows one tile per registered game', async ({ page }) => {
   await page.screenshot({ path: 'e2e/__screenshots__/launcher.png' })
 })
 
+// Tiles must shrink to fit: the launcher never scrolls, on any screen.
+const viewports = [
+  { name: 'iPad portrait', width: 834, height: 1112 },
+  { name: 'iPad landscape', width: 1112, height: 834 },
+  { name: 'iPhone portrait', width: 390, height: 844 },
+  { name: 'iPhone landscape', width: 844, height: 390 },
+  { name: 'desktop', width: 1728, height: 1000 },
+]
+
+for (const vp of viewports) {
+  test(`launcher fits without scrolling — ${vp.name}`, async ({ page }) => {
+    await page.setViewportSize({ width: vp.width, height: vp.height })
+    await page.goto('./')
+    await expect(page.getByRole('link')).toHaveCount(games.length)
+
+    const overflow = await page.evaluate(() => {
+      const home = document.querySelector('.home') as HTMLElement
+      return {
+        homeScroll: home.scrollHeight - home.clientHeight,
+        docScroll: document.documentElement.scrollHeight - window.innerHeight,
+      }
+    })
+    expect(overflow.homeScroll).toBeLessThanOrEqual(0)
+    expect(overflow.docScroll).toBeLessThanOrEqual(0)
+
+    // Every tile fully on screen, and square.
+    for (const tile of await page.getByRole('link').all()) {
+      const box = (await tile.boundingBox())!
+      expect(box.x).toBeGreaterThanOrEqual(0)
+      expect(box.y).toBeGreaterThanOrEqual(0)
+      expect(box.x + box.width).toBeLessThanOrEqual(vp.width + 0.5)
+      expect(box.y + box.height).toBeLessThanOrEqual(vp.height + 0.5)
+      expect(Math.abs(box.width - box.height)).toBeLessThanOrEqual(1)
+      // Cap unchanged: tiles never exceed the old 960px-grid maximum.
+      expect(box.width).toBeLessThanOrEqual(299)
+    }
+  })
+}
+
 test('opening a game and pressing home returns to the launcher', async ({ page }) => {
   await page.goto('./')
   await page.getByRole('link', { name: 'Slingshot Birds' }).click()
