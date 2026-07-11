@@ -73,11 +73,16 @@ const FLY_MS = 420
 const BODY_OFFSET_Y = -35
 /** White dot-disc radius, css. */
 const DISC_R = 36
-// Claw rest pose, css px relative to the crab's center: raised UP beside the
-// head, gripping the task panel's bottom corners (clap returns here).
-const CLAW_X = 50
-const CLAW_Y = -74
-const CLAW_ANGLE = 40
+// Claw shoulder joint, css px relative to the crab's center. Claws pivot at
+// their arm ROOT (origin set into the arm's end), planted on the body's upper
+// sides, pincers up — so they stay attached whatever the pose or wave angle.
+const CLAW_X = 48
+const CLAW_Y = -26
+/** Arm-root position inside the (unflipped) claw sprite, origin fractions. */
+const CLAW_ROOT_X = 0.22
+const CLAW_ROOT_Y = 0.82
+/** How far a claw swings (degrees) during the celebration wave. */
+const CLAW_WAVE = 34
 
 interface BalloonSlot {
   root: Phaser.GameObjects.Container
@@ -401,15 +406,17 @@ export default class BalloonPopScene extends Phaser.Scene {
     const body = this.add.image(0, 0, 'bp-crab')
     body.displayWidth = this.px(130)
     body.scaleY = body.scaleX
-    // Claws raised, pincers up — the crab "holds" the task panel above its
-    // head (the panel renders one depth above, covering the pincer tips).
+    // Arms raised "hooray": each claw's origin sits at its arm root, and that
+    // root is planted on the body's shoulder — the sprite (pincer up-right,
+    // arm to bottom-left) is flipped for the LEFT side so pincers point away
+    // from the head. Drawn behind the body, which hides the joint seam.
     this.crabClawLeft = this.add
       .image(-this.px(CLAW_X), this.px(CLAW_Y), 'bp-claw')
-      .setAngle(CLAW_ANGLE)
+      .setFlipX(true)
+      .setOrigin(1 - CLAW_ROOT_X, CLAW_ROOT_Y)
     this.crabClawRight = this.add
       .image(this.px(CLAW_X), this.px(CLAW_Y), 'bp-claw')
-      .setFlipX(true)
-      .setAngle(-CLAW_ANGLE)
+      .setOrigin(CLAW_ROOT_X, CLAW_ROOT_Y)
     for (const claw of [this.crabClawLeft, this.crabClawRight]) {
       claw.displayWidth = this.px(52)
       claw.scaleY = claw.scaleX
@@ -428,10 +435,11 @@ export default class BalloonPopScene extends Phaser.Scene {
       { x: eyeLeft.x, y: eyeLeft.y },
       { x: eyeRight.x, y: eyeRight.y },
     ]
-    // Paint order inside the crab: cloud → body → eyes → raised claws (the
-    // separate panel root sits one depth above the whole crab).
+    // Paint order inside the crab: cloud → claws (behind the body so the
+    // shoulder seam is hidden) → body → eyes. The separate panel root floats
+    // one depth above the whole crab.
     this.crabRoot = this.add
-      .container(0, 0, [platform, body, eyeLeft, eyeRight, this.crabClawLeft, this.crabClawRight])
+      .container(0, 0, [platform, this.crabClawLeft, this.crabClawRight, body, eyeLeft, eyeRight])
       .setDepth(30)
 
     // The crab responds too — everything responds. The hit circle lives in
@@ -1156,27 +1164,25 @@ export default class BalloonPopScene extends Phaser.Scene {
     })
     this.tweens.killTweensOf(this.crabClawLeft)
     this.tweens.killTweensOf(this.crabClawRight)
-    const leftX = -this.px(CLAW_X)
-    const rightX = this.px(CLAW_X)
+    // Claws pivot at their shoulder root, so a pure angle wave reads as
+    // excited arm-waving and never detaches the arm from the body.
     this.tweens.add({
       targets: this.crabClawLeft,
-      x: -this.px(28),
-      angle: CLAW_ANGLE + 25,
+      angle: CLAW_WAVE,
       duration: 130,
       yoyo: true,
       repeat: 2,
       ease: 'Quad.easeInOut',
-      onComplete: () => this.crabClawLeft.setX(leftX).setAngle(CLAW_ANGLE),
+      onComplete: () => this.crabClawLeft.setAngle(0),
     })
     this.tweens.add({
       targets: this.crabClawRight,
-      x: this.px(28),
-      angle: -CLAW_ANGLE - 25,
+      angle: -CLAW_WAVE,
       duration: 130,
       yoyo: true,
       repeat: 2,
       ease: 'Quad.easeInOut',
-      onComplete: () => this.crabClawRight.setX(rightX).setAngle(-CLAW_ANGLE),
+      onComplete: () => this.crabClawRight.setAngle(0),
     })
     for (const delay of [130, 390, 650]) {
       this.time.delayedCall(delay, () => playTone(988, 35, 'square', 0.05))
