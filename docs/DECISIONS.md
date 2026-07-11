@@ -49,6 +49,28 @@ iPad home screen gives fullscreen standalone launch (escaping Safari's gestures)
 and offline play. Icons are generated from one `public/logo.svg` via
 `@vite-pwa/assets-generator`, so there are no hand-maintained PNGs.
 
+## Status bar: `default`, not `black-translucent`
+
+`black-translucent` looked like free full-bleed, but on-device debugging
+(`#/viewport-debug`) showed iOS sizes the standalone webview
+screen-minus-status-bar while anchoring it at the top — leaving a dead strip at
+the physical bottom that is **outside the webview**: `100lvh` reports the full
+screen but never renders there, and no CSS can paint it (iPad both
+orientations, iPhone portrait). `default` places the webview below an opaque
+status bar and it reaches the bottom edge. iOS bakes this setting in at
+Add-to-Home-Screen time, so changing it means re-adding the icon.
+
+## PWA updates: `prompt` + silent reload on the launcher
+
+`registerType: 'autoUpdate'` alone left the app one launch behind every release
+(and iOS resuming the PWA from a snapshot skips the launch update check
+entirely, hence "close it twice"). Worse, a new worker replacing the precache
+under a running page breaks that page's old lazy chunks offline. So:
+`'prompt'` keeps the old worker in control until `src/shared/swUpdate.ts`
+applies the update — checks on launch / foreground / hourly, then one silent
+reload, only ever on the launcher so games are never interrupted. Offline the
+check just fails quietly and the cached version keeps playing.
+
 ## Kiosk trade-offs (intentional)
 
 - Global CSS disables text selection, tap highlight, scroll bounce; the viewport
