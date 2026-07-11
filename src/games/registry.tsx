@@ -78,4 +78,12 @@ export const games: GameMeta[] = [
     emoji: '🐦',
     component: lazyWithReload(() => import('./slingshot/SlingshotGame')),
   },
+  {
+    id: 'memory',
+    title: 'Memory',
+    path: '/memory',
+    color: '#FF8FAB',
+    emoji: '🐾',
+    component: lazyWithReload(() => import('./memory/MemoryGame')),
+  },
 ]
