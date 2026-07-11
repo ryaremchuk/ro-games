@@ -16,15 +16,19 @@ export interface Critter {
   emoji: string
 }
 
-/** Critter pool (≥ 6 designs) so the garden never looks the same for long. */
+/**
+ * Critter pool (≥ 6 designs) so the garden never looks the same for long. Each
+ * id maps to a hand-picked full-body sprite (`src/games/whack-a-silly/critters/
+ * <id>.png`, loaded in the scene's preload); the emoji is only a fallback/label.
+ */
 export const CRITTERS: readonly Critter[] = [
-  { id: 'hamster', emoji: '🐹' },
   { id: 'rabbit', emoji: '🐰' },
-  { id: 'hedgehog', emoji: '🦔' },
   { id: 'frog', emoji: '🐸' },
-  { id: 'mouse', emoji: '🐭' },
   { id: 'chick', emoji: '🐥' },
-  { id: 'fox', emoji: '🦊' },
+  { id: 'panda', emoji: '🐼' },
+  { id: 'penguin', emoji: '🐧' },
+  { id: 'owl', emoji: '🦉' },
+  { id: 'pig', emoji: '🐷' },
 ]
 
 export function critterById(id: string): Critter {
