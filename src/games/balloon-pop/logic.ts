@@ -337,12 +337,13 @@ export const RISE_SPEED_START = 30
 /** Speed ceiling — still a lazy float, never frantic. */
 export const RISE_SPEED_MAX = 55
 
+/** Per-balloon speed jitter, ±fraction of the base speed. */
+export const RISE_JITTER = 0.15
+
 /**
  * Base rise speed for a difficulty — monotonic, clamped. Rides the adaptive
  * meter, so a struggling player's sky literally slows back down.
  */
-export const RISE_JITTER = 0.15
-
 export function baseRiseSpeed(difficulty: number): number {
   const t = Math.min(Math.max(difficulty, 0) / DIFFICULTY_MAX, 1)
   return RISE_SPEED_START + (RISE_SPEED_MAX - RISE_SPEED_START) * t

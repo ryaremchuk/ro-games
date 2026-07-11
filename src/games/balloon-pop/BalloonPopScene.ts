@@ -1055,7 +1055,9 @@ export default class BalloonPopScene extends Phaser.Scene {
         round: this.round,
         difficulty: this.difficulty,
         activeMatchCount: actives.filter((s) => s.spec?.isMatch).length,
-        activeXFracs: actives.map((s) => s.baseX / Math.max(this.scale.width, 1)),
+        // Authoring-space xFracs (what pickXFrac compares against) — NOT
+        // baseX/width, which lives in a slightly different screen space.
+        activeXFracs: actives.map((s) => s.spec?.xFrac ?? 0.5),
         lastColorIndex: this.lastColorIndex,
       },
       Math.random,
