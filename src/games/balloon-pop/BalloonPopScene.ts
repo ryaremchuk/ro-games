@@ -5,15 +5,18 @@ import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   BALLOON_COLORS,
   BALLOON_SHAPES,
+  DIFFICULTY_START,
   dotPositions,
   isSkyCelebration,
   levelFor,
+  pickTask,
   planBalloon,
   planInitialWave,
   planRound,
   shouldShowHint,
+  updateDifficulty,
 } from './logic'
-import type { BalloonShapeKind, BalloonSpec, RoundPlan } from './logic'
+import type { BalloonShapeKind, BalloonSpec, RoundPlan, TaskId } from './logic'
 
 // ART SPEC palette — sky scene.
 const SKY_TOP = 0x7cc6fe
@@ -88,6 +91,11 @@ export default class BalloonPopScene extends Phaser.Scene {
   private wrongTaps = 0
   private hintOn = false
   private lastColorIndex: number | null = null
+  // Adaptive difficulty: nudged after every completed round (see logic.ts),
+  // plus the recent task ids so the picker can enforce variety.
+  private difficulty = DIFFICULTY_START
+  private recentTasks: TaskId[] = []
+  private roundStartAt = 0
 
   private bgGfx!: Phaser.GameObjects.Graphics
   private rainbowGfx!: Phaser.GameObjects.Graphics
@@ -761,8 +769,20 @@ export default class BalloonPopScene extends Phaser.Scene {
     this.wrongTaps = 0
     this.hintOn = false
     this.roundActive = true
-    this.round = planRound(this.roundsCompleted, this.prevTarget, Math.random)
+    this.round = planRound(
+      {
+        difficulty: this.difficulty,
+        roundsCompleted: this.roundsCompleted,
+        prevTarget: this.prevTarget,
+        taskId: pickTask(this.difficulty, this.recentTasks, Math.random),
+      },
+      Math.random,
+    )
     this.prevTarget = this.round.target
+    // Record what actually ran (the scaffold may override the picked task).
+    this.recentTasks.push(this.round.taskId)
+    if (this.recentTasks.length > 4) this.recentTasks.shift()
+    this.roundStartAt = this.time.now
 
     this.updateSign()
     this.playCountBeeps()
@@ -869,12 +889,7 @@ export default class BalloonPopScene extends Phaser.Scene {
   private spawnWave(): void {
     if (!this.round) return
     const roundId = this.roundId
-    const specs = planInitialWave(
-      this.round,
-      this.roundsCompleted,
-      Math.random,
-      this.lastColorIndex,
-    )
+    const specs = planInitialWave(this.round, this.difficulty, Math.random, this.lastColorIndex)
     specs.forEach((spec, i) => {
       this.waveTimers.push(
         this.time.delayedCall(200 + i * 300, () => {
@@ -1038,7 +1053,7 @@ export default class BalloonPopScene extends Phaser.Scene {
     const spec = planBalloon(
       {
         round: this.round,
-        roundsCompleted: this.roundsCompleted,
+        difficulty: this.difficulty,
         activeMatchCount: actives.filter((s) => s.spec?.isMatch).length,
         activeXFracs: actives.map((s) => s.baseX / Math.max(this.scale.width, 1)),
         lastColorIndex: this.lastColorIndex,
@@ -1101,6 +1116,11 @@ export default class BalloonPopScene extends Phaser.Scene {
     const spec = slot.spec
     if (!spec) return
     this.roundActive = false
+    // Adaptive nudge: clean & quick raises difficulty, a hinted round eases it.
+    this.difficulty = updateDifficulty(this.difficulty, {
+      wrongTaps: this.wrongTaps,
+      ms: this.time.now - this.roundStartAt,
+    })
     slot.state = 'popping'
     slot.body.disableInteractive()
     for (const timer of this.beepTimers) timer.remove(false)

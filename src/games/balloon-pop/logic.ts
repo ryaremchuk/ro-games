@@ -3,18 +3,32 @@
  * imports — everything here is deterministic given an injected RNG and is
  * unit-tested in plain jsdom (see logic.test.ts).
  *
+ * ── Curriculum (adaptive) ────────────────────────────────────────────────────
+ *
  * Numbers come from the subitizing research brief: targets 1-3 first (the
  * instant-subitizing range at age 4), then 4, then 5 as a late stretch;
  * dice/line dot layouts are easy, scatter is hard (late only); distractors
- * start ±2 away (easy discrimination) and tighten to ±1 (the real
- * subitizing test); numeral-only balloons appear late to build the
- * numeral↔quantity link. 3-4 balloons concurrent, never clutter, and at
- * least one matching balloon is planned on screen at all times.
+ * start ±2 away (easy discrimination) and tighten to ±1 (the real subitizing
+ * test); numeral balloons appear later to build the numeral↔quantity link.
  *
- * Levels advance one per rainbow celebration (every 5 rounds). Level 6+ may
- * cross representations (sign asks in dots, balloons carry numerals, or the
- * reverse); level 8+ adds color rounds where the match must also wear the
- * asked-for balloon color.
+ * Progression is driven by an adaptive DIFFICULTY meter (0..12), not by raw
+ * round count: a clean, quick round nudges it up one step, a round that
+ * needed the glow hint eases it down one step, everything else holds. The
+ * child therefore always plays at the edge of their ability — a struggling
+ * player stays in the friendly zone, a flying one reaches variety sooner.
+ * Difficulty maps onto every knob: target range, distractor tightness, dot
+ * layouts, rise speed, concurrent balloons, and which TASK TYPES are in the
+ * rotation.
+ *
+ * Task types live in a small registry (TASKS). Each unlocks at a difficulty
+ * threshold and is picked per-round by weight, never repeating more than
+ * MAX_TASK_REPEAT times in a row once alternatives exist — so long sessions
+ * keep alternating between counting dots, reading numerals, translating
+ * between the two, and matching quantity+color.
+ *
+ * Rhythm: the first three rounds scaffold 1 → 2 → 3 on plain dots, and every
+ * CELEBRATION_EVERY_ROUNDS correct rounds a rainbow celebration marks a new
+ * HUD level — a steady reward beat independent of the adaptive meter.
  */
 
 /** Injectable random source, [0, 1). Defaults to Math.random in the game. */
@@ -59,26 +73,62 @@ export const BALLOON_SHAPES: readonly BalloonShapeKind[] = [
   'star',
 ]
 
-// ─── Stage / difficulty progression ──────────────────────────────────────────
+// ─── Adaptive difficulty meter ───────────────────────────────────────────────
+
+export const DIFFICULTY_START = 0
+export const DIFFICULTY_MAX = 12
+
+/**
+ * A correct round faster than this (and with no wrong taps) counts as "clean"
+ * and nudges difficulty up. Generous on purpose: the timer starts when the
+ * sign appears, and a matching balloon may take a while to float within reach.
+ */
+export const FAST_ROUND_MS = 20_000
+
+/** What the scene reports after every completed round. */
+export interface RoundResult {
+  /** Wrong balloons tapped before the match was popped. */
+  wrongTaps: number
+  /** Time from round start to the correct pop, ms. */
+  ms: number
+}
+
+/**
+ * One adaptive step per round, never more (|Δ| ≤ 1, clamped to 0..MAX):
+ * clean & quick → +1; needed the glow hint (≥ WRONG_TAPS_BEFORE_HINT wrong
+ * taps) → −1; everything else (one slip, or correct but slow) holds steady.
+ * Asymmetry is deliberate — no-fail design means struggling eases the game
+ * gently rather than punishing.
+ */
+export function updateDifficulty(difficulty: number, result: RoundResult): number {
+  const d = Math.min(Math.max(Math.round(difficulty), 0), DIFFICULTY_MAX)
+  if (result.wrongTaps >= WRONG_TAPS_BEFORE_HINT) return Math.max(0, d - 1)
+  if (result.wrongTaps > 0) return d
+  if (result.ms > FAST_ROUND_MS) return d
+  return Math.min(DIFFICULTY_MAX, d + 1)
+}
+
+// ─── Stage bands (difficulty → knob presets) ─────────────────────────────────
 
 export type Stage = 1 | 2 | 3 | 4
 
-/** Rounds completed before 4 joins the target pool. */
-export const STAGE2_ROUNDS = 3
-/** Rounds completed before 5 (stretch) and scatter layouts join. */
-export const STAGE3_ROUNDS = 7
-/** Rounds completed before numeral-only balloon rounds may appear. */
-export const STAGE4_ROUNDS = 11
+/** Difficulty at which 4 joins the target pool. */
+export const STAGE2_DIFFICULTY = 3
+/** Difficulty at which 5 (stretch) and scatter layouts join. */
+export const STAGE3_DIFFICULTY = 6
+/** Difficulty of the hardest band. */
+export const STAGE4_DIFFICULTY = 9
 
 /**
- * S1: targets 1-3, dice/line layouts, distractors ±2 →
- * S2: 4 joins → S3: 5 (stretch) + scatter layouts + distractors tighten
- * to ±1 → S4: numeral-only balloon rounds mix in. Monotonic in rounds.
+ * S1: targets 1-3, dice/line layouts, distractors ±2..3 →
+ * S2: 4 joins, 4 concurrent balloons → S3: 5 (stretch) + scatter layouts +
+ * distractors tighten to ±1..2 → S4: everything at full stretch. Monotonic
+ * in difficulty; difficulty itself moves both ways (adaptive).
  */
-export function stageFor(roundsCompleted: number): Stage {
-  if (roundsCompleted >= STAGE4_ROUNDS) return 4
-  if (roundsCompleted >= STAGE3_ROUNDS) return 3
-  if (roundsCompleted >= STAGE2_ROUNDS) return 2
+export function stageFor(difficulty: number): Stage {
+  if (difficulty >= STAGE4_DIFFICULTY) return 4
+  if (difficulty >= STAGE3_DIFFICULTY) return 3
+  if (difficulty >= STAGE2_DIFFICULTY) return 2
   return 1
 }
 
@@ -113,7 +163,7 @@ export function distractorValues(target: number, stage: Stage): number[] {
   return values
 }
 
-// ─── Levels (one per rainbow) ────────────────────────────────────────────────
+// ─── Levels (one per rainbow — steady reward rhythm) ─────────────────────────
 
 /** Every 5 correct rounds: rainbow-and-stars sky celebration. */
 export const CELEBRATION_EVERY_ROUNDS = 5
@@ -121,40 +171,88 @@ export const CELEBRATION_EVERY_ROUNDS = 5
 /**
  * 1-based level shown on the HUD badge. A level is passed exactly when its
  * rainbow celebration has flown — every CELEBRATION_EVERY_ROUNDS rounds.
+ * Levels are a REWARD rhythm (rounds completed), deliberately independent of
+ * the adaptive difficulty meter: the badge always moves forward.
  */
 export function levelFor(roundsCompleted: number): number {
   return Math.floor(roundsCompleted / CELEBRATION_EVERY_ROUNDS) + 1
 }
 
-/** From this level the sign may ask in the OTHER representation than balloons. */
-export const CROSS_REP_MIN_LEVEL = 6
-/** Chance a level-6+ round crosses representations (dots sign ↔ numeral balloons). */
-export const CROSS_REP_PROBABILITY = 0.5
-/** From this level some rounds also demand a specific balloon color. */
-export const COLOR_TASK_MIN_LEVEL = 8
-/** Chance a level-8+ round pins a color on top of the quantity. */
-export const COLOR_TASK_PROBABILITY = 0.4
-
-// ─── Round planning ──────────────────────────────────────────────────────────
+// ─── Task registry ───────────────────────────────────────────────────────────
 
 export type BalloonKind = 'dots' | 'numeral'
 
-/** Chance a stage-4 round shows numerals on balloons instead of dots. */
-export const NUMERAL_ROUND_PROBABILITY = 0.5
+export type TaskId = 'count-dots' | 'count-numerals' | 'cross-rep' | 'color-count'
 
-/** Concurrent balloons afloat: 3 during warm-up, 4 afterwards. */
-export function concurrentBalloonsFor(stage: Stage): number {
-  return stage === 1 ? 3 : 4
+export interface TaskDef {
+  id: TaskId
+  /** Difficulty at which this task joins the rotation. */
+  minDifficulty: number
+  /** Relative pick weight once unlocked. */
+  weight: number
 }
 
+/**
+ * The task rotation. Order = unlock order:
+ * - count-dots: sign shows dots, balloons carry dots (the baseline skill).
+ * - count-numerals: numerals on both — builds numeral recognition.
+ * - cross-rep: sign asks in one representation, balloons answer in the other —
+ *   the child translates dots ↔ numeral.
+ * - color-count: the match must show the right quantity AND wear the asked-for
+ *   color (two constraints at once; stays on dots for readability).
+ * Adding a task type = one entry here + a branch in planRound.
+ */
+export const TASKS: readonly TaskDef[] = [
+  { id: 'count-dots', minDifficulty: 0, weight: 4 },
+  { id: 'count-numerals', minDifficulty: 5, weight: 2 },
+  { id: 'cross-rep', minDifficulty: 8, weight: 2 },
+  { id: 'color-count', minDifficulty: 10, weight: 2 },
+]
+
+/** A task never runs more than this many rounds in a row (once others exist). */
+export const MAX_TASK_REPEAT = 2
+
+/** First rounds scaffold 1 → 2 → 3 on plain dots regardless of the picker. */
+export const SCAFFOLD_ROUNDS = 3
+
+/** Tasks available at a difficulty, in registry order. */
+export function unlockedTasks(difficulty: number): TaskDef[] {
+  return TASKS.filter((task) => difficulty >= task.minDifficulty)
+}
+
+/**
+ * Pick the next round's task: weighted draw from the unlocked pool, excluding
+ * a task that has already run MAX_TASK_REPEAT times in a row — variety is the
+ * point of the registry. With only one task unlocked, repeats are allowed.
+ */
+export function pickTask(difficulty: number, recent: readonly TaskId[], rng: Rng): TaskId {
+  let pool = unlockedTasks(difficulty)
+  if (pool.length > 1 && recent.length >= MAX_TASK_REPEAT) {
+    const last = recent[recent.length - 1]
+    const ranOut = recent.slice(-MAX_TASK_REPEAT).every((id) => id === last)
+    if (ranOut) pool = pool.filter((task) => task.id !== last)
+  }
+  const total = pool.reduce((sum, task) => sum + task.weight, 0)
+  let roll = rng() * total
+  for (const task of pool) {
+    roll -= task.weight
+    if (roll < 0) return task.id
+  }
+  return pool[pool.length - 1].id
+}
+
+// ─── Round planning ──────────────────────────────────────────────────────────
+
 export interface RoundPlan {
+  /** Which registry task this round runs. */
+  taskId: TaskId
   /** Quantity the crab's sign asks for (1..5). */
   target: number
   /** The ONE representation the sign shows (dots-only or numeral-only). */
   promptKind: BalloonKind
   /** Representation balloons carry — differs from promptKind in cross rounds. */
   balloonKind: BalloonKind
-  /** Color the match must also have (level-8+ color rounds), else null. */
+  /** Color the match must also have (color-count rounds), else null. */
   targetColorIndex: number | null
   /** How many balloons float at once this round (3-4). */
   concurrent: number
@@ -162,21 +260,31 @@ export interface RoundPlan {
   distractors: readonly number[]
 }
 
+export interface PlanRoundInput {
+  /** Adaptive difficulty meter, 0..DIFFICULTY_MAX. */
+  difficulty: number
+  /** Total correct rounds so far — drives the scaffold and celebrations. */
+  roundsCompleted: number
+  /** Previous round's target (never repeated back-to-back). */
+  prevTarget: number | null
+  /** Task chosen by pickTask (overridden to count-dots during the scaffold). */
+  taskId: TaskId
+}
+
 /**
- * Plan the next round. The first three rounds scaffold 1 → 2 → 3 in order;
- * afterwards the target is drawn from the stage's range, never repeating
- * the previous round's target back-to-back.
+ * Plan the next round. The first SCAFFOLD_ROUNDS rounds scaffold 1 → 2 → 3 on
+ * plain dots; afterwards the target is drawn from the stage's range, never
+ * repeating the previous round's target back-to-back, and the task shapes the
+ * representations.
  */
-export function planRound(
-  roundsCompleted: number,
-  prevTarget: number | null,
-  rng: Rng = Math.random,
-): RoundPlan {
-  const stage = stageFor(roundsCompleted)
-  const level = levelFor(roundsCompleted)
+export function planRound(input: PlanRoundInput, rng: Rng = Math.random): RoundPlan {
+  const { difficulty, roundsCompleted, prevTarget } = input
+  const stage = stageFor(difficulty)
+  const scaffolding = roundsCompleted < SCAFFOLD_ROUNDS
+  const taskId: TaskId = scaffolding ? 'count-dots' : input.taskId
 
   let target: number
-  if (roundsCompleted < STAGE2_ROUNDS) {
+  if (scaffolding) {
     target = roundsCompleted + 1 // scaffold: 1, 2, 3
   } else {
     const pool: number[] = []
@@ -186,27 +294,28 @@ export function planRound(
     target = pool[Math.floor(rng() * pool.length)]
   }
 
-  // Representations: identical below level 6. From level 6 the sign may ask
-  // in dots while balloons carry numerals (or the reverse) — the child must
-  // translate between the two.
-  let balloonKind: BalloonKind
-  let promptKind: BalloonKind
-  if (level >= CROSS_REP_MIN_LEVEL && rng() < CROSS_REP_PROBABILITY) {
-    balloonKind = rng() < 0.5 ? 'numeral' : 'dots'
-    promptKind = balloonKind === 'numeral' ? 'dots' : 'numeral'
-  } else {
-    balloonKind = stage >= 4 && rng() < NUMERAL_ROUND_PROBABILITY ? 'numeral' : 'dots'
-    promptKind = balloonKind
+  let promptKind: BalloonKind = 'dots'
+  let balloonKind: BalloonKind = 'dots'
+  let targetColorIndex: number | null = null
+  switch (taskId) {
+    case 'count-numerals':
+      promptKind = 'numeral'
+      balloonKind = 'numeral'
+      break
+    case 'cross-rep':
+      balloonKind = rng() < 0.5 ? 'numeral' : 'dots'
+      promptKind = balloonKind === 'numeral' ? 'dots' : 'numeral'
+      break
+    case 'color-count':
+      // Dots on both sides — the color constraint is the added load here.
+      targetColorIndex = Math.floor(rng() * BALLOON_COLORS.length)
+      break
+    case 'count-dots':
+      break
   }
 
-  // Level 8+: some rounds also pin a color — the match must show the right
-  // quantity AND wear the right color.
-  const targetColorIndex =
-    level >= COLOR_TASK_MIN_LEVEL && rng() < COLOR_TASK_PROBABILITY
-      ? Math.floor(rng() * BALLOON_COLORS.length)
-      : null
-
   return {
+    taskId,
     target,
     promptKind,
     balloonKind,
@@ -216,20 +325,26 @@ export function planRound(
   }
 }
 
+/** Concurrent balloons afloat: 3 during warm-up, 4 afterwards. */
+export function concurrentBalloonsFor(stage: Stage): number {
+  return stage === 1 ? 3 : 4
+}
+
 // ─── Speed ramp (slow floats, gentle increase) ───────────────────────────────
 
-/** Rise speed of a fresh player's balloons, css px per second. */
+/** Rise speed at difficulty 0, css px per second. */
 export const RISE_SPEED_START = 30
 /** Speed ceiling — still a lazy float, never frantic. */
 export const RISE_SPEED_MAX = 55
-/** Rounds until the ceiling is reached. */
-export const RISE_RAMP_ROUNDS = 14
-/** Per-balloon speed jitter, ±fraction of the base speed. */
+
+/**
+ * Base rise speed for a difficulty — monotonic, clamped. Rides the adaptive
+ * meter, so a struggling player's sky literally slows back down.
+ */
 export const RISE_JITTER = 0.15
 
-/** Base rise speed for a given progress point — monotonic, clamped. */
-export function baseRiseSpeed(roundsCompleted: number): number {
-  const t = Math.min(Math.max(roundsCompleted, 0) / RISE_RAMP_ROUNDS, 1)
+export function baseRiseSpeed(difficulty: number): number {
+  const t = Math.min(Math.max(difficulty, 0) / DIFFICULTY_MAX, 1)
   return RISE_SPEED_START + (RISE_SPEED_MAX - RISE_SPEED_START) * t
 }
 
@@ -278,7 +393,8 @@ export const LINE_PROBABILITY = 0.35
 
 export interface SpawnContext {
   round: RoundPlan
-  roundsCompleted: number
+  /** Adaptive difficulty meter (drives layouts and speed). */
+  difficulty: number
   /** Matching balloons currently afloat (or already planned). */
   activeMatchCount: number
   /** x fractions of balloons currently afloat, for horizontal spacing. */
@@ -310,7 +426,7 @@ function pickXFrac(activeXFracs: readonly number[], rng: Rng): number {
  * so the target is always reachable.
  */
 export function planBalloon(ctx: SpawnContext, rng: Rng = Math.random): BalloonSpec {
-  const stage = stageFor(ctx.roundsCompleted)
+  const stage = stageFor(ctx.difficulty)
   const { round } = ctx
 
   const mustMatch = ctx.activeMatchCount === 0 && !ctx.matchPlanned
@@ -342,7 +458,7 @@ export function planBalloon(ctx: SpawnContext, rng: Rng = Math.random): BalloonS
     kind: round.balloonKind,
     layout: pickLayout(stage, rng),
     colorIndex,
-    speedCss: baseRiseSpeed(ctx.roundsCompleted) * jitter,
+    speedCss: baseRiseSpeed(ctx.difficulty) * jitter,
     swayAmpCss: 10 + rng() * 14,
     swayPeriodMs: 1800 + rng() * 1400,
     xFrac: pickXFrac(ctx.activeXFracs, rng),
@@ -358,7 +474,7 @@ export function planBalloon(ctx: SpawnContext, rng: Rng = Math.random): BalloonS
  */
 export function planInitialWave(
   round: RoundPlan,
-  roundsCompleted: number,
+  difficulty: number,
   rng: Rng = Math.random,
   lastColorIndex: number | null = null,
 ): BalloonSpec[] {
@@ -371,7 +487,7 @@ export function planInitialWave(
     const spec = planBalloon(
       {
         round,
-        roundsCompleted,
+        difficulty,
         activeMatchCount: matches,
         activeXFracs: xs,
         lastColorIndex: lastColor,
