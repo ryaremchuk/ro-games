@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   BALLOON_COLORS,
+  BALLOON_SHAPES,
   CELEBRATION_EVERY_ROUNDS,
   COLOR_TASK_MIN_LEVEL,
   CROSS_REP_MIN_LEVEL,
@@ -109,6 +110,28 @@ describe('balloon colors', () => {
     for (let i = 1; i < specs.length; i++) {
       expect(specs[i].colorIndex).not.toBe(specs[i - 1].colorIndex)
     }
+  })
+})
+
+describe('balloon shapes', () => {
+  it('exposes a set of distinct cosmetic shapes', () => {
+    expect(BALLOON_SHAPES.length).toBeGreaterThanOrEqual(4)
+    expect(new Set(BALLOON_SHAPES).size).toBe(BALLOON_SHAPES.length)
+  })
+
+  it('gives every spawned balloon a valid shape index, and varies them', () => {
+    const rng = mulberry32(81)
+    const round = roundAt(ROUNDS_S2, rng)
+    const specs = spawnMany(round, ROUNDS_S2, 400, 1, rng)
+    const seen = new Set<number>()
+    for (const spec of specs) {
+      expect(Number.isInteger(spec.shapeIndex)).toBe(true)
+      expect(spec.shapeIndex).toBeGreaterThanOrEqual(0)
+      expect(spec.shapeIndex).toBeLessThan(BALLOON_SHAPES.length)
+      seen.add(spec.shapeIndex)
+    }
+    // Cosmetic variety: over many balloons, every shape shows up.
+    expect(seen.size).toBe(BALLOON_SHAPES.length)
   })
 })
 

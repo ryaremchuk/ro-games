@@ -39,6 +39,26 @@ export function nextColorIndex(lastIndex: number | null, rng: Rng): number {
   return (lastIndex + step) % BALLOON_COLORS.length
 }
 
+// ─── Balloon shapes (cosmetic container variety) ─────────────────────────────
+
+/**
+ * The balloon silhouette that carries the counting disc. PURELY cosmetic: the
+ * white dot-disc, its dots/numeral, and the hit target are identical on every
+ * shape, so counting readability is untouched. This only keeps the container
+ * from going stale over a long session (the "20 rounds and the balloon is
+ * boring" problem) — variety comes from shape × color, not from the number art.
+ */
+export type BalloonShapeKind = 'classic' | 'round' | 'wide' | 'squircle' | 'egg' | 'star'
+
+export const BALLOON_SHAPES: readonly BalloonShapeKind[] = [
+  'classic',
+  'round',
+  'wide',
+  'squircle',
+  'egg',
+  'star',
+]
+
 // ─── Stage / difficulty progression ──────────────────────────────────────────
 
 export type Stage = 1 | 2 | 3 | 4
@@ -227,6 +247,8 @@ export interface BalloonSpec {
   layout: DotLayoutKind
   /** Index into BALLOON_COLORS. */
   colorIndex: number
+  /** Index into BALLOON_SHAPES — cosmetic silhouette, no gameplay effect. */
+  shapeIndex: number
   /** Rise speed, css px per second. */
   speedCss: number
   /** Horizontal sway amplitude, css px. */
@@ -324,6 +346,9 @@ export function planBalloon(ctx: SpawnContext, rng: Rng = Math.random): BalloonS
     swayAmpCss: 10 + rng() * 14,
     swayPeriodMs: 1800 + rng() * 1400,
     xFrac: pickXFrac(ctx.activeXFracs, rng),
+    // Cosmetic only, and drawn LAST so it doesn't perturb the rng stream that
+    // the fields above (and the invariant tests) depend on.
+    shapeIndex: Math.floor(rng() * BALLOON_SHAPES.length),
   }
 }
 
