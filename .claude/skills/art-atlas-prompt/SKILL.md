@@ -64,17 +64,31 @@ cell, filling about 75% of the cell, never touching cell edges. NO text, NO labe
 NO grid lines, NO drop shadows cast onto the background.
 ```
 
-## Project style block (ro-games)
+## Project style block (ro-games house style — include verbatim)
+
+Established by the shipped balloon-pop atlas; every future atlas must match it
+so the whole arcade reads as one world:
 
 ```
-Style for ALL objects: cute flat cartoon for a toddler app (age 3-4), soft rounded shapes, smooth
-clean edges, gentle soft shading, light source from the top-left, cheerful and friendly. Keep the
-style perfectly consistent across all cells.
+Style for ALL objects — ro-games house style, keep it perfectly consistent across every cell:
+- cute kawaii chibi cartoon for a toddler app (age 3-4): round, chubby, bouncy shapes, everything
+  soft and huggable; characters have a big head-to-body ratio and tiny stubby limbs
+- clean vector look with smooth edges; every object gets a THICK SOFT OUTLINE in a darker shade
+  of its own fill color (never harsh black)
+- glossy "candy / jelly toy" shading, polished like a modern preschool TV show: one or two big
+  soft highlight blobs at the top-left, a gentle darker shadow at the bottom, light from top-left
+- faces (when present): either big glossy eyes with dark pupils and white sparkle highlights, or
+  simple happy closed-arc eyes; small open smile; round pink blush cheeks
+- colors rich but soft, pastel-leaning saturation; flat solid fills — no gradients banding, no
+  texture, no noise, no photorealism
 ```
 
 Palette anchors when a color is needed: coral `#FF6B6B`, sunshine `#FFD93D`,
 mint `#6BCB77`, purple `#9B5DE5`, pink `#FF8FAB`, teal `#4ECDC4`,
 ink `#3D3A4B` (pupils/outlines).
+
+Style reference sprites (what "right" looks like):
+`src/games/balloon-pop/art/crab-body.png`, `sun.png`, `balloon-star.png`.
 
 ## License note
 
