@@ -29,6 +29,17 @@ import {
   makeTuftTexture,
 } from './textures'
 
+/**
+ * Full-body critter sprites, hashed + base-aware via Vite. Keyed by file path;
+ * `preload` loads `<id>.png` for every critter in the roster, so adding a critter
+ * is just a new PNG here + a roster entry in logic.ts.
+ */
+const CRITTER_URLS = import.meta.glob('./critters/*.png', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+}) as Record<string, string>
+
 /** Thwack base pitch (D5); the combo step shifts it up in semitones. */
 const THWACK_BASE = 587
 /** Wake-up anticipation window before a critter actually rises. */
@@ -49,8 +60,6 @@ const DIRT_TINTS = [0xb08968, 0xa0785a, 0x8c6a4f]
 // Pentatonic-ish happy tones (C5 E5 G5) + C6 for big moments.
 const ARPEGGIO = [523, 659, 784]
 const FANFARE = [523, 659, 784, 1047]
-
-const CRITTER_CSS = 72 // emoji strike stays crisp at ≤80 css px
 
 // Inner-rig local anchors, css px (local origin = the hole-rim contact line).
 const DOWN_LOCAL = 132 // fully sunk inside the hole (also setVisible(false))
@@ -126,6 +135,15 @@ export default class WhackASillyScene extends Phaser.Scene {
   /** Per-row depth band so front rows always draw over back rows (no masks). */
   private band(row: number): number {
     return 10 + row * 5
+  }
+
+  /** Load the full-body critter sprites before create() builds the holes. */
+  preload(): void {
+    for (const critter of CRITTERS) {
+      const url = CRITTER_URLS[`./critters/${critter.id}.png`]
+      if (!url) throw new Error(`Missing critter sprite: ${critter.id}.png`)
+      this.load.image(`was-animal-${critter.id}`, url)
+    }
   }
 
   create(): void {
@@ -246,9 +264,6 @@ export default class WhackASillyScene extends Phaser.Scene {
   }
 
   private makeTextures(): void {
-    for (const critter of CRITTERS) {
-      this.emojiTexture(`was-critter-${critter.id}`, critter.emoji, CRITTER_CSS)
-    }
     this.emojiTexture('was-star', '⭐', 26)
     this.emojiTexture('was-sun', '☀️', 56)
     this.emojiTexture('was-flower-0', '🌼', 44)
