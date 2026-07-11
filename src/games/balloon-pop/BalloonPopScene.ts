@@ -73,8 +73,11 @@ const FLY_MS = 420
 const BODY_OFFSET_Y = -35
 /** White dot-disc radius, css. */
 const DISC_R = 36
-/** Claw rest offset from the crab's center, css px (clap returns here). */
-const CLAW_X = 68
+// Claw rest pose, css px relative to the crab's center: raised UP beside the
+// head, gripping the task panel's bottom corners (clap returns here).
+const CLAW_X = 50
+const CLAW_Y = -74
+const CLAW_ANGLE = 40
 
 interface BalloonSlot {
   root: Phaser.GameObjects.Container
@@ -398,13 +401,17 @@ export default class BalloonPopScene extends Phaser.Scene {
     const body = this.add.image(0, 0, 'bp-crab')
     body.displayWidth = this.px(130)
     body.scaleY = body.scaleX
-    this.crabClawLeft = this.add.image(-this.px(CLAW_X), this.px(12), 'bp-claw').setAngle(-15)
+    // Claws raised, pincers up — the crab "holds" the task panel above its
+    // head (the panel renders one depth above, covering the pincer tips).
+    this.crabClawLeft = this.add
+      .image(-this.px(CLAW_X), this.px(CLAW_Y), 'bp-claw')
+      .setAngle(CLAW_ANGLE)
     this.crabClawRight = this.add
-      .image(this.px(CLAW_X), this.px(12), 'bp-claw')
+      .image(this.px(CLAW_X), this.px(CLAW_Y), 'bp-claw')
       .setFlipX(true)
-      .setAngle(15)
+      .setAngle(-CLAW_ANGLE)
     for (const claw of [this.crabClawLeft, this.crabClawRight]) {
-      claw.displayWidth = this.px(46)
+      claw.displayWidth = this.px(52)
       claw.scaleY = claw.scaleX
     }
     // Stalk eyes peek over the top of the body; the stalk root stays tucked
@@ -421,8 +428,10 @@ export default class BalloonPopScene extends Phaser.Scene {
       { x: eyeLeft.x, y: eyeLeft.y },
       { x: eyeRight.x, y: eyeRight.y },
     ]
+    // Paint order inside the crab: cloud → body → eyes → raised claws (the
+    // separate panel root sits one depth above the whole crab).
     this.crabRoot = this.add
-      .container(0, 0, [platform, this.crabClawLeft, this.crabClawRight, body, eyeLeft, eyeRight])
+      .container(0, 0, [platform, body, eyeLeft, eyeRight, this.crabClawLeft, this.crabClawRight])
       .setDepth(30)
 
     // The crab responds too — everything responds. The hit circle lives in
@@ -458,25 +467,25 @@ export default class BalloonPopScene extends Phaser.Scene {
       ease: 'Sine.easeInOut',
     })
 
-    // Sign: white rounded card showing ONLY the current task — dots, or a
-    // numeral, or either of those on a mini balloon of the asked-for color.
+    // Sign: wide, low white card the crab holds overhead, showing ONLY the
+    // current task — dots, or a numeral, or either on a mini balloon of the
+    // asked-for color.
     const signBg = this.add.image(0, 0, 'bp-sign')
-    signBg.displayWidth = this.px(150)
-    signBg.scaleY = signBg.scaleX
+    signBg.setDisplaySize(this.px(196), this.px(88))
     // The color-round mini balloon is the round white balloon sprite, tinted.
     this.signBlob = this.add.image(0, 0, 'bp-balloon-round').setVisible(false)
-    this.signBlob.displayWidth = this.px(72)
+    this.signBlob.displayWidth = this.px(56)
     this.signBlob.scaleY = this.signBlob.scaleX
-    this.signDisc = this.add.image(0, -this.px(4), 'bp-disc').setScale(0.85).setVisible(false)
+    this.signDisc = this.add.image(0, -this.px(2), 'bp-disc').setScale(0.62).setVisible(false)
     this.signNumeral = this.add.image(0, 0, 'bp-num-1').setScale(0.95)
     this.signDots = Array.from({ length: 6 }, () =>
       this.add.image(0, 0, 'bp-ink-dot').setVisible(false),
     )
     this.signRoot = this.add
       .container(0, 0, [signBg, this.signBlob, this.signDisc, this.signNumeral, ...this.signDots])
-      // Above the balloons (32) — the task prompt must stay readable even when
-      // balloons drift across it.
-      .setDepth(38)
+      // One above the crab (30) so it covers the raised pincer tips, but
+      // BELOW the balloons (32) — balloons float in front of the whole scene.
+      .setDepth(31)
 
     // Tapping the sign replays the count beeps.
     signBg.setInteractive()
@@ -510,8 +519,8 @@ export default class BalloonPopScene extends Phaser.Scene {
         .setVisible(false)
       const root = this.add
         .container(0, 0, [glow, string, body, disc, ...dots, numeral])
-        // In FRONT of the crab (30) so balloons pass over it and stay tappable,
-        // but BEHIND the sign (38) so the task prompt is never occluded.
+        // In FRONT of the crab (30) AND its panel (31): balloons are the
+        // foreground layer and stay tappable everywhere on screen.
         .setDepth(32)
         .setVisible(false)
 
@@ -606,12 +615,13 @@ export default class BalloonPopScene extends Phaser.Scene {
     this.bgGfx.fillRect(0, 0, w, h)
     this.rainbowGfx.clear()
 
-    // Crab conductor top-center on its cloud platform, sign right below.
-    // crabBaseX/Y is the rest position; update() leans crabRoot.x off it.
+    // Task panel top-center; the crab sits lower on its cloud, claws raised,
+    // holding the panel overhead. crabBaseX/Y is the rest position; update()
+    // leans crabRoot.x off it.
     this.crabBaseX = w / 2
-    this.crabBaseY = this.px(84)
+    this.crabBaseY = this.px(200)
     this.crabRoot.setPosition(this.crabBaseX, this.crabBaseY)
-    this.signRoot.setPosition(w / 2, this.px(212))
+    this.signRoot.setPosition(w / 2, this.px(72))
 
     // Sun top-right — the home button owns the top-left corner.
     this.sun.setPosition(w - this.px(60), this.px(60))
@@ -679,13 +689,14 @@ export default class BalloonPopScene extends Phaser.Scene {
       this.signBlob.setTint(hexToInt(BALLOON_COLORS[targetColorIndex]))
     }
 
-    // Full-size alone on the card; shrunk onto the mini balloon's disc.
-    const centerY = colorRound ? -4 : 0
+    // Sized for the wide, LOW panel: full-size alone on the card; shrunk
+    // further onto the mini balloon's disc in color rounds.
+    const centerY = colorRound ? -2 : 0
     this.signNumeralY = centerY
-    this.signNumeralScale = colorRound ? 0.52 : 0.95
+    this.signNumeralScale = colorRound ? 0.4 : 0.75
     this.signDotOriginY = centerY
-    this.signDotSpacing = colorRound ? 23 : 36
-    this.signDotScale = colorRound ? 0.7 : 1
+    this.signDotSpacing = colorRound ? 16 : 26
+    this.signDotScale = colorRound ? 0.55 : 0.8
 
     if (promptKind === 'numeral') {
       for (const dot of this.signDots) dot.setVisible(false)
@@ -903,7 +914,8 @@ export default class BalloonPopScene extends Phaser.Scene {
     // Fraction of the remaining gap to close this frame (~ time constant).
     const k = 1 - Math.pow(0.002, delta / 1000)
 
-    const maxLean = this.px(18)
+    // Small — the crab is holding the panel, so it can't wander far from it.
+    const maxLean = this.px(10)
     const targetLean = nearest
       ? Phaser.Math.Clamp((nearest.root.x - this.crabBaseX) * 0.14, -maxLean, maxLean)
       : 0
@@ -1148,23 +1160,23 @@ export default class BalloonPopScene extends Phaser.Scene {
     const rightX = this.px(CLAW_X)
     this.tweens.add({
       targets: this.crabClawLeft,
-      x: -this.px(26),
-      angle: -40,
+      x: -this.px(28),
+      angle: CLAW_ANGLE + 25,
       duration: 130,
       yoyo: true,
       repeat: 2,
       ease: 'Quad.easeInOut',
-      onComplete: () => this.crabClawLeft.setX(leftX).setAngle(-15),
+      onComplete: () => this.crabClawLeft.setX(leftX).setAngle(CLAW_ANGLE),
     })
     this.tweens.add({
       targets: this.crabClawRight,
-      x: this.px(26),
-      angle: 40,
+      x: this.px(28),
+      angle: -CLAW_ANGLE - 25,
       duration: 130,
       yoyo: true,
       repeat: 2,
       ease: 'Quad.easeInOut',
-      onComplete: () => this.crabClawRight.setX(rightX).setAngle(15),
+      onComplete: () => this.crabClawRight.setX(rightX).setAngle(-CLAW_ANGLE),
     })
     for (const delay of [130, 390, 650]) {
       this.time.delayedCall(delay, () => playTone(988, 35, 'square', 0.05))
