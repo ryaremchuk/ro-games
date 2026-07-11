@@ -10,7 +10,14 @@
     <meta name="theme-color" content="#5b8def" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- NOT black-translucent: with it, iOS anchors the standalone webview at
+         the top of the screen but sizes it screen-minus-status-bar, leaving a
+         dead strip at the BOTTOM that no CSS can paint (verified on-device via
+         #/viewport-debug: 100lvh reports full screen yet never renders there).
+         `default` puts the webview below an opaque status bar and it reaches
+         the physical bottom edge. Changing this requires re-adding the app to
+         the home screen — iOS bakes it in at install time. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Ro Games" />
     <title>Ro Games</title>
     <style>
