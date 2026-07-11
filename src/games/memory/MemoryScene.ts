@@ -2,7 +2,7 @@ import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
-import { CARD_SUBJECTS, PAW_PRINT, svgToDataUri } from './art'
+import { CARD_SUBJECTS, PAW_PRINT } from './art'
 import type { ArtSubject } from './art'
 import { cardsForLevel, dealBoard, isMatch, rowsFor } from './logic'
 import type { MemoryTestApi } from './testHook'
@@ -90,9 +90,9 @@ export default class MemoryScene extends Phaser.Scene {
 
   preload(): void {
     for (const subject of CARD_SUBJECTS) {
-      this.load.image(`art-${subject.key}`, svgToDataUri(subject.svg))
+      this.load.image(`art-${subject.key}`, subject.textureUrl)
     }
-    this.load.image(`art-${PAW_PRINT.key}`, svgToDataUri(PAW_PRINT.svg))
+    this.load.image(`art-${PAW_PRINT.key}`, PAW_PRINT.textureUrl)
   }
 
   create(): void {
