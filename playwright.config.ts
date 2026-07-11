@@ -9,7 +9,12 @@ import { defineConfig } from '@playwright/test'
  * iPad PWA). The dev server runs under the /ro-games/ base, so specs navigate
  * with relative paths ('./', './#/slingshot') against the baseURL below.
  */
-const BASE_URL = 'http://localhost:5173/ro-games/'
+// The port is configurable so a second concurrent dev session (on the default
+// 5173, possibly serving a different checkout) is never accidentally reused:
+// run `E2E_PORT=5199 npx playwright test …` to spin up a fresh server on 5199
+// serving THIS worktree. Default behavior (5173) is unchanged.
+const PORT = process.env.E2E_PORT ?? '5173'
+const BASE_URL = `http://localhost:${PORT}/ro-games/`
 
 export default defineConfig({
   testDir: './e2e',
@@ -27,9 +32,21 @@ export default defineConfig({
     isMobile: false,
     screenshot: 'only-on-failure',
     trace: 'on-first-retry',
+    // Games are Phaser: their timers/tweens advance with the rAF loop. Chromium
+    // throttles (and can freeze) the rAF loop of a renderer it thinks is
+    // backgrounded/occluded — which happens to every non-focused page under
+    // parallel workers — starving unattended waits (celebrations, holds). These
+    // flags keep every page's clock running at real speed.
+    launchOptions: {
+      args: [
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--disable-backgrounding-occluded-windows',
+      ],
+    },
   },
   webServer: {
-    command: 'npm run dev',
+    command: `npm run dev -- --port ${PORT} --strictPort`,
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
