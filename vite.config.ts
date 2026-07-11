@@ -12,7 +12,11 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt': the old worker stays in control until the app applies the
+      // update itself (src/shared/swUpdate.ts) — a silent reload on the
+      // launcher. 'autoUpdate' would let a new worker replace the precache
+      // under a running page, breaking its old lazy chunks offline.
+      registerType: 'prompt',
       // Icons are generated from public/logo.svg (see pwa-assets.config.ts).
       pwaAssets: { config: true, overrideManifestIcons: true },
       manifest: {
