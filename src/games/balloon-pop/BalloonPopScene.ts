@@ -4,23 +4,59 @@ import { reportLevel } from '../../shared/level'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   BALLOON_COLORS,
+  BALLOON_SHAPES,
+  DIFFICULTY_START,
   dotPositions,
   isSkyCelebration,
   levelFor,
+  pickTask,
   planBalloon,
   planInitialWave,
   planRound,
   shouldShowHint,
+  updateDifficulty,
 } from './logic'
-import type { BalloonSpec, RoundPlan } from './logic'
+import type { BalloonSpec, RoundPlan, TaskId } from './logic'
+
+/**
+ * AI-generated sprites (see .claude/skills/art-atlas-slice). Adding art =
+ * dropping a PNG here; the glob picks it up and preload() registers it under
+ * its `bp-*` key. Balloons are white and engine-tinted per palette color.
+ */
+const ART_URLS = import.meta.glob('./art/*.png', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+}) as Record<string, string>
+
+/** art/<file>.png → texture key. Balloons map by shape name below. */
+const ART_KEYS: Record<string, string> = {
+  'crab-body': 'bp-crab',
+  'crab-claw': 'bp-claw',
+  'crab-eye': 'bp-eye',
+  'crab-platform': 'bp-platform',
+  sun: 'bp-sun',
+  'cloud-a': 'bp-cloud-0',
+  'cloud-b': 'bp-cloud-1',
+  'cloud-c': 'bp-cloud-2',
+  sign: 'bp-sign',
+}
+
+/** Balloon body display width per shape, css px (uniform scale, ≥100 target). */
+const BALLOON_WIDTH_CSS: Record<string, number> = {
+  classic: 106,
+  round: 112,
+  wide: 122,
+  squircle: 112,
+  egg: 102,
+  star: 128,
+}
 
 // ART SPEC palette — sky scene.
 const SKY_TOP = 0x7cc6fe
 const SKY_BOTTOM = 0xd6f0ff
 const INK = 0x3d3a4b
-const CORAL = 0xff6b6b
 const GOLD = 0xffd93d
-const PINK = 0xff8fab
 const RAINBOW = [0xff6b6b, 0xffa94d, 0xffd93d, 0x6bcb77, 0x4d96ff, 0x9b5de5]
 
 // Pentatonic-ish happy tones; count-aloud beeps ascend one per dot.
@@ -33,20 +69,25 @@ const COUNT_STEP_MS = 340
 /** Flight time of a dot from popped balloon to the crab's sign. */
 const FLY_MS = 420
 
-// Balloon texture geometry, css px. Body ellipse (≥100 css wide) is centered
-// at (BODY_CX, BODY_CY) inside the texture; knot + wavy string hang below.
-const BALLOON_TEX_W = 120
-const BALLOON_TEX_H = 210
-const BODY_CX = 60
-const BODY_CY = 70
-/** Offset from the balloon image center to the body-ellipse center, css. */
-const BODY_OFFSET_Y = BODY_CY - BALLOON_TEX_H / 2
+/** Balloon body center offset from the slot container origin, css px. */
+const BODY_OFFSET_Y = -35
 /** White dot-disc radius, css. */
 const DISC_R = 36
+// Claw shoulder joint, css px relative to the crab's center. Claws pivot at
+// their arm ROOT (origin set into the arm's end), planted on the body's upper
+// sides, pincers up — so they stay attached whatever the pose or wave angle.
+const CLAW_X = 48
+const CLAW_Y = -26
+/** Arm-root position inside the (unflipped) claw sprite, origin fractions. */
+const CLAW_ROOT_X = 0.22
+const CLAW_ROOT_Y = 0.82
+/** How far a claw swings (degrees) during the celebration wave. */
+const CLAW_WAVE = 34
 
 interface BalloonSlot {
   root: Phaser.GameObjects.Container
   body: Phaser.GameObjects.Image
+  string: Phaser.GameObjects.Image
   glow: Phaser.GameObjects.Image
   dots: Phaser.GameObjects.Image[]
   numeral: Phaser.GameObjects.Image
@@ -68,14 +109,6 @@ function hexToInt(hex: string): number {
   return parseInt(hex.slice(1), 16)
 }
 
-/** Same-hue darker patch color (ART SPEC shading: one patch 8-10% darker). */
-function darken(color: number, factor: number): number {
-  const r = Math.round(((color >> 16) & 0xff) * factor)
-  const g = Math.round(((color >> 8) & 0xff) * factor)
-  const b = Math.round((color & 0xff) * factor)
-  return (r << 16) | (g << 8) | b
-}
-
 export default class BalloonPopScene extends Phaser.Scene {
   private dpr = 1
 
@@ -87,6 +120,11 @@ export default class BalloonPopScene extends Phaser.Scene {
   private wrongTaps = 0
   private hintOn = false
   private lastColorIndex: number | null = null
+  // Adaptive difficulty: nudged after every completed round (see logic.ts),
+  // plus the recent task ids so the picker can enforce variety.
+  private difficulty = DIFFICULTY_START
+  private recentTasks: TaskId[] = []
+  private roundStartAt = 0
 
   private bgGfx!: Phaser.GameObjects.Graphics
   private rainbowGfx!: Phaser.GameObjects.Graphics
@@ -98,6 +136,16 @@ export default class BalloonPopScene extends Phaser.Scene {
   private crabEyes: Phaser.GameObjects.Image[] = []
   private crabClawLeft!: Phaser.GameObjects.Image
   private crabClawRight!: Phaser.GameObjects.Image
+  // Crab-is-alive state: it leans toward the nearest balloon and its eyes
+  // track it. Only crabRoot.x and the eyes' positions are driven per-frame,
+  // so the clap/blink/breathing tweens (angle, scaleY, scale) never fight it.
+  private crabBaseX = 0
+  private crabBaseY = 0
+  private crabLeanX = 0
+  private crabEyeBase: { x: number; y: number }[] = []
+  private crabEyeOff = { x: 0, y: 0 }
+  /** Sprite eyes are display-sized; blink tweens scale relative to this. */
+  private crabEyeBaseScale = 1
   private signRoot!: Phaser.GameObjects.Container
   private signNumeral!: Phaser.GameObjects.Image
   private signDots: Phaser.GameObjects.Image[] = []
@@ -127,6 +175,14 @@ export default class BalloonPopScene extends Phaser.Scene {
 
   private px(css: number): number {
     return css * this.dpr
+  }
+
+  preload(): void {
+    for (const [path, url] of Object.entries(ART_URLS)) {
+      const name = path.replace('./art/', '').replace('.png', '')
+      const key = ART_KEYS[name] ?? (name.startsWith('balloon-') ? `bp-${name}` : null)
+      if (key) this.load.image(key, url)
+    }
   }
 
   create(): void {
@@ -202,60 +258,29 @@ export default class BalloonPopScene extends Phaser.Scene {
     tex.refresh()
   }
 
-  /** Balloon body + knot + wavy string for one palette color. */
-  private balloonTexture(index: number): void {
-    const key = `bp-balloon-${index}`
-    if (this.textures.exists(key)) return
-    const color = hexToInt(BALLOON_COLORS[index])
-    const dark = darken(color, 0.9)
-    const g = this.add.graphics()
-
-    // Wavy string (drawn as short segments — sine curve).
-    g.lineStyle(this.px(3), 0xffffff, 0.9)
-    g.beginPath()
-    g.moveTo(this.px(BODY_CX), this.px(144))
-    for (let i = 1; i <= 16; i++) {
-      const t = i / 16
-      g.lineTo(this.px(BODY_CX + Math.sin(t * Math.PI * 2.2) * 8), this.px(146 + t * 58))
-    }
-    g.strokePath()
-
-    // Body ellipse — ≥100 css px wide (touch-target floor).
-    g.fillStyle(color, 1)
-    g.fillEllipse(this.px(BODY_CX), this.px(BODY_CY), this.px(104), this.px(128))
-    g.fillStyle(dark, 1)
-    g.fillEllipse(this.px(80), this.px(104), this.px(36), this.px(20))
-    g.fillStyle(0xffffff, 0.35)
-    g.fillEllipse(this.px(41), this.px(42), this.px(20), this.px(30))
-
-    // Knot triangle under the body.
-    g.fillStyle(dark, 1)
-    g.fillTriangle(this.px(51), this.px(146), this.px(69), this.px(146), this.px(60), this.px(128))
-
-    g.generateTexture(key, this.px(BALLOON_TEX_W), this.px(BALLOON_TEX_H))
-    g.destroy()
-  }
-
-  /** White fluffy cloud blob from overlapping circles. */
-  private cloudTexture(
-    key: string,
-    w: number,
-    h: number,
-    lobes: readonly [number, number, number][],
-  ): void {
-    if (this.textures.exists(key)) return
-    const g = this.add.graphics()
-    g.fillStyle(0xffffff, 1)
-    for (const [x, y, r] of lobes) g.fillCircle(this.px(x), this.px(y), this.px(r))
-    g.generateTexture(key, this.px(w), this.px(h))
-    g.destroy()
-  }
-
+  /**
+   * Procedural textures for everything NOT covered by the AI sprite atlas:
+   * the teaching surfaces (disc, ink dots, numerals) stay code-drawn for
+   * legibility, plus particles, the hint glow and the balloon string.
+   */
   private makeTextures(): void {
-    for (let i = 0; i < BALLOON_COLORS.length; i++) this.balloonTexture(i)
     for (let n = 1; n <= 6; n++) this.numeralTexture(`bp-num-${n}`, n, 64)
     this.emojiTexture('bp-star', '⭐', 26)
-    this.emojiTexture('bp-sun', '☀️', 56)
+
+    // Wavy white string hanging under a balloon (sprites carry only a knot).
+    if (!this.textures.exists('bp-string')) {
+      const g = this.add.graphics()
+      g.lineStyle(this.px(3), 0xffffff, 0.9)
+      g.beginPath()
+      g.moveTo(this.px(10), 0)
+      for (let i = 1; i <= 16; i++) {
+        const t = i / 16
+        g.lineTo(this.px(10 + Math.sin(t * Math.PI * 2.2) * 7), this.px(t * 58))
+      }
+      g.strokePath()
+      g.generateTexture('bp-string', this.px(20), this.px(60))
+      g.destroy()
+    }
 
     // White disc that carries the ink dots (dots stay ink-on-white for legibility).
     if (!this.textures.exists('bp-disc')) {
@@ -273,75 +298,6 @@ export default class BalloonPopScene extends Phaser.Scene {
       g.fillStyle(INK, 1)
       g.fillCircle(this.px(7), this.px(7), this.px(7))
       g.generateTexture('bp-ink-dot', this.px(14), this.px(14))
-      g.destroy()
-    }
-
-    // Crab conductor: coral blob body, eye stalks, smile, blush.
-    if (!this.textures.exists('bp-crab')) {
-      const g = this.add.graphics()
-      g.lineStyle(this.px(6), CORAL, 1)
-      g.beginPath()
-      g.moveTo(this.px(51), this.px(36))
-      g.lineTo(this.px(46), this.px(12))
-      g.moveTo(this.px(79), this.px(36))
-      g.lineTo(this.px(84), this.px(12))
-      g.strokePath()
-      g.fillStyle(CORAL, 1)
-      g.fillEllipse(this.px(65), this.px(64), this.px(108), this.px(70))
-      g.fillStyle(darken(CORAL, 0.9), 1)
-      g.fillEllipse(this.px(65), this.px(86), this.px(64), this.px(20))
-      g.lineStyle(this.px(4), INK, 1)
-      g.beginPath()
-      g.arc(this.px(65), this.px(60), this.px(15), Math.PI * 0.15, Math.PI * 0.85)
-      g.strokePath()
-      g.fillStyle(PINK, 0.4)
-      g.fillCircle(this.px(38), this.px(68), this.px(7))
-      g.fillCircle(this.px(92), this.px(68), this.px(7))
-      g.generateTexture('bp-crab', this.px(130), this.px(104))
-      g.destroy()
-    }
-
-    // Eye on a stalk: white circle + ink pupil (blinks via scaleY tween).
-    if (!this.textures.exists('bp-eye')) {
-      const g = this.add.graphics()
-      g.fillStyle(0xffffff, 1)
-      g.fillCircle(this.px(11), this.px(11), this.px(10))
-      g.fillStyle(INK, 1)
-      g.fillCircle(this.px(11), this.px(12), this.px(5))
-      g.generateTexture('bp-eye', this.px(22), this.px(22))
-      g.destroy()
-    }
-
-    // Mitten-style claw (two lobes).
-    if (!this.textures.exists('bp-claw')) {
-      const g = this.add.graphics()
-      g.fillStyle(CORAL, 1)
-      g.fillCircle(this.px(18), this.px(24), this.px(13))
-      g.fillCircle(this.px(30), this.px(12), this.px(8))
-      g.fillStyle(darken(CORAL, 0.9), 1)
-      g.fillCircle(this.px(13), this.px(28), this.px(5))
-      g.generateTexture('bp-claw', this.px(44), this.px(40))
-      g.destroy()
-    }
-
-    // White rounded sign the crab holds (numeral + dot pattern).
-    if (!this.textures.exists('bp-sign')) {
-      const g = this.add.graphics()
-      g.fillStyle(0xffffff, 1)
-      g.fillRoundedRect(this.px(2), this.px(2), this.px(146), this.px(114), this.px(20))
-      g.lineStyle(this.px(3), INK, 0.9)
-      g.strokeRoundedRect(this.px(2), this.px(2), this.px(146), this.px(114), this.px(20))
-      g.generateTexture('bp-sign', this.px(150), this.px(118))
-      g.destroy()
-    }
-
-    // Balloon-shaped white blob for the sign's color prompt (tinted per round).
-    if (!this.textures.exists('bp-sign-blob')) {
-      const g = this.add.graphics()
-      g.fillStyle(0xffffff, 1)
-      g.fillEllipse(this.px(44), this.px(48), this.px(82), this.px(92))
-      g.fillTriangle(this.px(37), this.px(100), this.px(51), this.px(100), this.px(44), this.px(90))
-      g.generateTexture('bp-sign-blob', this.px(88), this.px(102))
       g.destroy()
     }
 
@@ -375,30 +331,6 @@ export default class BalloonPopScene extends Phaser.Scene {
       g.generateTexture('bp-shred', this.px(13), this.px(9))
       g.destroy()
     }
-
-    this.cloudTexture('bp-cloud-0', 190, 84, [
-      [50, 54, 26],
-      [95, 42, 34],
-      [140, 54, 26],
-      [95, 58, 24],
-    ])
-    this.cloudTexture('bp-cloud-1', 150, 70, [
-      [40, 46, 20],
-      [75, 36, 27],
-      [112, 46, 20],
-    ])
-    this.cloudTexture('bp-cloud-2', 220, 94, [
-      [60, 62, 30],
-      [110, 46, 40],
-      [165, 62, 30],
-      [110, 68, 32],
-    ])
-    this.cloudTexture('bp-platform', 170, 64, [
-      [45, 40, 24],
-      [85, 32, 30],
-      [125, 40, 24],
-      [85, 44, 26],
-    ])
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────
@@ -407,6 +339,8 @@ export default class BalloonPopScene extends Phaser.Scene {
     // Sun top-right (top-left is the home button — keep it clear). Easter
     // egg: tap → spin + chime.
     this.sun = this.add.image(0, 0, 'bp-sun').setDepth(1)
+    this.sun.setDisplaySize(this.px(92), this.px(92))
+    const sunScale = this.sun.scaleX
     this.sun.setInteractive()
     this.sun.on('pointerdown', () => {
       playTone(784, 80, 'triangle', 0.07)
@@ -420,10 +354,13 @@ export default class BalloonPopScene extends Phaser.Scene {
         ease: 'Back.easeOut',
       })
     })
+    // Sprites are sized via display size, so tweens must be RELATIVE to the
+    // resulting base scale — an absolute scale of 1 would blow up to the
+    // sprite's intrinsic ~500px.
     this.tweens.add({
       targets: this.sun,
-      scaleX: 1.06,
-      scaleY: 1.06,
+      scaleX: sunScale * 1.06,
+      scaleY: sunScale * 1.06,
       duration: 2400,
       yoyo: true,
       repeat: -1,
@@ -432,12 +369,15 @@ export default class BalloonPopScene extends Phaser.Scene {
 
     // Drifting clouds. Easter egg: tap a cloud → it puffs and rains tiny stars.
     const cloudDefs = [
-      { tex: 'bp-cloud-0', yFrac: 0.3, xFrac: 0.2, speedCss: 4 },
-      { tex: 'bp-cloud-1', yFrac: 0.52, xFrac: 0.68, speedCss: 6 },
-      { tex: 'bp-cloud-2', yFrac: 0.7, xFrac: 0.42, speedCss: 5 },
+      { tex: 'bp-cloud-0', widthCss: 190, yFrac: 0.3, xFrac: 0.2, speedCss: 4 },
+      { tex: 'bp-cloud-1', widthCss: 150, yFrac: 0.52, xFrac: 0.68, speedCss: 6 },
+      { tex: 'bp-cloud-2', widthCss: 220, yFrac: 0.7, xFrac: 0.42, speedCss: 5 },
     ]
     for (const def of cloudDefs) {
       const img = this.add.image(0, 0, def.tex).setDepth(2).setAlpha(0.9)
+      img.displayWidth = this.px(def.widthCss)
+      img.scaleY = img.scaleX
+      const baseScale = img.scaleX
       img.setInteractive()
       img.on('pointerdown', () => {
         playTone(880, 70, 'triangle', 0.06)
@@ -446,12 +386,12 @@ export default class BalloonPopScene extends Phaser.Scene {
         this.tweens.killTweensOf(img)
         this.tweens.add({
           targets: img,
-          scaleX: 1.12,
-          scaleY: 1.12,
+          scaleX: baseScale * 1.12,
+          scaleY: baseScale * 1.12,
           duration: 220,
           yoyo: true,
           ease: 'Back.easeOut',
-          onComplete: () => img.setScale(1),
+          onComplete: () => img.setScale(baseScale),
         })
       })
       img.x = def.xFrac * Math.max(window.innerWidth, 1) * this.dpr
@@ -460,23 +400,54 @@ export default class BalloonPopScene extends Phaser.Scene {
   }
 
   private buildCrabAndSign(): void {
-    const platform = this.add.image(0, this.px(40), 'bp-platform').setAlpha(0.95)
+    const platform = this.add.image(0, this.px(44), 'bp-platform').setAlpha(0.95)
+    platform.displayWidth = this.px(170)
+    platform.scaleY = platform.scaleX
     const body = this.add.image(0, 0, 'bp-crab')
-    this.crabClawLeft = this.add.image(-this.px(58), this.px(8), 'bp-claw').setAngle(-15)
-    this.crabClawRight = this.add
-      .image(this.px(58), this.px(8), 'bp-claw')
+    body.displayWidth = this.px(130)
+    body.scaleY = body.scaleX
+    // Arms raised "hooray": each claw's origin sits at its arm root, and that
+    // root is planted on the body's shoulder — the sprite (pincer up-right,
+    // arm to bottom-left) is flipped for the LEFT side so pincers point away
+    // from the head. Drawn behind the body, which hides the joint seam.
+    this.crabClawLeft = this.add
+      .image(-this.px(CLAW_X), this.px(CLAW_Y), 'bp-claw')
       .setFlipX(true)
-      .setAngle(15)
-    const eyeLeft = this.add.image(-this.px(19), -this.px(42), 'bp-eye')
-    const eyeRight = this.add.image(this.px(19), -this.px(42), 'bp-eye')
+      .setOrigin(1 - CLAW_ROOT_X, CLAW_ROOT_Y)
+    this.crabClawRight = this.add
+      .image(this.px(CLAW_X), this.px(CLAW_Y), 'bp-claw')
+      .setOrigin(CLAW_ROOT_X, CLAW_ROOT_Y)
+    for (const claw of [this.crabClawLeft, this.crabClawRight]) {
+      claw.displayWidth = this.px(52)
+      claw.scaleY = claw.scaleX
+    }
+    // Stalk eyes peek over the top of the body; the stalk root stays tucked
+    // behind it so small tracking offsets never detach the eye.
+    const eyeLeft = this.add.image(-this.px(20), -this.px(60), 'bp-eye')
+    const eyeRight = this.add.image(this.px(20), -this.px(60), 'bp-eye')
     this.crabEyes = [eyeLeft, eyeRight]
+    for (const eye of this.crabEyes) {
+      eye.displayHeight = this.px(42)
+      eye.scaleX = eye.scaleY
+    }
+    this.crabEyeBaseScale = eyeLeft.scaleY
+    this.crabEyeBase = [
+      { x: eyeLeft.x, y: eyeLeft.y },
+      { x: eyeRight.x, y: eyeRight.y },
+    ]
+    // Paint order inside the crab: cloud → claws (behind the body so the
+    // shoulder seam is hidden) → body → eyes. The separate panel root floats
+    // one depth above the whole crab.
     this.crabRoot = this.add
       .container(0, 0, [platform, this.crabClawLeft, this.crabClawRight, body, eyeLeft, eyeRight])
       .setDepth(30)
 
-    // The crab responds too — everything responds.
+    // The crab responds too — everything responds. The hit circle lives in
+    // the sprite's LOCAL (intrinsic) space, so convert the css radius by the
+    // display scale.
+    const bodyFrame = this.textures.getFrame('bp-crab')
     body.setInteractive(
-      new Phaser.Geom.Circle(this.px(65), this.px(52), this.px(62)),
+      new Phaser.Geom.Circle(bodyFrame.width / 2, bodyFrame.height / 2, this.px(62) / body.scaleX),
       Phaser.Geom.Circle.Contains,
     )
     body.on('pointerdown', () => {
@@ -504,17 +475,24 @@ export default class BalloonPopScene extends Phaser.Scene {
       ease: 'Sine.easeInOut',
     })
 
-    // Sign: white rounded card showing ONLY the current task — dots, or a
-    // numeral, or either of those on a mini balloon of the asked-for color.
+    // Sign: wide, low white card the crab holds overhead, showing ONLY the
+    // current task — dots, or a numeral, or either on a mini balloon of the
+    // asked-for color.
     const signBg = this.add.image(0, 0, 'bp-sign')
-    this.signBlob = this.add.image(0, 0, 'bp-sign-blob').setVisible(false)
-    this.signDisc = this.add.image(0, -this.px(4), 'bp-disc').setScale(0.85).setVisible(false)
+    signBg.setDisplaySize(this.px(196), this.px(88))
+    // The color-round mini balloon is the round white balloon sprite, tinted.
+    this.signBlob = this.add.image(0, 0, 'bp-balloon-round').setVisible(false)
+    this.signBlob.displayWidth = this.px(56)
+    this.signBlob.scaleY = this.signBlob.scaleX
+    this.signDisc = this.add.image(0, -this.px(2), 'bp-disc').setScale(0.62).setVisible(false)
     this.signNumeral = this.add.image(0, 0, 'bp-num-1').setScale(0.95)
     this.signDots = Array.from({ length: 6 }, () =>
       this.add.image(0, 0, 'bp-ink-dot').setVisible(false),
     )
     this.signRoot = this.add
       .container(0, 0, [signBg, this.signBlob, this.signDisc, this.signNumeral, ...this.signDots])
+      // One above the crab (30) so it covers the raised pincer tips, but
+      // BELOW the balloons (32) — balloons float in front of the whole scene.
       .setDepth(31)
 
     // Tapping the sign replays the count beeps.
@@ -535,10 +513,10 @@ export default class BalloonPopScene extends Phaser.Scene {
   }
 
   private buildBalloons(): void {
-    const frame = this.textures.getFrame('bp-balloon-0')
     for (let i = 0; i < 4; i++) {
       const glow = this.add.image(0, this.px(BODY_OFFSET_Y), 'bp-glow').setVisible(false)
-      const body = this.add.image(0, 0, 'bp-balloon-0')
+      const string = this.add.image(0, 0, 'bp-string')
+      const body = this.add.image(0, this.px(BODY_OFFSET_Y), 'bp-balloon-classic')
       const disc = this.add.image(0, this.px(BODY_OFFSET_Y), 'bp-disc')
       const dots = Array.from({ length: 6 }, () =>
         this.add.image(0, this.px(BODY_OFFSET_Y), 'bp-ink-dot').setVisible(false),
@@ -548,20 +526,19 @@ export default class BalloonPopScene extends Phaser.Scene {
         .setScale(0.8)
         .setVisible(false)
       const root = this.add
-        .container(0, 0, [glow, body, disc, ...dots, numeral])
-        .setDepth(10)
+        .container(0, 0, [glow, string, body, disc, ...dots, numeral])
+        // In FRONT of the crab (30) AND its panel (31): balloons are the
+        // foreground layer and stay tappable everywhere on screen.
+        .setDepth(32)
         .setVisible(false)
 
-      // Generous hit circle over the body (≥130 css px across).
-      body.setInteractive(
-        new Phaser.Geom.Circle(frame.width / 2, this.px(BODY_CY), this.px(66)),
-        Phaser.Geom.Circle.Contains,
-      )
+      // Hit shape is (re)set per spawn — each shape has its own frame size.
       body.disableInteractive()
 
       const slot: BalloonSlot = {
         root,
         body,
+        string,
         glow,
         dots,
         numeral,
@@ -646,9 +623,13 @@ export default class BalloonPopScene extends Phaser.Scene {
     this.bgGfx.fillRect(0, 0, w, h)
     this.rainbowGfx.clear()
 
-    // Crab conductor top-center on its cloud platform, sign right below.
-    this.crabRoot.setPosition(w / 2, this.px(84))
-    this.signRoot.setPosition(w / 2, this.px(212))
+    // Task panel top-center; the crab sits lower on its cloud, claws raised,
+    // holding the panel overhead. crabBaseX/Y is the rest position; update()
+    // leans crabRoot.x off it.
+    this.crabBaseX = w / 2
+    this.crabBaseY = this.px(200)
+    this.crabRoot.setPosition(this.crabBaseX, this.crabBaseY)
+    this.signRoot.setPosition(w / 2, this.px(72))
 
     // Sun top-right — the home button owns the top-left corner.
     this.sun.setPosition(w - this.px(60), this.px(60))
@@ -679,8 +660,20 @@ export default class BalloonPopScene extends Phaser.Scene {
     this.wrongTaps = 0
     this.hintOn = false
     this.roundActive = true
-    this.round = planRound(this.roundsCompleted, this.prevTarget, Math.random)
+    this.round = planRound(
+      {
+        difficulty: this.difficulty,
+        roundsCompleted: this.roundsCompleted,
+        prevTarget: this.prevTarget,
+        taskId: pickTask(this.difficulty, this.recentTasks, Math.random),
+      },
+      Math.random,
+    )
     this.prevTarget = this.round.target
+    // Record what actually ran (the scaffold may override the picked task).
+    this.recentTasks.push(this.round.taskId)
+    if (this.recentTasks.length > 4) this.recentTasks.shift()
+    this.roundStartAt = this.time.now
 
     this.updateSign()
     this.playCountBeeps()
@@ -704,13 +697,14 @@ export default class BalloonPopScene extends Phaser.Scene {
       this.signBlob.setTint(hexToInt(BALLOON_COLORS[targetColorIndex]))
     }
 
-    // Full-size alone on the card; shrunk onto the mini balloon's disc.
-    const centerY = colorRound ? -4 : 0
+    // Sized for the wide, LOW panel: full-size alone on the card; shrunk
+    // further onto the mini balloon's disc in color rounds.
+    const centerY = colorRound ? -2 : 0
     this.signNumeralY = centerY
-    this.signNumeralScale = colorRound ? 0.52 : 0.95
+    this.signNumeralScale = colorRound ? 0.4 : 0.75
     this.signDotOriginY = centerY
-    this.signDotSpacing = colorRound ? 23 : 36
-    this.signDotScale = colorRound ? 0.7 : 1
+    this.signDotSpacing = colorRound ? 16 : 26
+    this.signDotScale = colorRound ? 0.55 : 0.8
 
     if (promptKind === 'numeral') {
       for (const dot of this.signDots) dot.setVisible(false)
@@ -787,12 +781,7 @@ export default class BalloonPopScene extends Phaser.Scene {
   private spawnWave(): void {
     if (!this.round) return
     const roundId = this.roundId
-    const specs = planInitialWave(
-      this.round,
-      this.roundsCompleted,
-      Math.random,
-      this.lastColorIndex,
-    )
+    const specs = planInitialWave(this.round, this.difficulty, Math.random, this.lastColorIndex)
     specs.forEach((spec, i) => {
       this.waveTimers.push(
         this.time.delayedCall(200 + i * 300, () => {
@@ -814,12 +803,26 @@ export default class BalloonPopScene extends Phaser.Scene {
     slot.baseX = this.balloonX(spec.xFrac)
     this.lastColorIndex = spec.colorIndex
 
-    slot.body.setTexture(`bp-balloon-${spec.colorIndex}`)
+    // White shape sprite, tinted the balloon's color (gray shading in the art
+    // darkens the tint naturally).
+    const shape = BALLOON_SHAPES[spec.shapeIndex]
+    slot.body.setTexture(`bp-balloon-${shape}`)
+    slot.body.setTint(hexToInt(BALLOON_COLORS[spec.colorIndex]))
+    slot.body.displayWidth = this.px(BALLOON_WIDTH_CSS[shape] ?? 110)
+    slot.body.scaleY = slot.body.scaleX
+    // String hangs from the body's bottom (shapes differ in height).
+    slot.string.y = this.px(BODY_OFFSET_Y) + slot.body.displayHeight / 2 + this.px(24)
+
     slot.root.setPosition(slot.baseX, fromY ?? this.scale.height + this.px(130))
     slot.root.setScale(1).setAlpha(1).setAngle(0).setVisible(true)
     this.applyBalloonFace(slot)
     this.setGlow(slot, this.hintOn && spec.isMatch)
-    slot.body.setInteractive()
+    // Generous hit circle (≥130 css px across), in the frame's local space.
+    const frame = slot.body.frame
+    slot.body.setInteractive(
+      new Phaser.Geom.Circle(frame.width / 2, frame.height / 2, this.px(66) / slot.body.scaleX),
+      Phaser.Geom.Circle.Contains,
+    )
   }
 
   /** Put the dot pattern (or numeral, late rounds) on the balloon's disc. */
@@ -895,6 +898,54 @@ export default class BalloonPopScene extends Phaser.Scene {
       const half = cloud.img.displayWidth / 2
       if (cloud.img.x - half > this.scale.width) cloud.img.x = -half
     }
+    this.updateCrabReactions(delta)
+  }
+
+  /**
+   * The crab feels alive: it leans a little toward the nearest floating
+   * balloon and its eyes follow it, easing back to rest when the sky is
+   * empty. Framerate-independent lerp; writes only crabRoot.x and the eye
+   * positions, so it never fights the clap/blink/breathing tweens.
+   */
+  private updateCrabReactions(delta: number): void {
+    let nearest: BalloonSlot | null = null
+    let bestDist = Infinity
+    for (const slot of this.slots) {
+      if (!slot.spec || slot.state !== 'rising') continue
+      const d = Math.hypot(slot.root.x - this.crabBaseX, slot.root.y - this.crabBaseY)
+      if (d < bestDist) {
+        bestDist = d
+        nearest = slot
+      }
+    }
+
+    // Fraction of the remaining gap to close this frame (~ time constant).
+    const k = 1 - Math.pow(0.002, delta / 1000)
+
+    // Small — the crab is holding the panel, so it can't wander far from it.
+    const maxLean = this.px(10)
+    const targetLean = nearest
+      ? Phaser.Math.Clamp((nearest.root.x - this.crabBaseX) * 0.14, -maxLean, maxLean)
+      : 0
+    this.crabLeanX += (targetLean - this.crabLeanX) * k
+    this.crabRoot.x = this.crabBaseX + this.crabLeanX
+
+    const maxEye = this.px(7)
+    let targetEyeX = 0
+    let targetEyeY = 0
+    if (nearest) {
+      const dx = nearest.root.x - this.crabBaseX
+      const dy = nearest.root.y - this.crabBaseY
+      const len = Math.max(Math.hypot(dx, dy), 1)
+      targetEyeX = (dx / len) * maxEye
+      targetEyeY = Phaser.Math.Clamp((dy / len) * maxEye, -maxEye, maxEye)
+    }
+    this.crabEyeOff.x += (targetEyeX - this.crabEyeOff.x) * k
+    this.crabEyeOff.y += (targetEyeY - this.crabEyeOff.y) * k
+    for (let i = 0; i < this.crabEyes.length; i++) {
+      const base = this.crabEyeBase[i]
+      this.crabEyes[i].setPosition(base.x + this.crabEyeOff.x, base.y + this.crabEyeOff.y)
+    }
   }
 
   /**
@@ -909,9 +960,11 @@ export default class BalloonPopScene extends Phaser.Scene {
     const spec = planBalloon(
       {
         round: this.round,
-        roundsCompleted: this.roundsCompleted,
+        difficulty: this.difficulty,
         activeMatchCount: actives.filter((s) => s.spec?.isMatch).length,
-        activeXFracs: actives.map((s) => s.baseX / Math.max(this.scale.width, 1)),
+        // Authoring-space xFracs (what pickXFrac compares against) — NOT
+        // baseX/width, which lives in a slightly different screen space.
+        activeXFracs: actives.map((s) => s.spec?.xFrac ?? 0.5),
         lastColorIndex: this.lastColorIndex,
       },
       Math.random,
@@ -972,6 +1025,11 @@ export default class BalloonPopScene extends Phaser.Scene {
     const spec = slot.spec
     if (!spec) return
     this.roundActive = false
+    // Adaptive nudge: clean & quick raises difficulty, a hinted round eases it.
+    this.difficulty = updateDifficulty(this.difficulty, {
+      wrongTaps: this.wrongTaps,
+      ms: this.time.now - this.roundStartAt,
+    })
     slot.state = 'popping'
     slot.body.disableInteractive()
     for (const timer of this.beepTimers) timer.remove(false)
@@ -1093,29 +1151,38 @@ export default class BalloonPopScene extends Phaser.Scene {
 
   /** Crab claps its claws — descriptive praise from the conductor. */
   private crabClap(): void {
+    // A happy little hop. Drives crabRoot.y only (update() owns .x), so the
+    // lean keeps tracking while the crab bounces.
+    this.tweens.add({
+      targets: this.crabRoot,
+      y: this.crabBaseY - this.px(16),
+      duration: 160,
+      yoyo: true,
+      repeat: 1,
+      ease: 'Quad.easeOut',
+      onComplete: () => this.crabRoot.setY(this.crabBaseY),
+    })
     this.tweens.killTweensOf(this.crabClawLeft)
     this.tweens.killTweensOf(this.crabClawRight)
-    const leftX = -this.px(58)
-    const rightX = this.px(58)
+    // Claws pivot at their shoulder root, so a pure angle wave reads as
+    // excited arm-waving and never detaches the arm from the body.
     this.tweens.add({
       targets: this.crabClawLeft,
-      x: -this.px(26),
-      angle: -40,
+      angle: CLAW_WAVE,
       duration: 130,
       yoyo: true,
       repeat: 2,
       ease: 'Quad.easeInOut',
-      onComplete: () => this.crabClawLeft.setX(leftX).setAngle(-15),
+      onComplete: () => this.crabClawLeft.setAngle(0),
     })
     this.tweens.add({
       targets: this.crabClawRight,
-      x: this.px(26),
-      angle: 40,
+      angle: -CLAW_WAVE,
       duration: 130,
       yoyo: true,
       repeat: 2,
       ease: 'Quad.easeInOut',
-      onComplete: () => this.crabClawRight.setX(rightX).setAngle(15),
+      onComplete: () => this.crabClawRight.setAngle(0),
     })
     for (const delay of [130, 390, 650]) {
       this.time.delayedCall(delay, () => playTone(988, 35, 'square', 0.05))
@@ -1170,7 +1237,7 @@ export default class BalloonPopScene extends Phaser.Scene {
           for (const slot of this.slots) {
             if (slot.spec && slot.state === 'rising') {
               const random = Math.floor(Math.random() * BALLOON_COLORS.length)
-              slot.body.setTexture(`bp-balloon-${random}`)
+              slot.body.setTint(hexToInt(BALLOON_COLORS[random]))
             }
           }
         },
@@ -1178,7 +1245,7 @@ export default class BalloonPopScene extends Phaser.Scene {
       this.time.delayedCall(150 * 10, () => {
         flicker.remove(false)
         for (const slot of this.slots) {
-          if (slot.spec) slot.body.setTexture(`bp-balloon-${slot.spec.colorIndex}`)
+          if (slot.spec) slot.body.setTint(hexToInt(BALLOON_COLORS[slot.spec.colorIndex]))
         }
       })
     })
@@ -1205,12 +1272,14 @@ export default class BalloonPopScene extends Phaser.Scene {
     this.blinkTimer = this.time.delayedCall(3000 + Math.random() * 3000, () => {
       this.tweens.add({
         targets: this.crabEyes,
-        scaleY: 0.12,
+        // Relative to the sprite's display scale — an absolute 0.12 would be
+        // 0.12 of the intrinsic ~340px sprite, not of the on-screen eye.
+        scaleY: this.crabEyeBaseScale * 0.12,
         duration: 90,
         yoyo: true,
         ease: 'Quad.easeInOut',
         onComplete: () => {
-          for (const eye of this.crabEyes) eye.setScale(1)
+          for (const eye of this.crabEyes) eye.setScale(this.crabEyeBaseScale)
           this.scheduleBlink()
         },
       })

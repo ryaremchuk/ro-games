@@ -1,19 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import {
   BALLOON_COLORS,
+  BALLOON_SHAPES,
   CELEBRATION_EVERY_ROUNDS,
-  COLOR_TASK_MIN_LEVEL,
-  CROSS_REP_MIN_LEVEL,
   DICE_LAYOUTS,
+  DIFFICULTY_MAX,
+  DIFFICULTY_START,
+  FAST_ROUND_MS,
   MAX_BALLOON_VALUE,
   MAX_MATCHES_ON_SCREEN,
+  MAX_TASK_REPEAT,
   RISE_JITTER,
-  RISE_RAMP_ROUNDS,
   RISE_SPEED_MAX,
   RISE_SPEED_START,
-  STAGE2_ROUNDS,
-  STAGE3_ROUNDS,
-  STAGE4_ROUNDS,
+  SCAFFOLD_ROUNDS,
+  STAGE2_DIFFICULTY,
+  STAGE3_DIFFICULTY,
+  STAGE4_DIFFICULTY,
+  TASKS,
+  WRONG_TAPS_BEFORE_HINT,
   baseRiseSpeed,
   distractorValues,
   dotPositions,
@@ -21,13 +26,16 @@ import {
   levelFor,
   maxTargetFor,
   nextColorIndex,
+  pickTask,
   planBalloon,
   planInitialWave,
   planRound,
   shouldShowHint,
   stageFor,
+  unlockedTasks,
+  updateDifficulty,
 } from './logic'
-import type { BalloonSpec, DotLayoutKind, RoundPlan, Rng, SpawnContext, Stage } from './logic'
+import type { BalloonSpec, DotLayoutKind, RoundPlan, Rng, SpawnContext, TaskId } from './logic'
 
 /** Seeded RNG so every property below is reproducible. */
 function mulberry32(seed: number): Rng {
@@ -42,22 +50,24 @@ function mulberry32(seed: number): Rng {
 
 const SEEDS = Array.from({ length: 10 }, (_, i) => i + 1)
 
-/** Representative round counts pinned inside each stage. */
-const ROUNDS_S1 = 0
-const ROUNDS_S2 = STAGE2_ROUNDS
-const ROUNDS_S3 = STAGE3_ROUNDS
-const ROUNDS_S4 = STAGE4_ROUNDS + 4
-/** First round of the cross-representation and color levels. */
-const ROUNDS_L6 = (CROSS_REP_MIN_LEVEL - 1) * CELEBRATION_EVERY_ROUNDS
-const ROUNDS_L8 = (COLOR_TASK_MIN_LEVEL - 1) * CELEBRATION_EVERY_ROUNDS
+/** Representative difficulties pinned inside each stage band. */
+const D_S1 = 0
+const D_S2 = STAGE2_DIFFICULTY
+const D_S3 = STAGE3_DIFFICULTY
+const D_S4 = STAGE4_DIFFICULTY
+const D_MAX = DIFFICULTY_MAX
 
-function roundAt(roundsCompleted: number, rng: Rng): RoundPlan {
-  return planRound(roundsCompleted, null, rng)
+/** A post-scaffold round at a difficulty, for a task (defaults to dots). */
+function roundAt(difficulty: number, rng: Rng, taskId: TaskId = 'count-dots'): RoundPlan {
+  return planRound(
+    { difficulty, roundsCompleted: SCAFFOLD_ROUNDS + 5, prevTarget: null, taskId },
+    rng,
+  )
 }
 
 function spawnMany(
   round: RoundPlan,
-  roundsCompleted: number,
+  difficulty: number,
   count: number,
   activeMatchCount: number,
   rng: Rng,
@@ -67,7 +77,7 @@ function spawnMany(
   for (let i = 0; i < count; i++) {
     const ctx: SpawnContext = {
       round,
-      roundsCompleted,
+      difficulty,
       activeMatchCount,
       activeXFracs: [],
       lastColorIndex: lastColor,
@@ -78,6 +88,8 @@ function spawnMany(
   }
   return specs
 }
+
+// ─── Colors & shapes ─────────────────────────────────────────────────────────
 
 describe('balloon colors', () => {
   it('cycles through the six palette colors', () => {
@@ -104,26 +116,101 @@ describe('balloon colors', () => {
 
   it('spawned balloons never repeat the previous balloon color', () => {
     const rng = mulberry32(11)
-    const round = roundAt(ROUNDS_S2, rng)
-    const specs = spawnMany(round, ROUNDS_S2, 400, 1, rng)
+    const round = roundAt(D_S2, rng)
+    const specs = spawnMany(round, D_S2, 400, 1, rng)
     for (let i = 1; i < specs.length; i++) {
       expect(specs[i].colorIndex).not.toBe(specs[i - 1].colorIndex)
     }
   })
 })
 
-describe('stage progression', () => {
-  it('moves 1 → 2 → 3 → 4 at the briefed round counts and never regresses', () => {
+describe('balloon shapes', () => {
+  it('exposes a set of distinct cosmetic shapes', () => {
+    expect(BALLOON_SHAPES.length).toBeGreaterThanOrEqual(4)
+    expect(new Set(BALLOON_SHAPES).size).toBe(BALLOON_SHAPES.length)
+  })
+
+  it('gives every spawned balloon a valid shape index, and varies them', () => {
+    const rng = mulberry32(81)
+    const round = roundAt(D_S2, rng)
+    const specs = spawnMany(round, D_S2, 400, 1, rng)
+    const seen = new Set<number>()
+    for (const spec of specs) {
+      expect(Number.isInteger(spec.shapeIndex)).toBe(true)
+      expect(spec.shapeIndex).toBeGreaterThanOrEqual(0)
+      expect(spec.shapeIndex).toBeLessThan(BALLOON_SHAPES.length)
+      seen.add(spec.shapeIndex)
+    }
+    // Cosmetic variety: over many balloons, every shape shows up.
+    expect(seen.size).toBe(BALLOON_SHAPES.length)
+  })
+})
+
+// ─── Adaptive difficulty ─────────────────────────────────────────────────────
+
+describe('adaptive difficulty', () => {
+  const clean = { wrongTaps: 0, ms: 5_000 }
+  const slow = { wrongTaps: 0, ms: FAST_ROUND_MS + 1 }
+  const slip = { wrongTaps: 1, ms: 5_000 }
+  const hinted = { wrongTaps: WRONG_TAPS_BEFORE_HINT, ms: 5_000 }
+
+  it('starts at the friendly floor', () => {
+    expect(DIFFICULTY_START).toBe(0)
+    expect(stageFor(DIFFICULTY_START)).toBe(1)
+  })
+
+  it('moves up one step on a clean, quick round', () => {
+    expect(updateDifficulty(0, clean)).toBe(1)
+    expect(updateDifficulty(5, clean)).toBe(6)
+  })
+
+  it('holds steady on a slow-but-correct round (no rush pressure)', () => {
+    expect(updateDifficulty(5, slow)).toBe(5)
+  })
+
+  it('holds steady on a single slip', () => {
+    expect(updateDifficulty(5, slip)).toBe(5)
+  })
+
+  it('eases down one step when the glow hint was needed', () => {
+    expect(updateDifficulty(5, hinted)).toBe(4)
+    expect(updateDifficulty(5, { wrongTaps: 6, ms: 60_000 })).toBe(4)
+  })
+
+  it('clamps to [0, DIFFICULTY_MAX] and never jumps more than one step', () => {
+    expect(updateDifficulty(0, hinted)).toBe(0)
+    expect(updateDifficulty(DIFFICULTY_MAX, clean)).toBe(DIFFICULTY_MAX)
+    for (let d = 0; d <= DIFFICULTY_MAX; d++) {
+      for (const result of [clean, slow, slip, hinted]) {
+        const next = updateDifficulty(d, result)
+        expect(Math.abs(next - d)).toBeLessThanOrEqual(1)
+        expect(next).toBeGreaterThanOrEqual(0)
+        expect(next).toBeLessThanOrEqual(DIFFICULTY_MAX)
+      }
+    }
+  })
+
+  it('a session of clean rounds walks the whole ramp; hints walk it back', () => {
+    let d = DIFFICULTY_START
+    for (let i = 0; i < 20; i++) d = updateDifficulty(d, clean)
+    expect(d).toBe(DIFFICULTY_MAX)
+    for (let i = 0; i < 20; i++) d = updateDifficulty(d, hinted)
+    expect(d).toBe(0)
+  })
+})
+
+describe('stage bands', () => {
+  it('maps difficulty to stages at the briefed thresholds, monotonically', () => {
     expect(stageFor(0)).toBe(1)
-    expect(stageFor(STAGE2_ROUNDS - 1)).toBe(1)
-    expect(stageFor(STAGE2_ROUNDS)).toBe(2)
-    expect(stageFor(STAGE3_ROUNDS - 1)).toBe(2)
-    expect(stageFor(STAGE3_ROUNDS)).toBe(3)
-    expect(stageFor(STAGE4_ROUNDS - 1)).toBe(3)
-    expect(stageFor(STAGE4_ROUNDS)).toBe(4)
+    expect(stageFor(STAGE2_DIFFICULTY - 1)).toBe(1)
+    expect(stageFor(STAGE2_DIFFICULTY)).toBe(2)
+    expect(stageFor(STAGE3_DIFFICULTY - 1)).toBe(2)
+    expect(stageFor(STAGE3_DIFFICULTY)).toBe(3)
+    expect(stageFor(STAGE4_DIFFICULTY - 1)).toBe(3)
+    expect(stageFor(STAGE4_DIFFICULTY)).toBe(4)
     let last = 0
-    for (let rounds = 0; rounds <= 60; rounds++) {
-      const stage = stageFor(rounds)
+    for (let d = 0; d <= DIFFICULTY_MAX; d++) {
+      const stage = stageFor(d)
       expect(stage).toBeGreaterThanOrEqual(last)
       last = stage
     }
@@ -131,22 +218,169 @@ describe('stage progression', () => {
   })
 })
 
-describe('target progression', () => {
-  it('scaffolds the first three rounds as 1, 2, 3 in order', () => {
-    for (const seed of SEEDS) {
-      const rng = mulberry32(seed)
-      expect(planRound(0, null, rng).target).toBe(1)
-      expect(planRound(1, 1, rng).target).toBe(2)
-      expect(planRound(2, 2, rng).target).toBe(3)
+// ─── Task registry ───────────────────────────────────────────────────────────
+
+describe('task registry', () => {
+  it('has unique ids and count-dots always unlocked', () => {
+    expect(new Set(TASKS.map((t) => t.id)).size).toBe(TASKS.length)
+    expect(unlockedTasks(0).map((t) => t.id)).toEqual(['count-dots'])
+  })
+
+  it('unlocks tasks in curriculum order as difficulty grows', () => {
+    let lastCount = 0
+    for (let d = 0; d <= DIFFICULTY_MAX; d++) {
+      const count = unlockedTasks(d).length
+      expect(count).toBeGreaterThanOrEqual(lastCount)
+      lastCount = count
+    }
+    expect(unlockedTasks(DIFFICULTY_MAX).length).toBe(TASKS.length)
+    // Every task is reachable strictly below the cap, so the rotation at the
+    // top always has the full variety.
+    for (const task of TASKS) {
+      expect(task.minDifficulty).toBeLessThan(DIFFICULTY_MAX)
     }
   })
 
+  it('only ever picks unlocked tasks', () => {
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed)
+      for (let d = 0; d <= DIFFICULTY_MAX; d++) {
+        const unlocked = new Set(unlockedTasks(d).map((t) => t.id))
+        for (let i = 0; i < 30; i++) {
+          expect(unlocked.has(pickTask(d, [], rng))).toBe(true)
+        }
+      }
+    }
+  })
+
+  it('never runs one task more than MAX_TASK_REPEAT in a row once others exist', () => {
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed)
+      const recent: TaskId[] = []
+      let streak = 0
+      let prev: TaskId | null = null
+      for (let i = 0; i < 300; i++) {
+        const id = pickTask(DIFFICULTY_MAX, recent, rng)
+        streak = id === prev ? streak + 1 : 1
+        expect(streak).toBeLessThanOrEqual(MAX_TASK_REPEAT)
+        prev = id
+        recent.push(id)
+        if (recent.length > 4) recent.shift()
+      }
+    }
+  })
+
+  it('lets the only unlocked task repeat freely at low difficulty', () => {
+    const rng = mulberry32(7)
+    const recent: TaskId[] = ['count-dots', 'count-dots', 'count-dots']
+    for (let i = 0; i < 50; i++) {
+      expect(pickTask(0, recent, rng)).toBe('count-dots')
+    }
+  })
+
+  it('rotates through every unlocked task over a long session', () => {
+    const rng = mulberry32(13)
+    const recent: TaskId[] = []
+    const seen = new Set<TaskId>()
+    for (let i = 0; i < 400; i++) {
+      const id = pickTask(DIFFICULTY_MAX, recent, rng)
+      seen.add(id)
+      recent.push(id)
+      if (recent.length > 4) recent.shift()
+    }
+    expect(seen.size).toBe(TASKS.length)
+  })
+})
+
+// ─── Round planning per task ─────────────────────────────────────────────────
+
+describe('round planning', () => {
+  it('scaffolds the first rounds as 1, 2, 3 on plain dots, whatever was picked', () => {
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed)
+      for (let rounds = 0; rounds < SCAFFOLD_ROUNDS; rounds++) {
+        const round = planRound(
+          { difficulty: D_MAX, roundsCompleted: rounds, prevTarget: null, taskId: 'cross-rep' },
+          rng,
+        )
+        expect(round.target).toBe(rounds + 1)
+        expect(round.taskId).toBe('count-dots')
+        expect(round.promptKind).toBe('dots')
+        expect(round.balloonKind).toBe('dots')
+        expect(round.targetColorIndex).toBeNull()
+      }
+    }
+  })
+
+  it('count-dots rounds show dots on both sides, no color pin', () => {
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed)
+      const round = roundAt(D_S1, rng, 'count-dots')
+      expect(round.taskId).toBe('count-dots')
+      expect(round.promptKind).toBe('dots')
+      expect(round.balloonKind).toBe('dots')
+      expect(round.targetColorIndex).toBeNull()
+      for (const spec of spawnMany(round, D_S1, 30, 1, rng)) {
+        expect(spec.kind).toBe('dots')
+      }
+    }
+  })
+
+  it('count-numerals rounds put numerals on the sign and every balloon', () => {
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed)
+      const round = roundAt(D_MAX, rng, 'count-numerals')
+      expect(round.promptKind).toBe('numeral')
+      expect(round.balloonKind).toBe('numeral')
+      expect(round.targetColorIndex).toBeNull()
+      for (const spec of spawnMany(round, D_MAX, 30, 1, rng)) {
+        expect(spec.kind).toBe('numeral')
+      }
+    }
+  })
+
+  it('cross-rep rounds ask in the OTHER representation, both directions occur', () => {
+    const rng = mulberry32(51)
+    const directions = new Set<string>()
+    for (let i = 0; i < 200; i++) {
+      const round = roundAt(D_MAX, rng, 'cross-rep')
+      expect(round.promptKind).not.toBe(round.balloonKind)
+      const kinds = [round.promptKind, round.balloonKind].sort()
+      expect(kinds).toEqual(['dots', 'numeral'])
+      directions.add(round.balloonKind)
+    }
+    expect(directions.size).toBe(2)
+  })
+
+  it('color-count rounds pin a valid palette color and stay on dots', () => {
+    const rng = mulberry32(61)
+    for (let i = 0; i < 200; i++) {
+      const round = roundAt(D_MAX, rng, 'color-count')
+      expect(round.promptKind).toBe('dots')
+      expect(round.balloonKind).toBe('dots')
+      expect(round.targetColorIndex).not.toBeNull()
+      expect(round.targetColorIndex).toBeGreaterThanOrEqual(0)
+      expect(round.targetColorIndex).toBeLessThan(BALLOON_COLORS.length)
+    }
+  })
+
+  it('non-color tasks never pin a color', () => {
+    for (const seed of SEEDS) {
+      const rng = mulberry32(seed)
+      for (const taskId of ['count-dots', 'count-numerals', 'cross-rep'] as const) {
+        expect(roundAt(D_MAX, rng, taskId).targetColorIndex).toBeNull()
+      }
+    }
+  })
+})
+
+describe('target progression', () => {
   it('keeps targets within the subitizing range 1-3 in stage 1', () => {
     expect(maxTargetFor(1)).toBe(3)
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
-      for (let rounds = 0; rounds < STAGE2_ROUNDS; rounds++) {
-        const round = planRound(rounds, null, rng)
+      for (let i = 0; i < 50; i++) {
+        const round = roundAt(D_S1, rng)
         expect(round.target).toBeGreaterThanOrEqual(1)
         expect(round.target).toBeLessThanOrEqual(3)
       }
@@ -162,10 +396,10 @@ describe('target progression', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
       for (let i = 0; i < 200; i++) {
-        const round2 = planRound(ROUNDS_S2, null, rng)
+        const round2 = roundAt(D_S2, rng)
         expect(round2.target).toBeLessThanOrEqual(4)
         seen2.add(round2.target)
-        const round3 = planRound(ROUNDS_S3, null, rng)
+        const round3 = roundAt(D_S3, rng)
         expect(round3.target).toBeLessThanOrEqual(5)
         seen3.add(round3.target)
       }
@@ -178,47 +412,19 @@ describe('target progression', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
       let prev: number | null = null
-      for (let rounds = STAGE2_ROUNDS; rounds < 60; rounds++) {
-        const round = planRound(rounds, prev, rng)
+      for (let i = 0; i < 60; i++) {
+        const round = planRound(
+          {
+            difficulty: D_S2,
+            roundsCompleted: SCAFFOLD_ROUNDS + i,
+            prevTarget: prev,
+            taskId: 'count-dots',
+          },
+          rng,
+        )
         if (prev !== null) expect(round.target).not.toBe(prev)
         prev = round.target
       }
-    }
-  })
-})
-
-describe('numeral rounds', () => {
-  it('never put numerals on balloons before stage 4', () => {
-    for (const seed of SEEDS) {
-      const rng = mulberry32(seed)
-      for (let rounds = 0; rounds < STAGE4_ROUNDS; rounds++) {
-        for (let i = 0; i < 20; i++) {
-          expect(planRound(rounds, null, rng).balloonKind).toBe('dots')
-        }
-      }
-    }
-  })
-
-  it('appear regularly in stage 4 and put numerals on every balloon', () => {
-    const rng = mulberry32(21)
-    let numeralRounds = 0
-    for (let i = 0; i < 400; i++) {
-      const round = planRound(ROUNDS_S4, null, rng)
-      if (round.balloonKind !== 'numeral') continue
-      numeralRounds++
-      for (const spec of spawnMany(round, ROUNDS_S4, 12, 1, rng)) {
-        expect(spec.kind).toBe('numeral')
-      }
-    }
-    expect(numeralRounds).toBeGreaterThan(100)
-    expect(numeralRounds).toBeLessThan(300)
-  })
-
-  it('dot rounds put dots on every balloon', () => {
-    const rng = mulberry32(22)
-    const round = roundAt(ROUNDS_S1, rng)
-    for (const spec of spawnMany(round, ROUNDS_S1, 50, 1, rng)) {
-      expect(spec.kind).toBe('dots')
     }
   })
 })
@@ -230,72 +436,15 @@ describe('levels', () => {
     expect(levelFor(CELEBRATION_EVERY_ROUNDS)).toBe(2)
     expect(levelFor(2 * CELEBRATION_EVERY_ROUNDS - 1)).toBe(2)
     expect(levelFor(2 * CELEBRATION_EVERY_ROUNDS)).toBe(3)
-    expect(levelFor(ROUNDS_L6)).toBe(CROSS_REP_MIN_LEVEL)
-    expect(levelFor(ROUNDS_L8)).toBe(COLOR_TASK_MIN_LEVEL)
   })
 })
 
-describe('cross-representation rounds (level 6+)', () => {
-  it('keeps the sign in the same representation as the balloons before level 6', () => {
-    for (const seed of SEEDS) {
-      const rng = mulberry32(seed)
-      for (const rounds of [ROUNDS_S1, ROUNDS_S2, ROUNDS_S3, ROUNDS_S4, ROUNDS_L6 - 1]) {
-        for (let i = 0; i < 20; i++) {
-          const round = planRound(rounds, null, rng)
-          expect(round.promptKind).toBe(round.balloonKind)
-        }
-      }
-    }
-  })
-
-  it('regularly asks in the OTHER representation from level 6', () => {
-    const rng = mulberry32(51)
-    let crossed = 0
-    for (let i = 0; i < 400; i++) {
-      const round = planRound(ROUNDS_L6, null, rng)
-      if (round.promptKind === round.balloonKind) continue
-      crossed++
-      const kinds = [round.promptKind, round.balloonKind].sort()
-      expect(kinds).toEqual(['dots', 'numeral'])
-    }
-    expect(crossed).toBeGreaterThan(100)
-    expect(crossed).toBeLessThan(300)
-  })
-})
-
-describe('color rounds (level 8+)', () => {
-  it('never pins a color before level 8', () => {
-    for (const seed of SEEDS) {
-      const rng = mulberry32(seed)
-      for (const rounds of [ROUNDS_S1, ROUNDS_S4, ROUNDS_L6, ROUNDS_L8 - 1]) {
-        for (let i = 0; i < 20; i++) {
-          expect(planRound(rounds, null, rng).targetColorIndex).toBeNull()
-        }
-      }
-    }
-  })
-
-  it('appears regularly from level 8 with a valid palette color', () => {
-    const rng = mulberry32(61)
-    let colorRounds = 0
-    for (let i = 0; i < 400; i++) {
-      const { targetColorIndex } = planRound(ROUNDS_L8, null, rng)
-      if (targetColorIndex === null) continue
-      colorRounds++
-      expect(Number.isInteger(targetColorIndex)).toBe(true)
-      expect(targetColorIndex).toBeGreaterThanOrEqual(0)
-      expect(targetColorIndex).toBeLessThan(BALLOON_COLORS.length)
-    }
-    expect(colorRounds).toBeGreaterThan(80)
-    expect(colorRounds).toBeLessThan(260)
-  })
-
+describe('color-count decoys', () => {
   it('matches need number AND color; decoys never have both', () => {
     const rng = mulberry32(62)
-    let round = roundAt(ROUNDS_L8, rng)
-    while (round.targetColorIndex === null) round = roundAt(ROUNDS_L8, rng)
+    const round = roundAt(D_MAX, rng, 'color-count')
 
-    const specs = spawnMany(round, ROUNDS_L8, 300, 1, rng)
+    const specs = spawnMany(round, D_MAX, 300, 1, rng)
     for (const spec of specs) {
       if (spec.isMatch) {
         expect(spec.value).toBe(round.target)
@@ -345,9 +494,9 @@ describe('distractor distance rules', () => {
   it('wrong balloons only carry round-approved distractor values', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
-      for (const rounds of [ROUNDS_S1, ROUNDS_S2, ROUNDS_S3, ROUNDS_S4]) {
-        const round = roundAt(rounds, rng)
-        for (const spec of spawnMany(round, rounds, 60, 1, rng)) {
+      for (const d of [D_S1, D_S2, D_S3, D_S4]) {
+        const round = roundAt(d, rng)
+        for (const spec of spawnMany(round, d, 60, 1, rng)) {
           if (spec.isMatch) expect(spec.value).toBe(round.target)
           else expect(round.distractors).toContain(spec.value)
         }
@@ -360,13 +509,13 @@ describe('matching balloon invariant (CRITICAL)', () => {
   it('forces a match whenever no matching balloon is afloat', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
-      for (const rounds of [ROUNDS_S1, ROUNDS_S2, ROUNDS_S3, ROUNDS_S4]) {
-        const round = roundAt(rounds, rng)
+      for (const d of [D_S1, D_S2, D_S3, D_S4]) {
+        const round = roundAt(d, rng)
         for (let i = 0; i < 100; i++) {
           const spec = planBalloon(
             {
               round,
-              roundsCompleted: rounds,
+              difficulty: d,
               activeMatchCount: 0,
               activeXFracs: [],
               lastColorIndex: null,
@@ -383,9 +532,9 @@ describe('matching balloon invariant (CRITICAL)', () => {
   it('plans at least one match in every opening wave', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
-      for (const rounds of [ROUNDS_S1, ROUNDS_S2, ROUNDS_S3, ROUNDS_S4]) {
-        const round = roundAt(rounds, rng)
-        const wave = planInitialWave(round, rounds, rng)
+      for (const d of [D_S1, D_S2, D_S3, D_S4]) {
+        const round = roundAt(d, rng)
+        const wave = planInitialWave(round, d, rng)
         expect(wave).toHaveLength(round.concurrent)
         expect(wave.some((spec) => spec.isMatch)).toBe(true)
       }
@@ -395,8 +544,8 @@ describe('matching balloon invariant (CRITICAL)', () => {
   it('keeps at least one match afloat across simulated pop/drift churn', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
-      const round = roundAt(ROUNDS_S3, rng)
-      let afloat = planInitialWave(round, ROUNDS_S3, rng)
+      const round = roundAt(D_S3, rng)
+      const afloat = planInitialWave(round, D_S3, rng)
       for (let step = 0; step < 300; step++) {
         // A random balloon drifts off the top and is replaced.
         const leaving = Math.floor(rng() * afloat.length)
@@ -405,7 +554,7 @@ describe('matching balloon invariant (CRITICAL)', () => {
         const spec = planBalloon(
           {
             round,
-            roundsCompleted: ROUNDS_S3,
+            difficulty: D_S3,
             activeMatchCount: matches,
             activeXFracs: afloat.map((s) => s.xFrac),
             lastColorIndex: afloat.length ? afloat[afloat.length - 1].colorIndex : null,
@@ -424,9 +573,9 @@ describe('matching balloon invariant (CRITICAL)', () => {
     let waves = 0
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
-      for (const rounds of [ROUNDS_S1, ROUNDS_S2, ROUNDS_S3, ROUNDS_S4]) {
-        const round = roundAt(rounds, rng)
-        const wave = planInitialWave(round, rounds, rng)
+      for (const d of [D_S1, D_S2, D_S3, D_S4]) {
+        const round = roundAt(d, rng)
+        const wave = planInitialWave(round, d, rng)
         expect(wave.some((spec) => spec.isMatch)).toBe(true)
         waves++
         if (!wave[0].isMatch) leadMisses++
@@ -439,14 +588,14 @@ describe('matching balloon invariant (CRITICAL)', () => {
 
   it('does not force a match when one is planned later in the wave', () => {
     const rng = mulberry32(71)
-    const round = roundAt(ROUNDS_S2, rng)
+    const round = roundAt(D_S2, rng)
     const specs: BalloonSpec[] = []
     for (let i = 0; i < 200; i++) {
       specs.push(
         planBalloon(
           {
             round,
-            roundsCompleted: ROUNDS_S2,
+            difficulty: D_S2,
             activeMatchCount: 0,
             activeXFracs: [],
             lastColorIndex: null,
@@ -462,12 +611,12 @@ describe('matching balloon invariant (CRITICAL)', () => {
 
   it('caps simultaneous matches so the hunt stays meaningful', () => {
     const rng = mulberry32(31)
-    const round = roundAt(ROUNDS_S2, rng)
+    const round = roundAt(D_S2, rng)
     for (let i = 0; i < 200; i++) {
       const spec = planBalloon(
         {
           round,
-          roundsCompleted: ROUNDS_S2,
+          difficulty: D_S2,
           activeMatchCount: MAX_MATCHES_ON_SCREEN,
           activeXFracs: [],
           lastColorIndex: null,
@@ -480,25 +629,26 @@ describe('matching balloon invariant (CRITICAL)', () => {
 })
 
 describe('concurrency', () => {
-  it('floats 3 balloons in warm-up and 4 from stage 2, never more', () => {
+  it('floats 3 balloons in stage 1 and 4 from stage 2, never more', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
-      expect(roundAt(ROUNDS_S1, rng).concurrent).toBe(3)
-      for (const rounds of [ROUNDS_S2, ROUNDS_S3, ROUNDS_S4]) {
-        expect(roundAt(rounds, rng).concurrent).toBe(4)
+      expect(roundAt(D_S1, rng).concurrent).toBe(3)
+      for (const d of [D_S2, D_S3, D_S4, D_MAX]) {
+        expect(roundAt(d, rng).concurrent).toBe(4)
       }
     }
   })
 })
 
 describe('speed ramp', () => {
-  it('starts slow and ramps gently to the ceiling, monotonically', () => {
+  it('rides the difficulty meter, monotonic and clamped', () => {
     expect(baseRiseSpeed(0)).toBe(RISE_SPEED_START)
-    expect(baseRiseSpeed(RISE_RAMP_ROUNDS)).toBe(RISE_SPEED_MAX)
-    expect(baseRiseSpeed(1000)).toBe(RISE_SPEED_MAX)
+    expect(baseRiseSpeed(DIFFICULTY_MAX)).toBe(RISE_SPEED_MAX)
+    expect(baseRiseSpeed(DIFFICULTY_MAX + 100)).toBe(RISE_SPEED_MAX)
+    expect(baseRiseSpeed(-3)).toBe(RISE_SPEED_START)
     let last = 0
-    for (let rounds = 0; rounds <= 40; rounds++) {
-      const speed = baseRiseSpeed(rounds)
+    for (let d = 0; d <= DIFFICULTY_MAX; d++) {
+      const speed = baseRiseSpeed(d)
       expect(speed).toBeGreaterThanOrEqual(last)
       expect(speed).toBeLessThanOrEqual(RISE_SPEED_MAX)
       last = speed
@@ -507,10 +657,10 @@ describe('speed ramp', () => {
 
   it('keeps per-balloon jitter inside the briefed band', () => {
     const rng = mulberry32(41)
-    for (const rounds of [ROUNDS_S1, ROUNDS_S4]) {
-      const round = roundAt(rounds, rng)
-      const base = baseRiseSpeed(rounds)
-      for (const spec of spawnMany(round, rounds, 200, 1, rng)) {
+    for (const d of [D_S1, D_MAX]) {
+      const round = roundAt(d, rng)
+      const base = baseRiseSpeed(d)
+      for (const spec of spawnMany(round, d, 200, 1, rng)) {
         expect(spec.speedCss).toBeGreaterThanOrEqual(base * (1 - RISE_JITTER) - 1e-9)
         expect(spec.speedCss).toBeLessThanOrEqual(base * (1 + RISE_JITTER) + 1e-9)
       }
@@ -566,16 +716,16 @@ describe('dot layouts', () => {
   it('keeps scatter layouts out of stages 1-2 (dice/line easy first)', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
-      for (const rounds of [ROUNDS_S1, ROUNDS_S2]) {
-        const round = roundAt(rounds, rng)
-        for (const spec of spawnMany(round, rounds, 100, 1, rng)) {
+      for (const d of [D_S1, D_S2]) {
+        const round = roundAt(d, rng)
+        for (const spec of spawnMany(round, d, 100, 1, rng)) {
           expect(spec.layout).not.toBe('scatter')
         }
       }
     }
     const rng = mulberry32(3)
-    const round = roundAt(ROUNDS_S3, rng)
-    const specs = spawnMany(round, ROUNDS_S3, 200, 1, rng)
+    const round = roundAt(D_S3, rng)
+    const specs = spawnMany(round, D_S3, 200, 1, rng)
     expect(specs.some((spec) => spec.layout === 'scatter')).toBe(true)
   })
 })
@@ -598,11 +748,75 @@ describe('hints and celebrations', () => {
   })
 })
 
-describe('stage typing', () => {
-  it('exposes stages as the literal union 1|2|3|4', () => {
-    const stages: Stage[] = [1, 2, 3, 4]
-    for (const stage of stages) {
-      expect(maxTargetFor(stage)).toBeGreaterThanOrEqual(3)
+// ─── Whole-session simulation (flow) ─────────────────────────────────────────
+
+describe('session flow simulation', () => {
+  /** Simulate a full session: plan → play (skill profile) → adapt, N rounds. */
+  function simulate(
+    rounds: number,
+    play: (round: RoundPlan, d: number, rng: Rng) => { wrongTaps: number; ms: number },
+    seed: number,
+  ): { rounds: RoundPlan[]; difficulties: number[] } {
+    const rng = mulberry32(seed)
+    const plans: RoundPlan[] = []
+    const difficulties: number[] = []
+    let d = DIFFICULTY_START
+    let prevTarget: number | null = null
+    const recent: TaskId[] = []
+    for (let i = 0; i < rounds; i++) {
+      const taskId = pickTask(d, recent, rng)
+      const round = planRound({ difficulty: d, roundsCompleted: i, prevTarget, taskId }, rng)
+      plans.push(round)
+      difficulties.push(d)
+      prevTarget = round.target
+      recent.push(round.taskId)
+      if (recent.length > 4) recent.shift()
+      d = updateDifficulty(d, play(round, d, rng))
+    }
+    return { rounds: plans, difficulties }
+  }
+
+  const ace = () => ({ wrongTaps: 0, ms: 6_000 })
+  const struggler = () => ({ wrongTaps: 3, ms: 30_000 })
+
+  it('an acing child reaches full variety and the speed ceiling', () => {
+    const { rounds, difficulties } = simulate(60, ace, 5)
+    expect(difficulties[difficulties.length - 1]).toBe(DIFFICULTY_MAX)
+    const tasks = new Set(rounds.map((r) => r.taskId))
+    expect(tasks.size).toBe(TASKS.length)
+    // Difficulty never drops for a clean player.
+    for (let i = 1; i < difficulties.length; i++) {
+      expect(difficulties[i]).toBeGreaterThanOrEqual(difficulties[i - 1])
+    }
+  })
+
+  it('a struggling child stays in the friendly zone: dots only, targets ≤ 3', () => {
+    const { rounds, difficulties } = simulate(60, struggler, 6)
+    for (const d of difficulties) expect(d).toBeLessThanOrEqual(STAGE2_DIFFICULTY)
+    for (const round of rounds) {
+      expect(round.taskId).toBe('count-dots')
+      expect(round.target).toBeLessThanOrEqual(4)
+    }
+  })
+
+  it('a mixed player oscillates without whiplash (one step at a time)', () => {
+    let flip = 0
+    const mixed = () => (flip++ % 3 === 2 ? { wrongTaps: 2, ms: 9_000 } : ace())
+    const { difficulties } = simulate(80, mixed, 7)
+    for (let i = 1; i < difficulties.length; i++) {
+      expect(Math.abs(difficulties[i] - difficulties[i - 1])).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('long ace sessions keep task variety high (no 3-in-a-row once unlocked)', () => {
+    const { rounds, difficulties } = simulate(120, ace, 8)
+    for (let i = 2; i < rounds.length; i++) {
+      // While count-dots is the only unlocked task (early difficulty), repeats
+      // are unavoidable and fine — the constraint kicks in with alternatives.
+      if (unlockedTasks(difficulties[i]).length < 2) continue
+      const same =
+        rounds[i].taskId === rounds[i - 1].taskId && rounds[i].taskId === rounds[i - 2].taskId
+      expect(same).toBe(false)
     }
   })
 })
