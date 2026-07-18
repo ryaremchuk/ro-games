@@ -52,12 +52,15 @@
   height: auto;
   transform: rotate(var(--rot));
   filter: drop-shadow(0 0.5vmin 0.3vmin rgba(120, 80, 20, 0.15));
+  /* Both frames run the same square-wave flip; the 2nd is offset by half a
+     period so exactly ONE frame is visible at a time — a clean 2-frame walk
+     cycle instead of the two frames bleeding through each other. */
+  animation: home-frameflip 0.72s infinite;
 }
-/* Second frame overlays the first; opacity flips to make a 2-frame walk cycle. */
 .home-crawler > img:nth-child(2) {
   position: absolute;
   inset: 0;
-  animation: home-frameflip 0.7s steps(1) infinite;
+  animation-delay: -0.36s;
 }
 
 @keyframes home-crawl {
@@ -96,12 +99,12 @@
 }
 @keyframes home-frameflip {
   0%,
-  50% {
-    opacity: 0;
-  }
-  50.01%,
-  100% {
+  49.99% {
     opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
   }
 }
 
@@ -191,7 +194,11 @@
 /* A still beach for kids (or grown-ups) who ask the OS to reduce motion. */
 @media (prefers-reduced-motion: reduce) {
   .home-crawler,
-  .home-crawler > img:nth-child(2) {
+  .home-crawler > img {
     animation: none;
+  }
+  /* Freeze on a single frame instead of stacking both. */
+  .home-crawler > img:nth-child(2) {
+    opacity: 0;
   }
 }
