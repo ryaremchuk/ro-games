@@ -2,16 +2,112 @@
   height: 100%;
   width: 100%;
   display: flex;
+  position: relative;
   /* The grid never scrolls: tiles shrink to fit (see --tile below). */
   overflow: hidden;
   padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
     max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
-  background: linear-gradient(135deg, #dff3ff 0%, #ffe9f5 100%);
+  /* Full-bleed sandy beach (Vite hashes + base-prefixes this url). */
+  background-color: #f4d99f;
+  background-image: url('./art/sand-bg.webp');
+  background-size: cover;
+  background-position: center;
   /* Query container so --tile can react to the padded content area (cqw/cqh). */
   container-type: size;
 }
 
+/* ---- Decorative beach layer: behind the tiles, never intercepts taps ---- */
+.home-deco {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.home-prop {
+  position: absolute;
+  height: auto;
+  filter: drop-shadow(0 0.6vmin 0.4vmin rgba(120, 80, 20, 0.18));
+}
+
+.home-crawler {
+  position: absolute;
+  left: 0;
+  height: auto;
+  animation: home-crawl var(--dur) linear infinite;
+  animation-delay: var(--delay);
+  will-change: transform;
+}
+.home-crawler--fly {
+  animation-name: home-fly;
+}
+/* Right→left travellers just run the same path in reverse. */
+.home-crawler[data-dir='-1'] {
+  animation-direction: reverse;
+}
+.home-crawler > img {
+  display: block;
+  width: 100%;
+  height: auto;
+  transform: rotate(var(--rot));
+  filter: drop-shadow(0 0.5vmin 0.3vmin rgba(120, 80, 20, 0.15));
+}
+/* Second frame overlays the first; opacity flips to make a 2-frame walk cycle. */
+.home-crawler > img:nth-child(2) {
+  position: absolute;
+  inset: 0;
+  animation: home-frameflip 0.7s steps(1) infinite;
+}
+
+@keyframes home-crawl {
+  0% {
+    transform: translate(-16vw, 0);
+  }
+  25% {
+    transform: translate(30vw, -1.4vh);
+  }
+  50% {
+    transform: translate(63vw, 0);
+  }
+  75% {
+    transform: translate(96vw, -1.4vh);
+  }
+  100% {
+    transform: translate(116vw, 0);
+  }
+}
+@keyframes home-fly {
+  0% {
+    transform: translate(-16vw, 0);
+  }
+  25% {
+    transform: translate(30vw, -6vh);
+  }
+  50% {
+    transform: translate(63vw, 3vh);
+  }
+  75% {
+    transform: translate(96vw, -5vh);
+  }
+  100% {
+    transform: translate(116vw, 1vh);
+  }
+}
+@keyframes home-frameflip {
+  0%,
+  50% {
+    opacity: 0;
+  }
+  50.01%,
+  100% {
+    opacity: 1;
+  }
+}
+
 .home-grid {
+  position: relative;
+  z-index: 1;
   display: grid;
   --gap: clamp(16px, 4cqw, 32px);
   /* Width-limited tile: always 3 across, grid capped at 960px (the previous
@@ -34,9 +130,12 @@
   aspect-ratio: 1 / 1;
   container-type: inline-size;
   border-radius: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  overflow: hidden;
+  /* <button> (dice) needs the same reset as the <a> tiles. */
+  appearance: none;
+  border: none;
+  padding: 0;
+  background: transparent;
   text-decoration: none;
   box-shadow:
     0 8px 0 rgba(0, 0, 0, 0.12),
@@ -45,6 +144,7 @@
     transform 0.08s ease,
     box-shadow 0.08s ease;
   touch-action: manipulation;
+  cursor: pointer;
 }
 
 .home-tile:active {
@@ -54,11 +154,14 @@
     0 6px 14px rgba(0, 0, 0, 0.16);
 }
 
-.home-tile-emoji {
-  /* Scales with the tile width (cqi = 1% of the tile's inline size). */
-  font-size: 15vw;
-  font-size: 48cqi;
-  line-height: 1;
+.home-tile-cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  pointer-events: none;
 }
 
 /* Persistent star count — cumulative progress a pre-reader can watch grow. */
@@ -83,4 +186,12 @@
 
 .home-tile-stars-icon {
   font-size: 8cqi;
+}
+
+/* A still beach for kids (or grown-ups) who ask the OS to reduce motion. */
+@media (prefers-reduced-motion: reduce) {
+  .home-crawler,
+  .home-crawler > img:nth-child(2) {
+    animation: none;
+  }
 }
