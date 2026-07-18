@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CATCHES_TO_CLIMB,
-  CONCURRENT2_SKILL,
-  CONCURRENT3_SKILL,
-  CONFETTI_EVERY_BOPS,
+  BOPS_PER_LEVEL,
   CRITTERS,
-  ESCAPES_TO_EASE,
   GAP_FLOOR_MS,
   GAP_START_MS,
   HOLE_COUNT,
@@ -17,22 +13,17 @@ import {
   PHASE4_TIME_MS,
   UP_TIME_HARD_FLOOR_MS,
   UP_TIME_START_MS,
-  WHACK_SKILL_MAX,
   bopVariantFor,
   comboStep,
-  concurrentFor,
   critterById,
-  gapForSkill,
-  initialWhackSkill,
+  gapMs,
   isConfettiBop,
   levelForBops,
   phaseFor,
   planSpawn,
-  registerCatch,
-  registerEscape,
-  upTimeForSkill,
+  upTimeMs,
 } from './logic'
-import type { RampState, Rng, SpawnContext, SpawnPlan } from './logic'
+import type { RampState, Rng, SpawnPlan } from './logic'
 
 /** Seeded RNG so every property below is reproducible. */
 function mulberry32(seed: number): Rng {
@@ -53,26 +44,13 @@ const P2: RampState = { elapsedMs: 60_000, bops: 15 }
 const P3: RampState = { elapsedMs: 110_000, bops: 30 }
 const P4: RampState = { elapsedMs: 200_000, bops: 60 }
 
-/** SpawnContext with quiet-garden defaults; override what a test cares about. */
-function ctx(ramp: RampState, overrides: Partial<SpawnContext> = {}): SpawnContext {
-  return {
-    ramp,
-    skill: 0,
-    occupiedHoles: [],
-    activeCritterIds: [],
-    sleeperActive: false,
-    lastHole: null,
-    ...overrides,
-  }
-}
-
-function manySpawns(ramp: RampState, count: number, rng: Rng): SpawnPlan[] {
+function manySpawns(state: RampState, count: number, rng: Rng): SpawnPlan[] {
   const plans: SpawnPlan[] = []
   let lastHole: number | null = null
   for (let i = 0; i < count; i++) {
-    const plan = planSpawn(ctx(ramp, { lastHole }), rng)
+    const plan = planSpawn(state, [], lastHole, rng)
     plans.push(plan)
-    lastHole = plan.spawn.hole
+    lastHole = plan.primary.hole
   }
   return plans
 }
@@ -120,7 +98,8 @@ describe('go:no-go sleepy ratio', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
       for (const plan of manySpawns(P1, 300, rng)) {
-        expect(plan.spawn.sleepy).toBe(false)
+        expect(plan.primary.sleepy).toBe(false)
+        expect(plan.double).toBeNull()
       }
     }
   })
@@ -129,133 +108,80 @@ describe('go:no-go sleepy ratio', () => {
     for (const state of [P2, P3]) {
       const rng = mulberry32(42)
       const plans = manySpawns(state, 4000, rng)
-      const sleepyRate = plans.filter((p) => p.spawn.sleepy).length / plans.length
+      const sleepyRate = plans.filter((p) => p.primary.sleepy).length / plans.length
       expect(sleepyRate).toBeGreaterThan(0.21)
       expect(sleepyRate).toBeLessThan(0.29)
     }
   })
-
-  it('never rolls a second sleeper while one is already napping', () => {
-    for (const seed of SEEDS) {
-      const rng = mulberry32(seed)
-      for (let i = 0; i < 300; i++) {
-        const plan = planSpawn(ctx(P3, { sleeperActive: true }), rng)
-        expect(plan.spawn.sleepy).toBe(false)
-      }
-    }
-  })
 })
 
-describe('adaptive skill meter', () => {
-  it('starts fresh at the floor and resumes a clamped save', () => {
-    expect(initialWhackSkill()).toEqual({ skill: 0, catchStreak: 0, escapeStreak: 0 })
-    expect(initialWhackSkill(7).skill).toBe(7)
-    expect(initialWhackSkill(-4).skill).toBe(0)
-    expect(initialWhackSkill(99).skill).toBe(WHACK_SKILL_MAX)
+describe('up-time and gap ramps', () => {
+  it('starts at the briefed values', () => {
+    const fresh: RampState = { elapsedMs: 0, bops: 0 }
+    expect(upTimeMs(fresh)).toBe(UP_TIME_START_MS)
+    expect(gapMs(fresh)).toBe(GAP_START_MS)
   })
 
-  it(`climbs one step after ${CATCHES_TO_CLIMB} catches in a row`, () => {
-    let s = initialWhackSkill(5)
-    for (let i = 1; i < CATCHES_TO_CLIMB; i++) {
-      s = registerCatch(s)
-      expect(s.skill).toBe(5)
-    }
-    s = registerCatch(s)
-    expect(s).toEqual({ skill: 6, catchStreak: 0, escapeStreak: 0 })
-  })
-
-  it(`eases one step after ${ESCAPES_TO_EASE} escapes in a row`, () => {
-    let s = initialWhackSkill(5)
-    s = registerEscape(s)
-    expect(s.skill).toBe(5)
-    s = registerEscape(s)
-    expect(s).toEqual({ skill: 4, catchStreak: 0, escapeStreak: 0 })
-  })
-
-  it('a catch and an escape reset each other’s streak', () => {
-    let s = initialWhackSkill(5)
-    s = registerCatch(s)
-    s = registerCatch(s)
-    s = registerEscape(s) // catch streak gone
-    s = registerCatch(s)
-    s = registerCatch(s)
-    expect(s.skill).toBe(5) // needs a third consecutive catch again
-    s = registerCatch(s)
-    expect(s.skill).toBe(6)
-  })
-
-  it('climbs double while below the saved peak (session warm-up)', () => {
-    let s = initialWhackSkill(4)
-    for (let i = 0; i < CATCHES_TO_CLIMB; i++) s = registerCatch(s, 8)
-    expect(s.skill).toBe(6)
-    // At/above the peak the step drops back to one.
-    let t = initialWhackSkill(8)
-    for (let i = 0; i < CATCHES_TO_CLIMB; i++) t = registerCatch(t, 8)
-    expect(t.skill).toBe(9)
-  })
-
-  it('clamps to [0, WHACK_SKILL_MAX]', () => {
-    let bottom = initialWhackSkill(0)
-    for (let i = 0; i < 10; i++) bottom = registerEscape(bottom)
-    expect(bottom.skill).toBe(0)
-    let top = initialWhackSkill(WHACK_SKILL_MAX)
-    for (let i = 0; i < 10; i++) top = registerCatch(top)
-    expect(top.skill).toBe(WHACK_SKILL_MAX)
-  })
-})
-
-describe('adaptive speed knobs', () => {
-  it('starts at the briefed values and reaches the floors at max skill', () => {
-    expect(upTimeForSkill(0)).toBe(UP_TIME_START_MS)
-    expect(gapForSkill(0)).toBe(GAP_START_MS)
-    expect(upTimeForSkill(WHACK_SKILL_MAX)).toBe(UP_TIME_HARD_FLOOR_MS)
-    expect(gapForSkill(WHACK_SKILL_MAX)).toBe(GAP_FLOOR_MS)
-  })
-
-  it('is monotonic in skill and clamped outside the meter', () => {
-    let lastUp = Infinity
-    let lastGap = Infinity
-    for (let skill = -2; skill <= WHACK_SKILL_MAX + 2; skill++) {
-      const up = upTimeForSkill(skill)
-      const gap = gapForSkill(skill)
-      expect(up).toBeLessThanOrEqual(lastUp)
-      expect(gap).toBeLessThanOrEqual(lastGap)
+  it('never leaves the briefed bounds and respects both floors', () => {
+    for (let t = 0; t <= 600_000; t += 2_500) {
+      const state: RampState = { elapsedMs: t, bops: Math.floor(t / 5000) }
+      const up = upTimeMs(state)
+      const gap = gapMs(state)
       expect(up).toBeLessThanOrEqual(UP_TIME_START_MS)
       expect(up).toBeGreaterThanOrEqual(UP_TIME_HARD_FLOOR_MS)
       expect(gap).toBeLessThanOrEqual(GAP_START_MS)
       expect(gap).toBeGreaterThanOrEqual(GAP_FLOOR_MS)
+    }
+  })
+
+  it('ramps monotonically down to the floors', () => {
+    let lastUp = Infinity
+    let lastGap = Infinity
+    for (let t = 0; t <= 400_000; t += 10_000) {
+      const state: RampState = { elapsedMs: t, bops: 0 }
+      const up = upTimeMs(state)
+      const gap = gapMs(state)
+      expect(up).toBeLessThanOrEqual(lastUp)
+      expect(gap).toBeLessThanOrEqual(lastGap)
       lastUp = up
       lastGap = gap
     }
+    expect(lastUp).toBe(UP_TIME_HARD_FLOOR_MS)
+    expect(lastGap).toBe(GAP_FLOOR_MS)
+  })
+
+  it('bops alone also drive the ramp (fast kids ramp faster)', () => {
+    const slow = upTimeMs({ elapsedMs: 30_000, bops: 0 })
+    const fast = upTimeMs({ elapsedMs: 30_000, bops: 30 })
+    expect(fast).toBeLessThan(slow)
   })
 })
 
-describe('concurrency ladder', () => {
-  it('grows 1 → 2 → 3 simultaneous critters with skill', () => {
-    expect(concurrentFor(0)).toBe(1)
-    expect(concurrentFor(CONCURRENT2_SKILL - 1)).toBe(1)
-    expect(concurrentFor(CONCURRENT2_SKILL)).toBe(2)
-    expect(concurrentFor(CONCURRENT3_SKILL - 1)).toBe(2)
-    expect(concurrentFor(CONCURRENT3_SKILL)).toBe(3)
-    expect(concurrentFor(WHACK_SKILL_MAX)).toBe(3)
-  })
-
-  it('simultaneous critters are never the same species', () => {
+describe('double-pops', () => {
+  it('never double-pops before phase 3', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
-      const onStage = [CRITTERS[0].id, CRITTERS[1].id]
-      for (let i = 0; i < 300; i++) {
-        const plan = planSpawn(ctx(P3, { activeCritterIds: onStage }), rng)
-        expect(onStage).not.toContain(plan.spawn.critterId)
+      for (const state of [P1, P2]) {
+        for (const plan of manySpawns(state, 300, rng)) {
+          expect(plan.double).toBeNull()
+        }
       }
     }
   })
 
-  it('relaxes the species rule only when the whole pool is on stage', () => {
-    const rng = mulberry32(17)
-    const everyone = CRITTERS.map((c) => c.id)
-    const plan = planSpawn(ctx(P3, { activeCritterIds: everyone }), rng)
-    expect(everyone).toContain(plan.spawn.critterId)
+  it('occasionally double-pops in phase 3+, in a different free hole', () => {
+    for (const state of [P3, P4]) {
+      const rng = mulberry32(7)
+      const plans = manySpawns(state, 600, rng)
+      const doubles = plans.filter((p) => p.double !== null)
+      expect(doubles.length).toBeGreaterThan(0)
+      expect(doubles.length).toBeLessThan(plans.length / 2)
+      for (const plan of doubles) {
+        expect(plan.double!.hole).not.toBe(plan.primary.hole)
+        expect(plan.double!.hole).toBeGreaterThanOrEqual(0)
+        expect(plan.double!.hole).toBeLessThan(HOLE_COUNT)
+      }
+    }
   })
 })
 
@@ -265,7 +191,8 @@ describe('golden critter', () => {
       const rng = mulberry32(seed)
       for (const state of [P1, P2, P3]) {
         for (const plan of manySpawns(state, 300, rng)) {
-          expect(plan.spawn.golden).toBe(false)
+          expect(plan.primary.golden).toBe(false)
+          if (plan.double) expect(plan.double.golden).toBe(false)
         }
       }
     }
@@ -274,13 +201,13 @@ describe('golden critter', () => {
   it('is rare (~5%) in phase 4 and never wears a hat', () => {
     const rng = mulberry32(99)
     const plans = manySpawns(P4, 4000, rng)
-    const golden = plans.filter((p) => p.spawn.golden)
+    const golden = plans.filter((p) => p.primary.golden)
     const rate = golden.length / plans.length
     expect(rate).toBeGreaterThan(0.02)
     expect(rate).toBeLessThan(0.08)
     for (const plan of golden) {
-      expect(plan.spawn.sleepy).toBe(false)
-      expect(plan.spawn.peek).toBe(false)
+      expect(plan.primary.sleepy).toBe(false)
+      expect(plan.primary.peek).toBe(false)
     }
   })
 })
@@ -291,13 +218,13 @@ describe('sideways peeker', () => {
       const rng = mulberry32(seed)
       for (const state of [P1, P2, P3]) {
         for (const plan of manySpawns(state, 300, rng)) {
-          expect(plan.spawn.peek).toBe(false)
+          expect(plan.primary.peek).toBe(false)
         }
       }
     }
     const rng = mulberry32(5)
     const plans = manySpawns(P4, 1000, rng)
-    expect(plans.some((p) => p.spawn.peek)).toBe(true)
+    expect(plans.some((p) => p.primary.peek)).toBe(true)
   })
 })
 
@@ -308,11 +235,11 @@ describe('hole selection', () => {
       for (const state of [P1, P2, P3, P4]) {
         let lastHole: number | null = null
         for (let i = 0; i < 500; i++) {
-          const plan = planSpawn(ctx(state, { lastHole }), rng)
-          expect(plan.spawn.hole).not.toBe(lastHole)
-          expect(plan.spawn.hole).toBeGreaterThanOrEqual(0)
-          expect(plan.spawn.hole).toBeLessThan(HOLE_COUNT)
-          lastHole = plan.spawn.hole
+          const plan = planSpawn(state, [], lastHole, rng)
+          expect(plan.primary.hole).not.toBe(lastHole)
+          expect(plan.primary.hole).toBeGreaterThanOrEqual(0)
+          expect(plan.primary.hole).toBeLessThan(HOLE_COUNT)
+          lastHole = plan.primary.hole
         }
       }
     }
@@ -322,18 +249,24 @@ describe('hole selection', () => {
     const rng = mulberry32(13)
     const occupied = [0, 1, 2, 3]
     for (let i = 0; i < 300; i++) {
-      const plan = planSpawn(ctx(P4, { occupiedHoles: occupied, lastHole: 4 }), rng)
-      expect(occupied).not.toContain(plan.spawn.hole)
-      expect(plan.spawn.hole).not.toBe(4)
+      const plan = planSpawn(P4, occupied, 4, rng)
+      expect(occupied).not.toContain(plan.primary.hole)
+      expect(plan.primary.hole).not.toBe(4)
+      if (plan.double) {
+        expect(plan.double.hole).not.toBe(plan.primary.hole)
+        expect(occupied).not.toContain(plan.double.hole)
+        expect(plan.double.hole).not.toBe(4)
+      }
     }
   })
 
-  it('takes the single remaining free hole', () => {
+  it('skips the double-pop when only one hole is free', () => {
     const rng = mulberry32(13)
     const occupied = [0, 1, 2, 3, 4, 5, 6]
     for (let i = 0; i < 200; i++) {
-      const plan = planSpawn(ctx(P4, { occupiedHoles: occupied, lastHole: 7 }), rng)
-      expect(plan.spawn.hole).toBe(8)
+      const plan = planSpawn(P4, occupied, 7, rng)
+      expect(plan.primary.hole).toBe(8)
+      expect(plan.double).toBeNull()
     }
   })
 })
@@ -350,28 +283,32 @@ describe('confetti cadence', () => {
 })
 
 describe('spawn plan timing', () => {
-  it('carries the skill-driven up-time and gap', () => {
+  it('carries the ramped up-time and gap for the given state', () => {
     const rng = mulberry32(3)
-    for (const skill of [0, CONCURRENT2_SKILL, CONCURRENT3_SKILL, WHACK_SKILL_MAX]) {
-      const plan = planSpawn(ctx(P2, { skill }), rng)
-      expect(plan.upTimeMs).toBe(upTimeForSkill(skill))
-      expect(plan.gapMs).toBe(gapForSkill(skill))
+    for (const state of [P1, P2, P3, P4]) {
+      const plan = planSpawn(state, [], null, rng)
+      expect(plan.upTimeMs).toBe(upTimeMs(state))
+      expect(plan.gapMs).toBe(gapMs(state))
     }
   })
 })
 
 describe('levels', () => {
-  it('passes one level per bop, starting at 1', () => {
+  it('advances one level per confetti burst (every 10 bops)', () => {
     expect(levelForBops(0)).toBe(1)
-    expect(levelForBops(1)).toBe(2)
-    expect(levelForBops(9)).toBe(10)
+    expect(levelForBops(BOPS_PER_LEVEL - 1)).toBe(1)
+    expect(levelForBops(BOPS_PER_LEVEL)).toBe(2)
+    expect(levelForBops(BOPS_PER_LEVEL * 4)).toBe(5)
     expect(levelForBops(-5)).toBe(1) // defensive: never below level 1
   })
 
-  it('keeps the confetti on its own every-10 beat, decoupled from levels', () => {
-    expect(isConfettiBop(CONFETTI_EVERY_BOPS - 1)).toBe(false)
-    expect(isConfettiBop(CONFETTI_EVERY_BOPS)).toBe(true)
-    expect(isConfettiBop(CONFETTI_EVERY_BOPS + 1)).toBe(false)
+  it('is monotonic in bops', () => {
+    let last = 0
+    for (let bops = 0; bops <= BOPS_PER_LEVEL * 5; bops++) {
+      const level = levelForBops(bops)
+      expect(level).toBeGreaterThanOrEqual(last)
+      last = level
+    }
   })
 })
 

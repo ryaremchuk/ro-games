@@ -1,21 +1,11 @@
 /**
- * Pure spawn-scheduling and adaptive-difficulty logic for Whack-a-Silly. No
+ * Pure spawn-scheduling and difficulty-ramp logic for Whack-a-Silly. No
  * Phaser imports — everything here is deterministic given an injected RNG
  * and is unit-tested in plain jsdom (see logic.test.ts).
  *
- * Difficulty rides an adaptive MOTOR skill meter (0..12), persisted across
- * sessions via shared/progress.ts (warm-up start below the save, doubled
- * climbs below the peak):
- * - catches (bops) in a row climb the meter; go critters escaping unbopped
- *   ease it back — no-fail, the garden slows before the child gets stuck.
- * - the meter drives HOW FAST critters pop and hide (up-time 2000ms at
- *   skill 0 down to the 1200ms hard floor — never clip a legit 4yo
- *   reaction; gap 1000ms → 600ms) and HOW MANY are up at once (1 → 2 → 3,
- *   always different species so simultaneous critters read as distinct).
- *
- * The session PHASE machine stays purely about variety unlocks: sleepers
- * (75:25 go:no-go, never two asleep at once), the golden critter, and the
- * sideways peeker.
+ * Numbers come from the go/no-go research brief: 75:25 go:no-go once sleeping
+ * critters appear, stimulus up-time 2000ms ramping to a 1400ms floor (hard
+ * floor 1200ms — never clip a legit 4yo reaction), inter-pop gap 1000ms → 600ms.
  */
 
 /** Injectable random source, [0, 1). Defaults to Math.random in the game. */
@@ -53,11 +43,13 @@ export const HOLE_COUNT = GRID_SIZE * GRID_SIZE
 
 // ─── Timing rules (from the brief) ───────────────────────────────────────────
 
-/** Critter up-time at skill 0… */
+/** Critter up-time starts here… */
 export const UP_TIME_START_MS = 2000
-/** …and NEVER below this (clips legit 4yo reaction time). */
+/** …and ramps down to this soft floor… */
+export const UP_TIME_FLOOR_MS = 1400
+/** …but NEVER below this (clips legit 4yo reaction time). */
 export const UP_TIME_HARD_FLOOR_MS = 1200
-/** Gap before the next critter tops the garden up. */
+/** Gap between one critter leaving and the next popping up. */
 export const GAP_START_MS = 1000
 export const GAP_FLOOR_MS = 600
 
@@ -65,82 +57,10 @@ export const GAP_FLOOR_MS = 600
 export const SLEEPY_PROBABILITY = 0.25
 /** Golden critter — rare celebration spawn, phase 4 only. */
 export const GOLDEN_PROBABILITY = 0.05
+/** Chance a second critter pops at the same time, phase 3+ only. */
+export const DOUBLE_PROBABILITY = 0.2
 /** Chance a critter peeks sideways from the hole edge, phase 4 only. */
 export const PEEK_PROBABILITY = 0.12
-
-// ─── Adaptive motor skill meter ──────────────────────────────────────────────
-
-export const WHACK_SKILL_START = 0
-export const WHACK_SKILL_MAX = 12
-
-/** Consecutive catches (no escape in between) that climb the meter a step. */
-export const CATCHES_TO_CLIMB = 3
-/** Consecutive go-critter escapes that ease the meter a step (no-fail). */
-export const ESCAPES_TO_EASE = 2
-
-function clampSkill(value: number): number {
-  return Math.min(Math.max(Math.round(value), WHACK_SKILL_START), WHACK_SKILL_MAX)
-}
-
-export interface WhackSkill {
-  /** The meter 0..WHACK_SKILL_MAX — drives up-time, gap and concurrency. */
-  skill: number
-  /** Consecutive bops since the last escape. */
-  catchStreak: number
-  /** Consecutive go-critter escapes since the last bop. */
-  escapeStreak: number
-}
-
-/** Fresh meter state; `skill` resumes a persisted save (clamped). */
-export function initialWhackSkill(skill: number = WHACK_SKILL_START): WhackSkill {
-  return { skill: clampSkill(skill), catchStreak: 0, escapeStreak: 0 }
-}
-
-/**
- * A go critter was bopped. CATCHES_TO_CLIMB in a row climb the meter one
- * step — two steps while below the saved `peak` (session warm-up, see
- * shared/progress.sessionStart).
- */
-export function registerCatch(state: WhackSkill, peak: number = WHACK_SKILL_START): WhackSkill {
-  const catchStreak = state.catchStreak + 1
-  if (catchStreak < CATCHES_TO_CLIMB) return { ...state, catchStreak, escapeStreak: 0 }
-  const step = state.skill < peak ? 2 : 1
-  return { skill: clampSkill(state.skill + step), catchStreak: 0, escapeStreak: 0 }
-}
-
-/**
- * A go critter got away unbopped. ESCAPES_TO_EASE in a row ease the meter
- * one step — asymmetric by design: struggling slows the garden gently.
- */
-export function registerEscape(state: WhackSkill): WhackSkill {
-  const escapeStreak = state.escapeStreak + 1
-  if (escapeStreak < ESCAPES_TO_EASE) return { ...state, escapeStreak, catchStreak: 0 }
-  return { skill: clampSkill(state.skill - 1), catchStreak: 0, escapeStreak: 0 }
-}
-
-/** How long a critter stays up: 2000ms at skill 0 → the 1200ms hard floor. */
-export function upTimeForSkill(skill: number): number {
-  const t = clampSkill(skill) / WHACK_SKILL_MAX
-  return Math.round(UP_TIME_START_MS - (UP_TIME_START_MS - UP_TIME_HARD_FLOOR_MS) * t)
-}
-
-/** Gap before the next pop tops the garden up, 1000ms → 600ms. */
-export function gapForSkill(skill: number): number {
-  const t = clampSkill(skill) / WHACK_SKILL_MAX
-  return Math.round(GAP_START_MS - (GAP_START_MS - GAP_FLOOR_MS) * t)
-}
-
-/** Skill at which a second simultaneous critter joins the garden… */
-export const CONCURRENT2_SKILL = 4
-/** …and a third. */
-export const CONCURRENT3_SKILL = 9
-
-/** How many critters may be up at once — always different species. */
-export function concurrentFor(skill: number): number {
-  if (clampSkill(skill) >= CONCURRENT3_SKILL) return 3
-  if (clampSkill(skill) >= CONCURRENT2_SKILL) return 2
-  return 1
-}
 
 /** Every ~10 successful bops: a quick confetti burst (spawning never pauses). */
 export const CONFETTI_EVERY_BOPS = 10
@@ -149,9 +69,12 @@ export function isConfettiBop(bops: number): boolean {
   return bops > 0 && bops % CONFETTI_EVERY_BOPS === 0
 }
 
-/** 1-based HUD level: every bopped critter passes a level (and banks a star). */
+/** Bops per HUD level — one level per confetti burst. */
+export const BOPS_PER_LEVEL = CONFETTI_EVERY_BOPS
+
+/** 1-based level for a total bop count (0-9 → L1, 10-19 → L2, …). */
 export function levelForBops(bops: number): number {
-  return Math.max(Math.floor(bops), 0) + 1
+  return Math.floor(Math.max(bops, 0) / BOPS_PER_LEVEL) + 1
 }
 
 // ─── Celebration variety (pure, so the scene stays dumb) ─────────────────────
@@ -213,6 +136,36 @@ export function phaseFor(state: RampState): Phase {
   return 1
 }
 
+/** Full speed is reached after this much play time… */
+export const RAMP_TIME_MS = 180_000
+/** …or this many bops, whichever comes first (fast kids ramp faster). */
+export const RAMP_BOPS = 45
+
+function clamp01(value: number): number {
+  return Math.min(Math.max(value, 0), 1)
+}
+
+/** 0 → 1 ramp progress; driven by whichever of time / bops is further along. */
+function rampProgress(state: RampState): number {
+  return clamp01(Math.max(state.elapsedMs / RAMP_TIME_MS, state.bops / RAMP_BOPS))
+}
+
+/**
+ * How long a critter stays up. Ramps 2000ms → 1400ms; phases 3 and 4 shave a
+ * little extra for challenge but the hard floor of 1200ms always holds.
+ */
+export function upTimeMs(state: RampState): number {
+  const base = UP_TIME_START_MS - (UP_TIME_START_MS - UP_TIME_FLOOR_MS) * rampProgress(state)
+  const phase = phaseFor(state)
+  const phaseBonus = phase >= 3 ? (phase - 2) * 100 : 0
+  return Math.max(base - phaseBonus, UP_TIME_HARD_FLOOR_MS)
+}
+
+/** Gap before the next pop, 1000ms → 600ms. */
+export function gapMs(state: RampState): number {
+  return GAP_START_MS - (GAP_START_MS - GAP_FLOOR_MS) * rampProgress(state)
+}
+
 // ─── Spawn planning ──────────────────────────────────────────────────────────
 
 export interface CritterSpawn {
@@ -227,26 +180,13 @@ export interface CritterSpawn {
   peek: boolean
 }
 
-export interface SpawnContext {
-  /** Session phase input — variety unlocks (sleepers, golden, peeker). */
-  ramp: RampState
-  /** Adaptive motor meter — drives up-time, gap and concurrency. */
-  skill: number
-  /** Holes currently occupied (any non-down state). */
-  occupiedHoles: readonly number[]
-  /** Species currently on stage — simultaneous critters are never twins. */
-  activeCritterIds: readonly string[]
-  /** True if a sleeper is already up — never two no-gos at once. */
-  sleeperActive: boolean
-  /** Previous spawn's hole (no same-hole back-to-back). */
-  lastHole: number | null
-}
-
 export interface SpawnPlan {
-  spawn: CritterSpawn
-  /** How long this critter stays up. */
+  primary: CritterSpawn
+  /** Second simultaneous critter — occasional, phase 3+ only. */
+  double: CritterSpawn | null
+  /** How long these critters stay up. */
   upTimeMs: number
-  /** Gap to schedule before the next top-up spawn. */
+  /** Gap to schedule before the following spawn. */
   gapMs: number
 }
 
@@ -264,36 +204,41 @@ function pickHole(rng: Rng, blocked: ReadonlySet<number>): number | null {
   return pickOne(rng, open)
 }
 
-function rollCritter(phase: Phase, hole: number, ctx: SpawnContext, rng: Rng): CritterSpawn {
+function rollCritter(phase: Phase, hole: number, rng: Rng): CritterSpawn {
   const golden = phase >= 4 && rng() < GOLDEN_PROBABILITY
-  const sleepy = !golden && !ctx.sleeperActive && phase >= 2 && rng() < SLEEPY_PROBABILITY
+  const sleepy = !golden && phase >= 2 && rng() < SLEEPY_PROBABILITY
   const peek = !golden && phase >= 4 && rng() < PEEK_PROBABILITY
-  // Simultaneous critters are always different species; with the full pool
-  // somehow on stage (impossible today: 7 species vs 3 concurrent), relax.
-  const pool = CRITTERS.filter((c) => !ctx.activeCritterIds.includes(c.id))
-  const critter = pool.length > 0 ? pickOne(rng, pool) : pickOne(rng, CRITTERS)
-  return { hole, critterId: critter.id, sleepy, golden, peek }
+  return { hole, critterId: pickOne(rng, CRITTERS).id, sleepy, golden, peek }
 }
 
 /**
- * Plan the next spawn: which hole, which critter, sleepy or not, and the
- * skill-driven up-time/gap. Never reuses the previous spawn's hole (no
- * same-hole back-to-back), any occupied hole, or any on-stage species.
+ * Plan the next spawn: which hole(s), which critter(s), sleepy or not, and the
+ * current up-time/gap. Never reuses the previous spawn's hole (no same-hole
+ * back-to-back) nor any currently-occupied hole.
  */
-export function planSpawn(ctx: SpawnContext, rng: Rng = Math.random): SpawnPlan {
-  const phase = phaseFor(ctx.ramp)
-  const blocked = new Set(ctx.occupiedHoles)
-  if (ctx.lastHole !== null) blocked.add(ctx.lastHole)
+export function planSpawn(
+  state: RampState,
+  occupiedHoles: readonly number[],
+  lastHole: number | null,
+  rng: Rng = Math.random,
+): SpawnPlan {
+  const phase = phaseFor(state)
+  const blocked = new Set(occupiedHoles)
+  if (lastHole !== null) blocked.add(lastHole)
 
   // If everything is somehow blocked, relax constraints rather than stall.
-  const hole =
+  const primaryHole =
     pickHole(rng, blocked) ??
-    pickHole(rng, new Set(ctx.occupiedHoles)) ??
+    pickHole(rng, new Set(occupiedHoles)) ??
     Math.floor(rng() * HOLE_COUNT)
+  const primary = rollCritter(phase, primaryHole, rng)
 
-  return {
-    spawn: rollCritter(phase, hole, ctx, rng),
-    upTimeMs: upTimeForSkill(ctx.skill),
-    gapMs: gapForSkill(ctx.skill),
+  let double: CritterSpawn | null = null
+  if (phase >= 3 && rng() < DOUBLE_PROBABILITY) {
+    blocked.add(primary.hole)
+    const doubleHole = pickHole(rng, blocked)
+    if (doubleHole !== null) double = rollCritter(phase, doubleHole, rng)
   }
+
+  return { primary, double, upTimeMs: upTimeMs(state), gapMs: gapMs(state) }
 }

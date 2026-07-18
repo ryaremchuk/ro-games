@@ -14,8 +14,6 @@ export interface WhackHoleState {
   critterVisible: boolean
   /** True if the current critter is a sleeper (the no-go stimulus). */
   sleepy: boolean
-  /** Species id of the current critter (simultaneous ones are never twins). */
-  critterId: string | null
   /** Hole opening center in css px (backing px ÷ dpr), for real-pointer taps. */
   xCss: number
   yCss: number
@@ -28,8 +26,6 @@ export interface WhackTestState {
   level: number
   /** Sleepers left to nap in peace (the go/no-go win). */
   spared: number
-  /** Adaptive motor meter 0..12 (speed + concurrency). */
-  skill: number
   /** How many holes are currently occupied (waking / rising / up / leaving). */
   activeCritters: number
   holes: WhackHoleState[]
