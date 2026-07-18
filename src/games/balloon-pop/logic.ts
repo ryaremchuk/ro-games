@@ -35,9 +35,11 @@
  * keep alternating between counting dots, reading numerals, translating
  * between the two, and matching quantity+color.
  *
- * Rhythm: the first three rounds scaffold 1 → 2 → 3 on plain dots, and every
- * CELEBRATION_EVERY_ROUNDS correct rounds a rainbow celebration marks a new
- * HUD level — a steady reward beat independent of the adaptive meter.
+ * Rhythm: the first three rounds scaffold 1 → 2 → 3 on plain dots. The HUD
+ * level badge advances on EVERY solved round, and every
+ * CELEBRATION_EVERY_ROUNDS rounds a rainbow celebration flies (pure
+ * animation) and a persistent star is banked — reward beats independent of
+ * the adaptive meters.
  */
 
 /** Injectable random source, [0, 1). Defaults to Math.random in the game. */
@@ -211,19 +213,19 @@ export function distractorValues(target: number, stage: Stage): number[] {
   return values
 }
 
-// ─── Levels (one per rainbow — steady reward rhythm) ─────────────────────────
+// ─── Levels (one per solved round — steady reward rhythm) ────────────────────
 
-/** Every 5 correct rounds: rainbow-and-stars sky celebration. */
+/** Every 5 correct rounds: rainbow-and-stars sky celebration (+ one star). */
 export const CELEBRATION_EVERY_ROUNDS = 5
 
 /**
- * 1-based level shown on the HUD badge. A level is passed exactly when its
- * rainbow celebration has flown — every CELEBRATION_EVERY_ROUNDS rounds.
- * Levels are a REWARD rhythm (rounds completed), deliberately independent of
- * the adaptive difficulty meter: the badge always moves forward.
+ * 1-based level shown on the HUD badge: every solved round passes a level.
+ * Levels are a REWARD rhythm, deliberately independent of the adaptive skill
+ * meters AND of the rainbow (which is pure animation on its every-5 beat):
+ * the badge always moves forward, one step per round.
  */
 export function levelFor(roundsCompleted: number): number {
-  return Math.floor(roundsCompleted / CELEBRATION_EVERY_ROUNDS) + 1
+  return roundsCompleted + 1
 }
 
 // ─── Task registry ───────────────────────────────────────────────────────────

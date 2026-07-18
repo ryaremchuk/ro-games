@@ -132,8 +132,10 @@ export default function OddOneOutGame() {
     [],
   )
 
-  // Standardized HUD badge mirrors the session's own L1-L5 difficulty ladder.
-  useEffect(() => reportLevel(session.level), [session.level])
+  // Standardized HUD badge: +1 per solved round (a reward counter, like
+  // every game). The adaptive L1-L5 ladder stays invisible — difficulty is
+  // never shown to the child.
+  useEffect(() => reportLevel(session.roundsCompleted + 1), [session.roundsCompleted])
 
   const setPhaseNow = (next: Phase) => {
     phaseRef.current = next

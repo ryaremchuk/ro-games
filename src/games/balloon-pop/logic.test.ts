@@ -484,12 +484,16 @@ describe('target progression', () => {
 })
 
 describe('levels', () => {
-  it('advances one level per rainbow (every 5 rounds)', () => {
+  it('passes one level per solved round, starting at 1', () => {
     expect(levelFor(0)).toBe(1)
-    expect(levelFor(CELEBRATION_EVERY_ROUNDS - 1)).toBe(1)
-    expect(levelFor(CELEBRATION_EVERY_ROUNDS)).toBe(2)
-    expect(levelFor(2 * CELEBRATION_EVERY_ROUNDS - 1)).toBe(2)
-    expect(levelFor(2 * CELEBRATION_EVERY_ROUNDS)).toBe(3)
+    expect(levelFor(1)).toBe(2)
+    expect(levelFor(7)).toBe(8)
+  })
+
+  it('moves independently of the rainbow beat (pure animation every 5)', () => {
+    expect(levelFor(CELEBRATION_EVERY_ROUNDS)).toBe(CELEBRATION_EVERY_ROUNDS + 1)
+    expect(isSkyCelebration(CELEBRATION_EVERY_ROUNDS)).toBe(true)
+    expect(isSkyCelebration(CELEBRATION_EVERY_ROUNDS - 1)).toBe(false)
   })
 })
 

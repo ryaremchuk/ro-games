@@ -1181,10 +1181,13 @@ export default class BalloonPopScene extends Phaser.Scene {
         this.time.delayedCall(i * 110, () => playTone(freq, 150, 'triangle', 0.09)),
       )
       this.roundsCompleted++
+      // Every solved round passes a level — the badge ticks with the fanfare.
+      reportLevel(levelFor(this.roundsCompleted))
       const celebrate = isSkyCelebration(this.roundsCompleted)
       if (celebrate) {
-        // The rainbow beat doubles as the reward beat: one persistent star
-        // per celebration, forever visible on the launcher tile.
+        // The rainbow is pure animation on its every-5 beat, and it doubles
+        // as the reward beat: one persistent star per celebration, forever
+        // visible on the launcher tile.
         addStars(GAME_ID)
         this.skyCelebration()
       }
@@ -1248,8 +1251,6 @@ export default class BalloonPopScene extends Phaser.Scene {
       ease: 'Sine.easeInOut',
       onUpdate: () => this.drawRainbow(progress.t),
       onComplete: () => {
-        // Rainbow finished flying — the level is passed.
-        reportLevel(levelFor(this.roundsCompleted))
         this.tweens.add({
           targets: this.rainbowGfx,
           alpha: 0,

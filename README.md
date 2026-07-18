@@ -36,10 +36,10 @@ The design rests on three decoupled currencies — skill, levels, and stars:
   week away — and climbs back at double speed while below the saved peak. The
   first minute is a friendly refresher, not a cold start at the ceiling and
   not a boring replay of level 1.
-- **Levels are a session reward rhythm.** The HUD level badge celebrates
-  showing up and playing (a rainbow every N rounds, a sticker per solve). It
-  is deliberately independent of the skill meters and resets each visit — the
-  badge only ever moves forward while you play.
+- **Levels are a session reward rhythm.** The HUD level badge ticks +1 for
+  every solved round — it is a "look how much I played" counter, deliberately
+  independent of the skill meters, and it resets each visit. Celebrations
+  (the rainbow, sparkles) are pure animations on their own periodic beat.
 - **Stars are forever.** Each celebration beat banks a star
   (`⭐` on the launcher tile). Stars accumulate across sessions and never
   decrease — the one number where the child (and the parents) can see
