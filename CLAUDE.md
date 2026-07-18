@@ -10,6 +10,11 @@ https://ryaremchuk.github.io/ro-games/. **The player cannot read yet** — every
 interaction is visual + audio, touch-first, with large hit targets and no text
 aimed at the child (text labels exist only as `aria-label`s).
 
+**North star — adaptive challenge = learning.** Every game must keep hunting
+the edge of the child's ability and nudge it forward: measure the play, adapt
+the difficulty invisibly, never boring, never frustrating. Judge every future
+feature against this: does it help the child learn and grow?
+
 ## Commands
 
 - `npm run dev` — dev server (served under the `/ro-games/` base).
