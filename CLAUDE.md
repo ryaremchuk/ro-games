@@ -70,8 +70,8 @@ calls `unlockAudio()` on the first `pointerdown`. Games call `playTone(...)`.
 
 **Progress — `src/shared/progress.ts`** persists per-game adaptive skill
 meters and reward stars in `localStorage`. Uniform rule in every game:
-passing a level (the game's own unit — solved round, cleared board, ten
-bops) ticks the badge +1 and banks one star via `addStars()`. Games with an
+passing a level (the game's own unit — solved round, bopped critter, cleared
+board) ticks the badge +1 and banks one star via `addStars()`. Games with an
 adaptive meter save it every round and start sessions below the saved value
 via `sessionStart()` (warm-up + break decay), climbing back faster below the
 saved peak. Three decoupled currencies: skill is invisible and adaptive (two

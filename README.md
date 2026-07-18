@@ -41,8 +41,9 @@ The design rests on three decoupled currencies — skill, levels, and stars:
   independent of the skill meters, and it resets each visit. Celebrations
   (the rainbow, sparkles) are pure animations on their own periodic beat.
 - **Stars are forever.** Every passed level banks one star — each game
-  defines its own level unit (a solved round, a cleared board, ten bops, a
-  freed piggy level). Stars accumulate across sessions and never decrease
+  defines its own level unit (a solved round, a bopped critter, a cleared
+  board, a freed piggy level). Stars accumulate across sessions and never
+  decrease
   (big numbers are a feature): the one number on the launcher tile where the
   child (and the parents) can see long-term progress per game, whatever the
   adaptive meters are doing.
