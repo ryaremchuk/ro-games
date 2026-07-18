@@ -5,8 +5,8 @@ import { reportLevel } from '../../shared/level'
 import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
 import {
   clampLevel,
-  earnsStar,
   initialSessionState,
+  isCelebrationSolve,
   MAX_LEVEL,
   MIN_LEVEL,
   nextPuzzle,
@@ -276,14 +276,14 @@ export default function OddOneOutGame() {
       setStickers((prev) => [...prev, { key, emoji: item.emoji, name: item.name }])
     }, STICKER_AT_MS)
     scheduleFlow(() => {
-      const before = sessionRef.current
-      const after = registerSolve(before, solved)
+      const after = registerSolve(sessionRef.current, solved)
       setSessionNow(after)
-      // Persist every solve — the ladder survives an abrupt exit — and bank
-      // a star each STAR_EVERY_SOLVES beat (shown on the launcher tile).
+      // Every solve passes a level: persist the ladder (survives an abrupt
+      // exit) and bank one star (shown on the launcher tile). The sparkle
+      // wave is pure animation on its every-5 beat.
       saveSkill(GAME_ID, { cognitive: after.level })
-      if (earnsStar(after.roundsCompleted)) addStars(GAME_ID)
-      if (after.level > before.level) spawnSparkleWave()
+      addStars(GAME_ID)
+      if (isCelebrationSolve(after.roundsCompleted)) spawnSparkleWave()
       setPuzzleNow(nextPuzzle(after, Math.random))
       setRound((r) => r + 1)
     }, NEXT_ROUND_MS)

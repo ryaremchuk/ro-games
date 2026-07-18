@@ -133,9 +133,14 @@ export interface BandState {
   roundsCompleted: number
 }
 
-export function initialBandState(rng: Rng): BandState {
+/**
+ * Fresh session state. `startLength` resumes a persisted skill (clamped to
+ * the ladder) — the sequence length IS this game's adaptive meter.
+ */
+export function initialBandState(rng: Rng, startLength: number = START_LENGTH): BandState {
+  const length = Math.min(MAX_LENGTH, Math.max(START_LENGTH, Math.round(startLength)))
   return {
-    sequence: newSequence(START_LENGTH, rng),
+    sequence: newSequence(length, rng),
     failsAtLength: 0,
     hints: false,
     roundsCompleted: 0,
@@ -184,13 +189,4 @@ export type CelebrationTier = 'cheer' | 'stars'
 /** Echoing STAR_LENGTH+ steps is exceptional for a 4yo — star shower. */
 export function celebrationTier(echoedLength: number): CelebrationTier {
   return echoedLength >= STAR_LENGTH ? 'stars' : 'cheer'
-}
-
-/**
- * 1-based HUD level = how far the sequence has grown: length 2 → L1,
- * 3 → L2, … 8 → L7. Drop-backs lower it honestly — the badge mirrors the
- * difficulty the child is actually playing at.
- */
-export function levelForLength(sequenceLength: number): number {
-  return Math.max(1, sequenceLength - START_LENGTH + 1)
 }

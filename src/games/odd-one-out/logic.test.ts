@@ -12,7 +12,7 @@ import {
   PUZZLE_SIZE,
   SHAPE_GROUPS,
   SIGNATURE_WINDOW,
-  STAR_EVERY_SOLVES,
+  CELEBRATION_EVERY_SOLVES,
   TRIO_SHAPES,
   TRIO_SIZE,
   TRIO_SUPERORDINATES,
@@ -20,7 +20,7 @@ import {
   WARMUP_FLAWLESS_TO_ADVANCE,
   clampLevel,
   dimensionForLevel,
-  earnsStar,
+  isCelebrationSolve,
   generatePuzzle,
   initialSessionState,
   nextPuzzle,
@@ -465,12 +465,12 @@ describe('session warm-up and peak fast-track', () => {
   })
 })
 
-describe('star beat', () => {
-  it(`banks a star exactly every ${STAR_EVERY_SOLVES} solves`, () => {
-    expect(earnsStar(0)).toBe(false)
-    expect(earnsStar(STAR_EVERY_SOLVES - 1)).toBe(false)
-    expect(earnsStar(STAR_EVERY_SOLVES)).toBe(true)
-    expect(earnsStar(STAR_EVERY_SOLVES + 1)).toBe(false)
-    expect(earnsStar(STAR_EVERY_SOLVES * 3)).toBe(true)
+describe('celebration beat', () => {
+  it(`fires the sparkle wave exactly every ${CELEBRATION_EVERY_SOLVES} solves`, () => {
+    expect(isCelebrationSolve(0)).toBe(false)
+    expect(isCelebrationSolve(CELEBRATION_EVERY_SOLVES - 1)).toBe(false)
+    expect(isCelebrationSolve(CELEBRATION_EVERY_SOLVES)).toBe(true)
+    expect(isCelebrationSolve(CELEBRATION_EVERY_SOLVES + 1)).toBe(false)
+    expect(isCelebrationSolve(CELEBRATION_EVERY_SOLVES * 3)).toBe(true)
   })
 })

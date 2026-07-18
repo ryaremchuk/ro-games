@@ -112,12 +112,16 @@ its ceiling), and the chosen hybrid:
   round — speed must not pile onto struggle. Games with one real skill (Odd
   One Out's category ladder) persist a single axis; the store is
   axis-name-agnostic.
-- **Stars, not levels, are the persistent trophy.** Levels stay a
-  session-scoped reward rhythm (they only move forward while playing); stars
-  bank one per celebration beat, live forever, and show on the launcher tile.
-  Rewarding the _beat_ (effort) rather than level-ups keeps the economy fair:
-  a child at the skill ceiling still earns stars at the same rate as one
-  still climbing.
+- **Stars, not levels, are the persistent trophy.** One uniform rule across
+  every game: passing a level (each game's own unit — a solved round, a
+  cleared board, ten bops, a freed piggy level) ticks the badge +1 AND banks
+  one forever-star on the launcher tile. Levels stay session-scoped (badge
+  resets each visit, only ever moves forward); stars never reset and big
+  counts are deliberate. Celebrations (rainbow, sparkles, confetti) are pure
+  animations on their own per-game beats (`CELEBRATION_EVERY_*` constants) —
+  they gate nothing, and games without one don't get one. Rewarding effort
+  rather than skill keeps the economy fair: a child at the skill ceiling
+  earns stars at the same rate as one still climbing.
 
 ## Deferred (not done yet, on purpose)
 

@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { clearLevel, reportLevel } from '../../shared/level'
+import { addStars } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   BALL,
@@ -1479,6 +1480,9 @@ export default class SlingshotScene extends Phaser.Scene {
     this.levelClearing = true
     this.canAim = false
     this.aiming = false
+    // Level cleared = one persistent star on the launcher tile — but never
+    // in the editor: a play-test win must not hand out rewards.
+    if (!this.editorOn) addStars('slingshot')
     // Arm the star-drop hand-off now (before the 2.5s rainbow) so a resize
     // mid-celebration replays this level instead of skipping past the reward.
     this.starDropPending = shouldShowStarDrop(this.level, this.editorOn)

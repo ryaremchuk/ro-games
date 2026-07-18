@@ -16,7 +16,6 @@ import {
   checkTap,
   extendSequence,
   initialBandState,
-  levelForLength,
   newSequence,
   randomPad,
   stageBand,
@@ -273,23 +272,26 @@ describe('celebration tiers', () => {
   })
 })
 
-describe('levels', () => {
-  it('maps sequence length straight onto the HUD level', () => {
-    expect(levelForLength(START_LENGTH)).toBe(1)
-    expect(levelForLength(START_LENGTH + 1)).toBe(2)
-    expect(levelForLength(MAX_LENGTH)).toBe(MAX_LENGTH - START_LENGTH + 1)
-    expect(levelForLength(0)).toBe(1) // defensive: never below level 1
+describe('persisted session start', () => {
+  it('seeds the sequence at the saved length, clamped to the ladder', () => {
+    const rng = mulberry32(5)
+    expect(initialBandState(rng, 5).sequence.length).toBe(5)
+    expect(initialBandState(rng, 0).sequence.length).toBe(START_LENGTH)
+    expect(initialBandState(rng, 99).sequence.length).toBe(MAX_LENGTH)
+    // Default stays the working-memory-friendly floor.
+    expect(initialBandState(rng).sequence.length).toBe(START_LENGTH)
   })
 
-  it('follows the band state up and back down on drop-backs', () => {
-    const rng = mulberry32(5)
-    let state = initialBandState(rng)
-    expect(levelForLength(state.sequence.length)).toBe(1)
+  it('a seeded start still counts rounds from zero (badge is per-session)', () => {
+    const rng = mulberry32(6)
+    let state = initialBandState(rng, 5)
+    expect(state.roundsCompleted).toBe(0)
     state = applySuccess(state, rng)
-    state = applySuccess(state, rng)
-    expect(levelForLength(state.sequence.length)).toBe(3)
+    expect(state.roundsCompleted).toBe(1)
+    expect(state.sequence.length).toBe(6)
     state = applyFail(state)
     state = applyFail(state) // second consecutive fail drops one step
-    expect(levelForLength(state.sequence.length)).toBe(2)
+    expect(state.sequence.length).toBe(5)
+    expect(state.roundsCompleted).toBe(1)
   })
 })

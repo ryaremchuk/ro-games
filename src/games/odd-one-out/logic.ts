@@ -609,12 +609,12 @@ export const WARMUP_FLAWLESS_TO_ADVANCE = 1
 /** Misses within a single round that trigger a gentle drop (BETWEEN rounds). */
 export const MISSES_TO_DROP = 2
 
-/** Every this many solved rounds the child banks a persistent star. */
-export const STAR_EVERY_SOLVES = 5
+/** Every this many solved rounds: the sparkle-wave celebration (animation). */
+export const CELEBRATION_EVERY_SOLVES = 5
 
-/** A star is banked exactly when a solve total crosses the beat. */
-export function earnsStar(roundsCompleted: number): boolean {
-  return roundsCompleted > 0 && roundsCompleted % STAR_EVERY_SOLVES === 0
+/** The celebration fires exactly when a solve total crosses the beat. */
+export function isCelebrationSolve(roundsCompleted: number): boolean {
+  return roundsCompleted > 0 && roundsCompleted % CELEBRATION_EVERY_SOLVES === 0
 }
 
 export interface SessionState {

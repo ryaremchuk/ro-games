@@ -64,13 +64,16 @@ audio asset files). iOS keeps audio suspended until a user gesture; `GameFrame`
 calls `unlockAudio()` on the first `pointerdown`. Games call `playTone(...)`.
 
 **Progress — `src/shared/progress.ts`** persists per-game adaptive skill
-meters and reward stars in `localStorage`. Games save skill after every round,
-start sessions below the saved value via `sessionStart()` (warm-up + break
-decay) and climb back faster while below the saved peak; `addStars()` banks
-one star per celebration beat, shown on the launcher tile. Three decoupled
-currencies: skill is invisible and adaptive (two axes — motor/cognitive —
-where the skills differ), levels are a session-scoped reward rhythm, stars
-are forever. See `docs/DECISIONS.md` ("Progress: two-axis adaptive skill").
+meters and reward stars in `localStorage`. Uniform rule in every game:
+passing a level (the game's own unit — solved round, cleared board, ten
+bops) ticks the badge +1 and banks one star via `addStars()`. Games with an
+adaptive meter save it every round and start sessions below the saved value
+via `sessionStart()` (warm-up + break decay), climbing back faster below the
+saved peak. Three decoupled currencies: skill is invisible and adaptive (two
+axes — motor/cognitive — where the skills differ), levels are a
+session-scoped reward rhythm, stars are forever. Celebrations are pure
+animations on per-game `CELEBRATION_EVERY_*` beats. See `docs/DECISIONS.md`
+("Progress: two-axis adaptive skill").
 
 ## Conventions & constraints
 

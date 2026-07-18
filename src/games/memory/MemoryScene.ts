@@ -1,11 +1,15 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
+import { addStars } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import { CARD_SUBJECTS, PAW_PRINT } from './art'
 import type { ArtSubject } from './art'
 import { cardsForLevel, dealBoard, isMatch, rowsFor } from './logic'
 import type { MemoryTestApi } from './testHook'
+
+/** Registry id — also the key the shared progress store files this under. */
+const GAME_ID = 'memory'
 
 // ─── Palette (art spec) ──────────────────────────────────────────────────────
 const SKY = 0xbbe3f5
@@ -685,6 +689,8 @@ export default class MemoryScene extends Phaser.Scene {
 
   private startLevelComplete(): void {
     this.celebrating = true
+    // Board cleared = level passed: one persistent star on the launcher tile.
+    addStars(GAME_ID)
 
     this.schedule(400, () => this.waveHop())
     this.schedule(500, () => this.confetti.start())

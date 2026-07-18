@@ -40,10 +40,12 @@ The design rests on three decoupled currencies — skill, levels, and stars:
   every solved round — it is a "look how much I played" counter, deliberately
   independent of the skill meters, and it resets each visit. Celebrations
   (the rainbow, sparkles) are pure animations on their own periodic beat.
-- **Stars are forever.** Each celebration beat banks a star
-  (`⭐` on the launcher tile). Stars accumulate across sessions and never
-  decrease — the one number where the child (and the parents) can see
-  long-term progress per game, whatever the adaptive meters are doing.
+- **Stars are forever.** Every passed level banks one star — each game
+  defines its own level unit (a solved round, a cleared board, ten bops, a
+  freed piggy level). Stars accumulate across sessions and never decrease
+  (big numbers are a feature): the one number on the launcher tile where the
+  child (and the parents) can see long-term progress per game, whatever the
+  adaptive meters are doing.
 - **No-fail, soft errors.** A wrong tap wobbles and boops, matching items glow
   as an escalating hint, and difficulty eases down before a child can get
   stuck. Struggling changes the game; it never punishes the player.
