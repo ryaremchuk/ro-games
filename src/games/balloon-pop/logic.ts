@@ -11,16 +11,25 @@
  * start ±2 away (easy discrimination) and tighten to ±1 (the real subitizing
  * test); numeral balloons appear later to build the numeral↔quantity link.
  *
- * Progression is driven by an adaptive DIFFICULTY meter (0..12), not by raw
- * round count: a clean, quick round nudges it up one step, a round that
- * needed the glow hint eases it down one step, everything else holds. The
- * child therefore always plays at the edge of their ability — a struggling
- * player stays in the friendly zone, a flying one reaches variety sooner.
- * Difficulty maps onto every knob: target range, distractor tightness, dot
- * layouts, rise speed, concurrent balloons, and which TASK TYPES are in the
- * rotation.
+ * Progression is driven by TWO adaptive skill meters (0..12 each), not by
+ * raw round count — different muscles, different signals, different knobs:
+ * - COGNITIVE (counting/matching): errors are wrong-balloon taps. A clean,
+ *   quick round nudges it up; a hint-triggering round eases it down. Drives
+ *   target range, distractor tightness, dot layouts and which TASK TYPES
+ *   rotate.
+ * - MOTOR (catching): errors are matching balloons escaping off the top.
+ *   Drives rise speed and concurrent balloons. It never climbs during a
+ *   cognitively rough round — speed must not pile onto struggle.
+ * The child therefore always plays at the edge of their ability on each
+ * axis independently — great counting on slow fingers (or the reverse) gets
+ * the right challenge on both.
  *
- * Task types live in a small registry (TASKS). Each unlocks at a difficulty
+ * Both meters persist across sessions (shared/progress.ts): a session
+ * starts a couple of steps below the saved value (plus one more per week
+ * away) and up-steps are doubled while below the saved peak — a short
+ * warm-up ramp instead of a cold start at the ceiling.
+ *
+ * Task types live in a small registry (TASKS). Each unlocks at a cognitive
  * threshold and is picked per-round by weight, never repeating more than
  * MAX_TASK_REPEAT times in a row once alternatives exist — so long sessions
  * keep alternating between counting dots, reading numerals, translating
@@ -73,62 +82,101 @@ export const BALLOON_SHAPES: readonly BalloonShapeKind[] = [
   'star',
 ]
 
-// ─── Adaptive difficulty meter ───────────────────────────────────────────────
+// ─── Adaptive skill meters ───────────────────────────────────────────────────
 
-export const DIFFICULTY_START = 0
-export const DIFFICULTY_MAX = 12
+export const SKILL_START = 0
+export const SKILL_MAX = 12
+
+/**
+ * The two independent adaptive axes (see the header brief). A type alias (not
+ * an interface) so it stays assignable to progress.saveSkill's axis record.
+ */
+export type SkillPair = {
+  /** Catching skill — rise speed, concurrent balloons. */
+  motor: number
+  /** Counting skill — targets, distractors, layouts, task rotation. */
+  cognitive: number
+}
 
 /**
  * A correct round faster than this (and with no wrong taps) counts as "clean"
- * and nudges difficulty up. Generous on purpose: the timer starts when the
+ * and nudges the meters up. Generous on purpose: the timer starts when the
  * sign appears, and a matching balloon may take a while to float within reach.
  */
 export const FAST_ROUND_MS = 20_000
 
+/** Matching balloons escaping off the top this often eases the MOTOR axis. */
+export const MATCH_ESCAPES_BEFORE_EASE = 2
+
 /** What the scene reports after every completed round. */
 export interface RoundResult {
-  /** Wrong balloons tapped before the match was popped. */
+  /** Wrong balloons tapped before the match was popped (cognitive errors). */
   wrongTaps: number
+  /** Matching balloons that drifted off-screen unpopped (motor errors). */
+  matchEscapes: number
   /** Time from round start to the correct pop, ms. */
   ms: number
 }
 
-/**
- * One adaptive step per round, never more (|Δ| ≤ 1, clamped to 0..MAX):
- * clean & quick → +1; needed the glow hint (≥ WRONG_TAPS_BEFORE_HINT wrong
- * taps) → −1; everything else (one slip, or correct but slow) holds steady.
- * Asymmetry is deliberate — no-fail design means struggling eases the game
- * gently rather than punishing.
- */
-export function updateDifficulty(difficulty: number, result: RoundResult): number {
-  const d = Math.min(Math.max(Math.round(difficulty), 0), DIFFICULTY_MAX)
-  if (result.wrongTaps >= WRONG_TAPS_BEFORE_HINT) return Math.max(0, d - 1)
-  if (result.wrongTaps > 0) return d
-  if (result.ms > FAST_ROUND_MS) return d
-  return Math.min(DIFFICULTY_MAX, d + 1)
+function clampSkill(value: number): number {
+  return Math.min(Math.max(Math.round(value), SKILL_START), SKILL_MAX)
 }
 
-// ─── Stage bands (difficulty → knob presets) ─────────────────────────────────
+/**
+ * One adaptive step per axis per round (clamped to 0..MAX), asymmetric by
+ * design — no-fail means struggling eases the game gently, never punishes:
+ * - cognitive: hint needed (≥ WRONG_TAPS_BEFORE_HINT wrong taps) → −1; one
+ *   slip or a slow round → hold; clean & quick → up.
+ * - motor: the match got away MATCH_ESCAPES_BEFORE_EASE times → −1; one
+ *   escape, a slow round or a cognitively rough one → hold; clean & quick
+ *   with nothing escaping → up.
+ * Up-steps double (+2) while an axis sits below its saved PEAK, so the
+ * session warm-up (shared/progress.sessionStart) lasts rounds, not minutes.
+ */
+export function updateSkill(
+  skill: SkillPair,
+  result: RoundResult,
+  peak: SkillPair = { motor: SKILL_START, cognitive: SKILL_START },
+): SkillPair {
+  const motor = clampSkill(skill.motor)
+  const cognitive = clampSkill(skill.cognitive)
+  const clean = result.wrongTaps === 0 && result.ms <= FAST_ROUND_MS
+  const rough = result.wrongTaps >= WRONG_TAPS_BEFORE_HINT
+
+  let nextCognitive = cognitive
+  if (rough) nextCognitive = cognitive - 1
+  else if (clean) nextCognitive = cognitive + (cognitive < peak.cognitive ? 2 : 1)
+
+  let nextMotor = motor
+  if (result.matchEscapes >= MATCH_ESCAPES_BEFORE_EASE) nextMotor = motor - 1
+  else if (clean && result.matchEscapes === 0) {
+    nextMotor = motor + (motor < peak.motor ? 2 : 1)
+  }
+
+  return { motor: clampSkill(nextMotor), cognitive: clampSkill(nextCognitive) }
+}
+
+// ─── Stage bands (cognitive skill → knob presets) ────────────────────────────
 
 export type Stage = 1 | 2 | 3 | 4
 
-/** Difficulty at which 4 joins the target pool. */
-export const STAGE2_DIFFICULTY = 3
-/** Difficulty at which 5 (stretch) and scatter layouts join. */
-export const STAGE3_DIFFICULTY = 6
-/** Difficulty of the hardest band. */
-export const STAGE4_DIFFICULTY = 9
+/** Cognitive skill at which 4 joins the target pool. */
+export const STAGE2_COGNITIVE = 3
+/** Cognitive skill at which 5 (stretch) and scatter layouts join. */
+export const STAGE3_COGNITIVE = 6
+/** Cognitive skill of the hardest band. */
+export const STAGE4_COGNITIVE = 9
 
 /**
- * S1: targets 1-3, dice/line layouts, distractors ±2..3 →
- * S2: 4 joins, 4 concurrent balloons → S3: 5 (stretch) + scatter layouts +
- * distractors tighten to ±1..2 → S4: everything at full stretch. Monotonic
- * in difficulty; difficulty itself moves both ways (adaptive).
+ * S1: targets 1-3, dice/line layouts, distractors ±2..3 → S2: 4 joins →
+ * S3: 5 (stretch) + scatter layouts + distractors tighten to ±1..2 →
+ * S4: everything at full stretch. Monotonic in cognitive skill; the meter
+ * itself moves both ways (adaptive).
  */
-export function stageFor(difficulty: number): Stage {
-  if (difficulty >= STAGE4_DIFFICULTY) return 4
-  if (difficulty >= STAGE3_DIFFICULTY) return 3
-  if (difficulty >= STAGE2_DIFFICULTY) return 2
+export function stageFor(cognitive: number): Stage {
+  if (cognitive >= STAGE4_COGNITIVE) return 4
+  if (cognitive >= STAGE3_COGNITIVE) return 3
+  if (cognitive >= STAGE2_COGNITIVE) return 2
   return 1
 }
 
@@ -186,8 +234,8 @@ export type TaskId = 'count-dots' | 'count-numerals' | 'cross-rep' | 'color-coun
 
 export interface TaskDef {
   id: TaskId
-  /** Difficulty at which this task joins the rotation. */
-  minDifficulty: number
+  /** Cognitive skill at which this task joins the rotation. */
+  minCognitive: number
   /** Relative pick weight once unlocked. */
   weight: number
 }
@@ -203,10 +251,10 @@ export interface TaskDef {
  * Adding a task type = one entry here + a branch in planRound.
  */
 export const TASKS: readonly TaskDef[] = [
-  { id: 'count-dots', minDifficulty: 0, weight: 4 },
-  { id: 'count-numerals', minDifficulty: 5, weight: 2 },
-  { id: 'cross-rep', minDifficulty: 8, weight: 2 },
-  { id: 'color-count', minDifficulty: 10, weight: 2 },
+  { id: 'count-dots', minCognitive: 0, weight: 4 },
+  { id: 'count-numerals', minCognitive: 5, weight: 2 },
+  { id: 'cross-rep', minCognitive: 8, weight: 2 },
+  { id: 'color-count', minCognitive: 10, weight: 2 },
 ]
 
 /** A task never runs more than this many rounds in a row (once others exist). */
@@ -215,9 +263,9 @@ export const MAX_TASK_REPEAT = 2
 /** First rounds scaffold 1 → 2 → 3 on plain dots regardless of the picker. */
 export const SCAFFOLD_ROUNDS = 3
 
-/** Tasks available at a difficulty, in registry order. */
-export function unlockedTasks(difficulty: number): TaskDef[] {
-  return TASKS.filter((task) => difficulty >= task.minDifficulty)
+/** Tasks available at a cognitive skill, in registry order. */
+export function unlockedTasks(cognitive: number): TaskDef[] {
+  return TASKS.filter((task) => cognitive >= task.minCognitive)
 }
 
 /**
@@ -225,8 +273,8 @@ export function unlockedTasks(difficulty: number): TaskDef[] {
  * a task that has already run MAX_TASK_REPEAT times in a row — variety is the
  * point of the registry. With only one task unlocked, repeats are allowed.
  */
-export function pickTask(difficulty: number, recent: readonly TaskId[], rng: Rng): TaskId {
-  let pool = unlockedTasks(difficulty)
+export function pickTask(cognitive: number, recent: readonly TaskId[], rng: Rng): TaskId {
+  let pool = unlockedTasks(cognitive)
   if (pool.length > 1 && recent.length >= MAX_TASK_REPEAT) {
     const last = recent[recent.length - 1]
     const ranOut = recent.slice(-MAX_TASK_REPEAT).every((id) => id === last)
@@ -261,8 +309,8 @@ export interface RoundPlan {
 }
 
 export interface PlanRoundInput {
-  /** Adaptive difficulty meter, 0..DIFFICULTY_MAX. */
-  difficulty: number
+  /** Adaptive skill meters, each 0..SKILL_MAX. */
+  skill: SkillPair
   /** Total correct rounds so far — drives the scaffold and celebrations. */
   roundsCompleted: number
   /** Previous round's target (never repeated back-to-back). */
@@ -278,8 +326,8 @@ export interface PlanRoundInput {
  * representations.
  */
 export function planRound(input: PlanRoundInput, rng: Rng = Math.random): RoundPlan {
-  const { difficulty, roundsCompleted, prevTarget } = input
-  const stage = stageFor(difficulty)
+  const { skill, roundsCompleted, prevTarget } = input
+  const stage = stageFor(skill.cognitive)
   const scaffolding = roundsCompleted < SCAFFOLD_ROUNDS
   const taskId: TaskId = scaffolding ? 'count-dots' : input.taskId
 
@@ -320,14 +368,17 @@ export function planRound(input: PlanRoundInput, rng: Rng = Math.random): RoundP
     promptKind,
     balloonKind,
     targetColorIndex,
-    concurrent: concurrentBalloonsFor(stage),
+    concurrent: concurrentBalloonsFor(skill.motor),
     distractors: distractorValues(target, stage),
   }
 }
 
-/** Concurrent balloons afloat: 3 during warm-up, 4 afterwards. */
-export function concurrentBalloonsFor(stage: Stage): number {
-  return stage === 1 ? 3 : 4
+/** Motor skill at which a fourth concurrent balloon joins the sky. */
+export const CONCURRENT_MOTOR_THRESHOLD = 3
+
+/** Concurrent balloons afloat: 3 while motor skill warms up, 4 afterwards. */
+export function concurrentBalloonsFor(motor: number): number {
+  return motor < CONCURRENT_MOTOR_THRESHOLD ? 3 : 4
 }
 
 // ─── Speed ramp (slow floats, gentle increase) ───────────────────────────────
@@ -341,11 +392,11 @@ export const RISE_SPEED_MAX = 55
 export const RISE_JITTER = 0.15
 
 /**
- * Base rise speed for a difficulty — monotonic, clamped. Rides the adaptive
- * meter, so a struggling player's sky literally slows back down.
+ * Base rise speed for a motor skill — monotonic, clamped. Rides the adaptive
+ * meter, so a struggling catcher's sky literally slows back down.
  */
-export function baseRiseSpeed(difficulty: number): number {
-  const t = Math.min(Math.max(difficulty, 0) / DIFFICULTY_MAX, 1)
+export function baseRiseSpeed(motor: number): number {
+  const t = Math.min(Math.max(motor, 0) / SKILL_MAX, 1)
   return RISE_SPEED_START + (RISE_SPEED_MAX - RISE_SPEED_START) * t
 }
 
@@ -394,8 +445,8 @@ export const LINE_PROBABILITY = 0.35
 
 export interface SpawnContext {
   round: RoundPlan
-  /** Adaptive difficulty meter (drives layouts and speed). */
-  difficulty: number
+  /** Adaptive skill meters (cognitive drives layouts, motor drives speed). */
+  skill: SkillPair
   /** Matching balloons currently afloat (or already planned). */
   activeMatchCount: number
   /** x fractions of balloons currently afloat, for horizontal spacing. */
@@ -427,7 +478,7 @@ function pickXFrac(activeXFracs: readonly number[], rng: Rng): number {
  * so the target is always reachable.
  */
 export function planBalloon(ctx: SpawnContext, rng: Rng = Math.random): BalloonSpec {
-  const stage = stageFor(ctx.difficulty)
+  const stage = stageFor(ctx.skill.cognitive)
   const { round } = ctx
 
   const mustMatch = ctx.activeMatchCount === 0 && !ctx.matchPlanned
@@ -459,7 +510,7 @@ export function planBalloon(ctx: SpawnContext, rng: Rng = Math.random): BalloonS
     kind: round.balloonKind,
     layout: pickLayout(stage, rng),
     colorIndex,
-    speedCss: baseRiseSpeed(ctx.difficulty) * jitter,
+    speedCss: baseRiseSpeed(ctx.skill.motor) * jitter,
     swayAmpCss: 10 + rng() * 14,
     swayPeriodMs: 1800 + rng() * 1400,
     xFrac: pickXFrac(ctx.activeXFracs, rng),
@@ -475,7 +526,7 @@ export function planBalloon(ctx: SpawnContext, rng: Rng = Math.random): BalloonS
  */
 export function planInitialWave(
   round: RoundPlan,
-  difficulty: number,
+  skill: SkillPair,
   rng: Rng = Math.random,
   lastColorIndex: number | null = null,
 ): BalloonSpec[] {
@@ -488,7 +539,7 @@ export function planInitialWave(
     const spec = planBalloon(
       {
         round,
-        difficulty,
+        skill,
         activeMatchCount: matches,
         activeXFracs: xs,
         lastColorIndex: lastColor,

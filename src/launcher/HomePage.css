@@ -29,6 +29,7 @@
 .home-tile {
   /* Square tiles sized by the grid column, so phones get the same 3-across
      layout as big screens, just smaller. */
+  position: relative;
   width: 100%;
   aspect-ratio: 1 / 1;
   container-type: inline-size;
@@ -58,4 +59,28 @@
   font-size: 15vw;
   font-size: 48cqi;
   line-height: 1;
+}
+
+/* Persistent star count — cumulative progress a pre-reader can watch grow. */
+.home-tile-stars {
+  position: absolute;
+  bottom: 5cqi;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2cqi;
+  padding: 1.5cqi 5cqi;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #3d3a4b;
+  font-size: 9cqi;
+  line-height: 1.4;
+  font-weight: 800;
+  font-family: 'Arial Rounded MT Bold', 'Helvetica Neue', system-ui, sans-serif;
+  box-shadow: 0 2cqi 0 rgba(0, 0, 0, 0.08);
+}
+
+.home-tile-stars-icon {
+  font-size: 8cqi;
 }

@@ -12,10 +12,15 @@ import {
   PUZZLE_SIZE,
   SHAPE_GROUPS,
   SIGNATURE_WINDOW,
+  STAR_EVERY_SOLVES,
   TRIO_SHAPES,
   TRIO_SIZE,
   TRIO_SUPERORDINATES,
+  WARMUP_CORRECT_TO_ADVANCE,
+  WARMUP_FLAWLESS_TO_ADVANCE,
+  clampLevel,
   dimensionForLevel,
+  earnsStar,
   generatePuzzle,
   initialSessionState,
   nextPuzzle,
@@ -401,5 +406,71 @@ describe('session state machine', () => {
       const puzzle = nextPuzzle(stateAtLevel(level), mulberry32(7))
       expect(puzzle.level).toBe(level)
     }
+  })
+})
+
+// ─── Persistence warm-up (session start below the saved peak) ────────────────
+
+describe('session warm-up and peak fast-track', () => {
+  const solvedPuzzle = (level: Level, seed = 1) => generatePuzzle(level, mulberry32(seed))
+
+  it('seeds start and peak levels, clamped to the ladder', () => {
+    const state = initialSessionState(3, 4)
+    expect(state.level).toBe(3)
+    expect(state.peakLevel).toBe(4)
+    // Peak can never sit below the start.
+    expect(initialSessionState(4, 2).peakLevel).toBe(4)
+    expect(initialSessionState(9 as Level, 9 as Level).level).toBe(MAX_LEVEL)
+    expect(clampLevel(0)).toBe(MIN_LEVEL)
+    expect(clampLevel(99)).toBe(MAX_LEVEL)
+  })
+
+  it(`climbs after ${WARMUP_CORRECT_TO_ADVANCE} correct (not ${CORRECT_TO_ADVANCE}) below the peak`, () => {
+    let state = initialSessionState(2, 4)
+    for (let i = 0; i < WARMUP_CORRECT_TO_ADVANCE; i++) {
+      expect(state.level).toBe(2)
+      state = registerMiss(state) // one miss per round: correct, never flawless
+      state = registerSolve(state, solvedPuzzle(2, i + 1))
+    }
+    expect(state.level).toBe(3)
+  })
+
+  it(`fast-tracks after ${WARMUP_FLAWLESS_TO_ADVANCE} flawless below the peak`, () => {
+    let state = initialSessionState(2, 4)
+    state = registerSolve(state, solvedPuzzle(2, 1))
+    expect(state.level).toBe(3)
+  })
+
+  it('returns to normal pacing once the peak is reached', () => {
+    let state = initialSessionState(3, 4)
+    state = registerSolve(state, solvedPuzzle(3, 1)) // warm-up flawless → L4 = peak
+    expect(state.level).toBe(4)
+    state = registerSolve(state, solvedPuzzle(4, 2)) // at peak: one flawless is not enough
+    expect(state.level).toBe(4)
+    state = registerSolve(state, solvedPuzzle(4, 3)) // two flawless → normal fast-track
+    expect(state.level).toBe(5)
+    expect(state.peakLevel).toBe(5)
+  })
+
+  it('keeps the peak intact through a mid-session drop', () => {
+    let state = initialSessionState(4, 4)
+    state = registerMiss(state)
+    state = registerMiss(state)
+    state = registerSolve(state, solvedPuzzle(4, 1)) // rough round → L3
+    expect(state.level).toBe(3)
+    expect(state.peakLevel).toBe(4)
+    // Below the peak again, so the way back is the fast one.
+    state = registerSolve(state, solvedPuzzle(3, 2))
+    expect(state.level).toBe(4)
+  })
+})
+
+describe('star beat', () => {
+  it(`banks a star exactly every ${STAR_EVERY_SOLVES} solves`, () => {
+    expect(earnsStar(0)).toBe(false)
+    expect(earnsStar(STAR_EVERY_SOLVES - 1)).toBe(false)
+    expect(earnsStar(STAR_EVERY_SOLVES)).toBe(true)
+    expect(earnsStar(STAR_EVERY_SOLVES + 1)).toBe(false)
+    expect(earnsStar(STAR_EVERY_SOLVES * 3)).toBe(true)
   })
 })

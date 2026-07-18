@@ -1,11 +1,13 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
+import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   BALLOON_COLORS,
   BALLOON_SHAPES,
-  DIFFICULTY_START,
+  SKILL_MAX,
+  SKILL_START,
   dotPositions,
   isSkyCelebration,
   levelFor,
@@ -14,9 +16,12 @@ import {
   planInitialWave,
   planRound,
   shouldShowHint,
-  updateDifficulty,
+  updateSkill,
 } from './logic'
-import type { BalloonSpec, RoundPlan, TaskId } from './logic'
+import type { BalloonSpec, RoundPlan, SkillPair, TaskId } from './logic'
+
+/** Registry id — also the key the shared progress store files this under. */
+const GAME_ID = 'balloon-pop'
 
 /**
  * AI-generated sprites (see .claude/skills/art-atlas-slice). Adding art =
@@ -118,11 +123,15 @@ export default class BalloonPopScene extends Phaser.Scene {
   private roundId = 0
   private roundActive = false
   private wrongTaps = 0
+  private matchEscapes = 0
   private hintOn = false
   private lastColorIndex: number | null = null
-  // Adaptive difficulty: nudged after every completed round (see logic.ts),
-  // plus the recent task ids so the picker can enforce variety.
-  private difficulty = DIFFICULTY_START
+  // Adaptive skill meters: nudged after every completed round (see logic.ts),
+  // persisted via shared/progress.ts, plus the recent task ids so the picker
+  // can enforce variety. `peak` is the best-ever saved value — while below
+  // it, up-steps double (session warm-up).
+  private skill: SkillPair = { motor: SKILL_START, cognitive: SKILL_START }
+  private peak: SkillPair = { motor: SKILL_START, cognitive: SKILL_START }
   private recentTasks: TaskId[] = []
   private roundStartAt = 0
 
@@ -187,6 +196,20 @@ export default class BalloonPopScene extends Phaser.Scene {
 
   create(): void {
     this.dpr = Math.min(window.devicePixelRatio || 1, 3)
+
+    // Resume the saved skill meters a couple of steps down (warm-up ramp);
+    // the peak lets updateSkill climb back at double speed.
+    const saved = loadProgress(GAME_ID)
+    const startOptions = { max: SKILL_MAX, lastPlayedAt: saved.lastPlayedAt }
+    this.skill = {
+      motor: sessionStart(saved.skill.motor ?? SKILL_START, startOptions),
+      cognitive: sessionStart(saved.skill.cognitive ?? SKILL_START, startOptions),
+    }
+    this.peak = {
+      motor: Math.max(saved.skill.motor ?? SKILL_START, this.skill.motor),
+      cognitive: Math.max(saved.skill.cognitive ?? SKILL_START, this.skill.cognitive),
+    }
+
     this.makeTextures()
 
     this.bgGfx = this.add.graphics().setDepth(0)
@@ -658,14 +681,15 @@ export default class BalloonPopScene extends Phaser.Scene {
     for (const timer of this.waveTimers) timer.remove(false)
     this.waveTimers = []
     this.wrongTaps = 0
+    this.matchEscapes = 0
     this.hintOn = false
     this.roundActive = true
     this.round = planRound(
       {
-        difficulty: this.difficulty,
+        skill: this.skill,
         roundsCompleted: this.roundsCompleted,
         prevTarget: this.prevTarget,
-        taskId: pickTask(this.difficulty, this.recentTasks, Math.random),
+        taskId: pickTask(this.skill.cognitive, this.recentTasks, Math.random),
       },
       Math.random,
     )
@@ -781,7 +805,7 @@ export default class BalloonPopScene extends Phaser.Scene {
   private spawnWave(): void {
     if (!this.round) return
     const roundId = this.roundId
-    const specs = planInitialWave(this.round, this.difficulty, Math.random, this.lastColorIndex)
+    const specs = planInitialWave(this.round, this.skill, Math.random, this.lastColorIndex)
     specs.forEach((spec, i) => {
       this.waveTimers.push(
         this.time.delayedCall(200 + i * 300, () => {
@@ -954,13 +978,15 @@ export default class BalloonPopScene extends Phaser.Scene {
    * match afloat, the replacement IS a match.
    */
   private recycleBalloon(slot: BalloonSlot): void {
+    // A matching balloon the child never caught = a motor-axis error signal.
+    if (this.roundActive && slot.spec?.isMatch) this.matchEscapes++
     this.releaseSlot(slot)
     if (!this.roundActive || !this.round) return
     const actives = this.slots.filter((s) => s.spec !== null && s.state === 'rising')
     const spec = planBalloon(
       {
         round: this.round,
-        difficulty: this.difficulty,
+        skill: this.skill,
         activeMatchCount: actives.filter((s) => s.spec?.isMatch).length,
         // Authoring-space xFracs (what pickXFrac compares against) — NOT
         // baseX/width, which lives in a slightly different screen space.
@@ -1025,11 +1051,23 @@ export default class BalloonPopScene extends Phaser.Scene {
     const spec = slot.spec
     if (!spec) return
     this.roundActive = false
-    // Adaptive nudge: clean & quick raises difficulty, a hinted round eases it.
-    this.difficulty = updateDifficulty(this.difficulty, {
-      wrongTaps: this.wrongTaps,
-      ms: this.time.now - this.roundStartAt,
-    })
+    // Adaptive nudge per axis: wrong taps steer cognitive, escapes steer
+    // motor (see logic.updateSkill). Saved every round — progress survives
+    // an abrupt exit (toddlers don't do graceful shutdowns).
+    this.skill = updateSkill(
+      this.skill,
+      {
+        wrongTaps: this.wrongTaps,
+        matchEscapes: this.matchEscapes,
+        ms: this.time.now - this.roundStartAt,
+      },
+      this.peak,
+    )
+    this.peak = {
+      motor: Math.max(this.peak.motor, this.skill.motor),
+      cognitive: Math.max(this.peak.cognitive, this.skill.cognitive),
+    }
+    saveSkill(GAME_ID, this.skill)
     slot.state = 'popping'
     slot.body.disableInteractive()
     for (const timer of this.beepTimers) timer.remove(false)
@@ -1144,7 +1182,12 @@ export default class BalloonPopScene extends Phaser.Scene {
       )
       this.roundsCompleted++
       const celebrate = isSkyCelebration(this.roundsCompleted)
-      if (celebrate) this.skyCelebration()
+      if (celebrate) {
+        // The rainbow beat doubles as the reward beat: one persistent star
+        // per celebration, forever visible on the launcher tile.
+        addStars(GAME_ID)
+        this.skyCelebration()
+      }
       this.time.delayedCall(celebrate ? 1500 : 550, () => this.startRound())
     })
   }

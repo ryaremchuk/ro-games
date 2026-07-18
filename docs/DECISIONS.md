@@ -92,6 +92,33 @@ check just fails quietly and the cached version keeps playing.
 - **Lighthouse CI** guards performance / accessibility / best-practices as
   warnings for now; tighten to errors once the baselines are known.
 
+## Progress: two-axis adaptive skill + warm-up start + stars
+
+Decided when persistence landed (July 2026), after weighing three options for
+"where does a session start": always-from-zero (bored a returning child with
+re-learned basics), exact-resume (cold-started a fluctuating 3-4yo skill at
+its ceiling), and the chosen hybrid:
+
+- **Skill meters persist, sessions start below them.** Saved to
+  `localStorage` after every round (`src/shared/progress.ts` — toddlers don't
+  do graceful shutdowns), restored minus `WARMUP_DROP`, minus one step per
+  week away, and climbed back at doubled up-steps while below the saved peak.
+  The warm-up doubles as re-teaching, and it lasts rounds, not half a session.
+- **Two axes where the skills differ.** Balloon Pop splits MOTOR (speed,
+  concurrency; error = the match escaped) from COGNITIVE (targets,
+  distractors, task types; error = wrong tap), because one meter forced a
+  false trade: a slow-fingered sharp counter got easier _numbers_ when only
+  the _sky_ needed slowing. Motor never climbs during a cognitively rough
+  round — speed must not pile onto struggle. Games with one real skill (Odd
+  One Out's category ladder) persist a single axis; the store is
+  axis-name-agnostic.
+- **Stars, not levels, are the persistent trophy.** Levels stay a
+  session-scoped reward rhythm (they only move forward while playing); stars
+  bank one per celebration beat, live forever, and show on the launcher tile.
+  Rewarding the _beat_ (effort) rather than level-ups keeps the economy fair:
+  a child at the skill ceiling still earns stars at the same rate as one
+  still climbing.
+
 ## Deferred (not done yet, on purpose)
 
 - **Parent gate** (hold-to-confirm) before leaving a game or opening external
