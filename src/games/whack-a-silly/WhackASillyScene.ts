@@ -1,21 +1,27 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
-import { addStars } from '../../shared/progress'
+import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   CRITTERS,
   GRID_SIZE,
   HOLE_COUNT,
+  WHACK_SKILL_MAX,
+  WHACK_SKILL_START,
   bopVariantFor,
   comboStep,
-  gapMs,
+  concurrentFor,
+  gapForSkill,
+  initialWhackSkill,
   isConfettiBop,
   levelForBops,
   planSpawn,
-  upTimeMs,
+  registerCatch,
+  registerEscape,
+  upTimeForSkill,
 } from './logic'
-import type { CritterSpawn, RampState } from './logic'
+import type { CritterSpawn, RampState, WhackSkill } from './logic'
 import { buildCritterRig } from './critterRig'
 import type { CritterRig } from './critterRig'
 import type { WhackTestApi } from './testHook'
@@ -111,6 +117,10 @@ export default class WhackASillyScene extends Phaser.Scene {
   private lastHole: number | null = null
   private activeCritters = 0
   private spawnTimer: Phaser.Time.TimerEvent | null = null
+  // Adaptive motor meter (see logic.ts), persisted via shared/progress.ts.
+  // `peakSkill` is the best-ever saved value — below it, climbs double.
+  private whackSkill: WhackSkill = initialWhackSkill()
+  private peakSkill = WHACK_SKILL_START
 
   private bgGfx!: Phaser.GameObjects.Graphics
   private holes: Hole[] = []
@@ -152,6 +162,17 @@ export default class WhackASillyScene extends Phaser.Scene {
 
   create(): void {
     this.dpr = Math.min(window.devicePixelRatio || 1, 3)
+
+    // Resume the saved motor meter a couple of steps down (warm-up ramp);
+    // the peak lets registerCatch climb back at double speed.
+    const saved = loadProgress(GAME_ID)
+    const startSkill = sessionStart(saved.skill.motor ?? WHACK_SKILL_START, {
+      max: WHACK_SKILL_MAX,
+      lastPlayedAt: saved.lastPlayedAt,
+    })
+    this.whackSkill = initialWhackSkill(startSkill)
+    this.peakSkill = Math.max(saved.skill.motor ?? WHACK_SKILL_START, startSkill)
+
     this.makeTextures()
 
     this.bgGfx = this.add.graphics().setDepth(0)
@@ -201,11 +222,13 @@ export default class WhackASillyScene extends Phaser.Scene {
         bops: this.bops,
         level: levelForBops(this.bops),
         spared: this.spared,
+        skill: this.whackSkill.skill,
         activeCritters: this.activeCritters,
         holes: this.holes.map((h) => ({
           state: h.state,
           critterVisible: h.rig.inner.visible,
           sleepy: h.spawn?.sleepy ?? false,
+          critterId: h.spawn?.critterId ?? null,
           xCss: h.x / this.dpr,
           yCss: h.y / this.dpr,
         })),
@@ -223,7 +246,7 @@ export default class WhackASillyScene extends Phaser.Scene {
           golden: !!opts?.golden,
           peek: false,
         }
-        this.popCritter(h, spawn, upTimeMs(this.rampState()))
+        this.popCritter(h, spawn, upTimeForSkill(this.whackSkill.skill))
         return true
       },
     }
@@ -672,12 +695,34 @@ export default class WhackASillyScene extends Phaser.Scene {
   }
 
   private spawnWave(): void {
-    const state = this.rampState()
-    const occupied = this.holes.filter((h) => h.state !== 'down').map((h) => h.index)
-    const plan = planSpawn(state, occupied, this.lastHole, Math.random)
-    this.popCritter(this.holes[plan.primary.hole], plan.primary, plan.upTimeMs)
-    if (plan.double) this.popCritter(this.holes[plan.double.hole], plan.double, plan.upTimeMs)
-    this.lastHole = plan.primary.hole
+    const occupied = this.holes.filter((h) => h.state !== 'down')
+    const plan = planSpawn(
+      {
+        ramp: this.rampState(),
+        skill: this.whackSkill.skill,
+        occupiedHoles: occupied.map((h) => h.index),
+        activeCritterIds: occupied.flatMap((h) => (h.spawn ? [h.spawn.critterId] : [])),
+        sleeperActive: occupied.some((h) => h.spawn?.sleepy),
+        lastHole: this.lastHole,
+      },
+      Math.random,
+    )
+    this.popCritter(this.holes[plan.spawn.hole], plan.spawn, plan.upTimeMs)
+    this.lastHole = plan.spawn.hole
+    // Top the garden up to the adaptive concurrency target (1 → 2 → 3
+    // different critters as the meter grows).
+    if (this.activeCritters < concurrentFor(this.whackSkill.skill)) {
+      this.scheduleNext(plan.gapMs)
+    }
+  }
+
+  /** Apply a meter transition; persist only when the meter itself moved. */
+  private applySkill(next: WhackSkill): void {
+    const moved = next.skill !== this.whackSkill.skill
+    this.whackSkill = next
+    if (!moved) return
+    this.peakSkill = Math.max(this.peakSkill, next.skill)
+    saveSkill(GAME_ID, { motor: next.skill })
   }
 
   private popCritter(hole: Hole, spawn: CritterSpawn, upTime: number): void {
@@ -812,10 +857,12 @@ export default class WhackASillyScene extends Phaser.Scene {
     })
   }
 
-  /** A critter is done (bopped, dizzy, or expired) — schedule the next pop. */
+  /** A critter is done (bopped, spared, or expired) — top the garden up. */
   private onCritterGone(): void {
     this.activeCritters = Math.max(this.activeCritters - 1, 0)
-    if (this.activeCritters === 0) this.scheduleNext(gapMs(this.rampState()))
+    if (this.activeCritters < concurrentFor(this.whackSkill.skill)) {
+      this.scheduleNext(gapForSkill(this.whackSkill.skill))
+    }
   }
 
   /** Duck back into the hole, then reset for reuse. */
@@ -921,9 +968,11 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.stopCritterClock(hole)
     this.bops++
     reportLevel(levelForBops(this.bops))
-    // Level passed (every BOPS_PER_LEVEL bops, same beat as the confetti):
-    // one persistent star on the launcher tile.
-    if (isConfettiBop(this.bops)) addStars(GAME_ID)
+    // Every bop passes a level: one persistent star on the launcher tile.
+    // The every-10 confetti below stays pure animation.
+    addStars(GAME_ID)
+    // Adaptive: catches in a row speed the garden up / add critters.
+    this.applySkill(registerCatch(this.whackSkill, this.peakSkill))
 
     // Thwack pitch climbs with the combo streak (resets every 10 bops).
     const thwack = THWACK_BASE * Math.pow(2, comboStep(this.bops) / 12)
@@ -1152,6 +1201,9 @@ export default class WhackASillyScene extends Phaser.Scene {
         onComplete: () => this.descend(hole, 200),
       })
     } else {
+      // A go critter got away — the motor-axis miss signal (never punished
+      // visibly; repeat escapes just slow the garden back down).
+      this.applySkill(registerEscape(this.whackSkill))
       this.descend(hole, 220)
     }
     this.onCritterGone()
