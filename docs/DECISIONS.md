@@ -114,7 +114,7 @@ its ceiling), and the chosen hybrid:
   axis-name-agnostic.
 - **Stars, not levels, are the persistent trophy.** One uniform rule across
   every game: passing a level (each game's own unit — a solved round, a
-  cleared board, ten bops, a freed piggy level) ticks the badge +1 AND banks
+  bopped critter, a cleared board, a freed piggy level) ticks the badge +1 AND banks
   one forever-star on the launcher tile. Levels stay session-scoped (badge
   resets each visit, only ever moves forward); stars never reset and big
   counts are deliberate. Celebrations (rainbow, sparkles, confetti) are pure
