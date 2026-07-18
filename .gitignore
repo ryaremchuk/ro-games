@@ -15,6 +15,14 @@ coverage
 *.local
 *.tsbuildinfo
 
+# Scratch / working files (art generation, atlases, throwaway scripts)
+.tmp/
+
+# Secrets / env (public repo — never commit real keys)
+.env
+.env.*
+!.env.example
+
 # Lighthouse CI
 .lighthouseci
 
