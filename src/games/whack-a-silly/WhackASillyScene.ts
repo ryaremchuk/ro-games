@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
+import { addStars } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   CRITTERS,
@@ -18,6 +19,9 @@ import type { CritterSpawn, RampState } from './logic'
 import { buildCritterRig } from './critterRig'
 import type { CritterRig } from './critterRig'
 import type { WhackTestApi } from './testHook'
+
+/** Registry id — also the key the shared progress store files this under. */
+const GAME_ID = 'whack-a-silly'
 import {
   MOUND_GEOM,
   makeCloudTexture,
@@ -917,6 +921,9 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.stopCritterClock(hole)
     this.bops++
     reportLevel(levelForBops(this.bops))
+    // Level passed (every BOPS_PER_LEVEL bops, same beat as the confetti):
+    // one persistent star on the launcher tile.
+    if (isConfettiBop(this.bops)) addStars(GAME_ID)
 
     // Thwack pitch climbs with the combo streak (resets every 10 bops).
     const thwack = THWACK_BASE * Math.pow(2, comboStep(this.bops) / 12)

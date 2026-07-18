@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import type React from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { games } from '../games/registry'
+import { getStars } from '../shared/progress'
 import './HomePage.css'
 
 /** Picture-only launcher: one big tile per game (a 3-4yo can't read yet). */
@@ -26,19 +27,31 @@ export default function HomePage() {
   return (
     <main className="home" onPointerDown={onBackgroundTap}>
       <div className="home-grid" style={{ '--rows': rows } as React.CSSProperties}>
-        {games.map((game) => (
-          <Link
-            key={game.id}
-            to={game.path}
-            className="home-tile"
-            style={{ backgroundColor: game.color }}
-            aria-label={game.title}
-          >
-            <span className="home-tile-emoji" aria-hidden>
-              {game.emoji}
-            </span>
-          </Link>
-        ))}
+        {games.map((game) => {
+          // Persistent reward stars (shared/progress.ts) — the one number
+          // that only ever grows; fresh on every visit since navigating
+          // back home remounts this page.
+          const stars = getStars(game.id)
+          return (
+            <Link
+              key={game.id}
+              to={game.path}
+              className="home-tile"
+              style={{ backgroundColor: game.color }}
+              aria-label={stars > 0 ? `${game.title}, ${stars} stars earned` : game.title}
+            >
+              <span className="home-tile-emoji" aria-hidden>
+                {game.emoji}
+              </span>
+              {stars > 0 && (
+                <span className="home-tile-stars" aria-hidden>
+                  <span className="home-tile-stars-icon">⭐</span>
+                  {stars}
+                </span>
+              )}
+            </Link>
+          )
+        })}
       </div>
     </main>
   )

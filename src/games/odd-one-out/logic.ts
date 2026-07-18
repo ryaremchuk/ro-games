@@ -8,6 +8,11 @@
  * BETWEEN rounds, never within):
  *   L1 color odd · L2 shape/size odd · L3 basic category ·
  *   L4 superordinate category · L5 concept stretch (flies/swims, hot/cold).
+ *
+ * The ladder is this game's cognitive skill meter and persists across
+ * sessions (shared/progress.ts): a session starts one level below the saved
+ * one (minus break decay), and while below the session PEAK the climb needs
+ * fewer solves — a short warm-up, not a full re-grind.
  */
 
 /** Injectable random source, [0, 1). Defaults to Math.random in the game. */
@@ -598,11 +603,24 @@ export const MAX_LEVEL: Level = 5
 export const CORRECT_TO_ADVANCE = 3
 /** …or sooner when the child is cruising (consecutive no-miss rounds). */
 export const FLAWLESS_TO_ADVANCE = 2
+/** Below the session peak (warm-up), the climb is quicker on both counts. */
+export const WARMUP_CORRECT_TO_ADVANCE = 2
+export const WARMUP_FLAWLESS_TO_ADVANCE = 1
 /** Misses within a single round that trigger a gentle drop (BETWEEN rounds). */
 export const MISSES_TO_DROP = 2
 
+/** Every this many solved rounds: the sparkle-wave celebration (animation). */
+export const CELEBRATION_EVERY_SOLVES = 5
+
+/** The celebration fires exactly when a solve total crosses the beat. */
+export function isCelebrationSolve(roundsCompleted: number): boolean {
+  return roundsCompleted > 0 && roundsCompleted % CELEBRATION_EVERY_SOLVES === 0
+}
+
 export interface SessionState {
   level: Level
+  /** Best level seen (seeded from the save) — below it the climb is faster. */
+  peakLevel: Level
   /** Rounds solved at the current level (with fewer than MISSES_TO_DROP misses). */
   correctAtLevel: number
   /** Consecutive no-miss rounds at the current level (fast-track). */
@@ -614,9 +632,14 @@ export interface SessionState {
   lastGroupKey: string | null
 }
 
-export function initialSessionState(): SessionState {
+export function initialSessionState(
+  startLevel: Level = MIN_LEVEL,
+  peakLevel: Level = startLevel,
+): SessionState {
+  const level = clampLevel(startLevel)
   return {
-    level: MIN_LEVEL,
+    level,
+    peakLevel: clampLevel(Math.max(level, peakLevel)),
     correctAtLevel: 0,
     flawlessStreak: 0,
     missesThisRound: 0,
@@ -626,8 +649,8 @@ export function initialSessionState(): SessionState {
   }
 }
 
-function clampLevel(level: number): Level {
-  return Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, level)) as Level
+export function clampLevel(level: number): Level {
+  return Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, Math.round(level))) as Level
 }
 
 /** Wrong tap: only counts — the round (and its rule) continues unchanged. */
@@ -644,9 +667,12 @@ export function showHint(state: SessionState): boolean {
  * Odd one found — the only moment level can change (rules switch strictly
  * BETWEEN rounds): a rough round (2+ misses) drops one level, three solves
  * (or two flawless in a row) climb one. Never below L1, never above L5.
+ * While the level sits below the session peak (a warm-up after a persisted
+ * session start), the climb needs one solve fewer on both counts.
  */
 export function registerSolve(state: SessionState, puzzle: Puzzle): SessionState {
   const base = {
+    peakLevel: state.peakLevel,
     recentSignatures: [...state.recentSignatures, puzzle.signature].slice(-SIGNATURE_WINDOW),
     lastGroupKey: puzzle.groupKey,
     roundsCompleted: state.roundsCompleted + 1,
@@ -655,10 +681,20 @@ export function registerSolve(state: SessionState, puzzle: Puzzle): SessionState
   if (state.missesThisRound >= MISSES_TO_DROP) {
     return { ...base, level: clampLevel(state.level - 1), correctAtLevel: 0, flawlessStreak: 0 }
   }
+  const warmingUp = state.level < state.peakLevel
+  const needCorrect = warmingUp ? WARMUP_CORRECT_TO_ADVANCE : CORRECT_TO_ADVANCE
+  const needFlawless = warmingUp ? WARMUP_FLAWLESS_TO_ADVANCE : FLAWLESS_TO_ADVANCE
   const correctAtLevel = state.correctAtLevel + 1
   const flawlessStreak = state.missesThisRound === 0 ? state.flawlessStreak + 1 : 0
-  if (correctAtLevel >= CORRECT_TO_ADVANCE || flawlessStreak >= FLAWLESS_TO_ADVANCE) {
-    return { ...base, level: clampLevel(state.level + 1), correctAtLevel: 0, flawlessStreak: 0 }
+  if (correctAtLevel >= needCorrect || flawlessStreak >= needFlawless) {
+    const level = clampLevel(state.level + 1)
+    return {
+      ...base,
+      level,
+      peakLevel: clampLevel(Math.max(state.peakLevel, level)),
+      correctAtLevel: 0,
+      flawlessStreak: 0,
+    }
   }
   return { ...base, level: state.level, correctAtLevel, flawlessStreak }
 }

@@ -2,18 +2,38 @@ import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
+import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
 import {
+  MAX_LENGTH,
   PAD_PITCHES,
+  START_LENGTH,
   applyFail,
   applySuccess,
   bandForRounds,
   celebrationTier,
   checkTap,
   initialBandState,
-  levelForLength,
 } from './logic'
 import type { BandState, CelebrationTier } from './logic'
 import './AnimalBandGame.css'
+
+/** Registry id — also the key the shared progress store files this under. */
+const GAME_ID = 'animal-band'
+
+/**
+ * Resume the saved sequence length one step down (session warm-up; lower
+ * still after a long break). Length is this game's adaptive skill meter.
+ */
+function startBand(): BandState {
+  const saved = loadProgress(GAME_ID)
+  const startLength = sessionStart(saved.skill.cognitive ?? START_LENGTH, {
+    min: START_LENGTH,
+    max: MAX_LENGTH,
+    warmupDrop: 1,
+    lastPlayedAt: saved.lastPlayedAt,
+  })
+  return initialBandState(Math.random, startLength)
+}
 
 /**
  * Game phases (event-granularity React state — sequencing runs on setTimeout
@@ -103,7 +123,7 @@ function wobble(el: HTMLElement) {
 }
 
 export default function AnimalBandGame() {
-  const [band, setBand] = useState<BandState>(() => initialBandState(Math.random))
+  const [band, setBand] = useState<BandState>(startBand)
   const [phase, setPhase] = useState<Phase>('attract')
   const [progress, setProgress] = useState(0)
   const [litPad, setLitPad] = useState<number | null>(null)
@@ -169,8 +189,10 @@ export default function AnimalBandGame() {
     setBand(next)
   }
 
-  // Standardized HUD badge mirrors the sequence length (the real difficulty).
-  useEffect(() => reportLevel(levelForLength(band.sequence.length)), [band.sequence.length])
+  // Standardized HUD badge: +1 per successful echo (a reward counter, like
+  // every game). Sequence length is the adaptive difficulty and stays
+  // invisible — it is persisted, not displayed.
+  useEffect(() => reportLevel(band.roundsCompleted + 1), [band.roundsCompleted])
 
   const animals = bandForRounds(band.roundsCompleted)
 
@@ -311,7 +333,10 @@ export default function AnimalBandGame() {
       // Two quick low soft tones — funny, never a buzzer.
       playTone(240, 110, 'sine', 0.07)
       scheduleFx(() => playTone(200, 150, 'sine', 0.07), 130)
-      setBandNow(applyFail(bandRef.current))
+      const next = applyFail(bandRef.current)
+      setBandNow(next)
+      // A drop-back changes the skill meter — persist it right away.
+      saveSkill(GAME_ID, { cognitive: next.sequence.length })
       setPhaseNow('wrong')
       scheduleFlow(() => startPlayback(true), REPLAY_DELAY_MS)
       return
@@ -323,11 +348,15 @@ export default function AnimalBandGame() {
       return
     }
 
-    // Full echo correct!
+    // Full echo correct! Every echo passes a level: badge +1 (via the
+    // roundsCompleted effect), one persistent star, skill meter saved.
     const echoedLength = bandRef.current.sequence.length
     const tier = celebrationTier(echoedLength)
     celebrate(tier)
-    setBandNow(applySuccess(bandRef.current, Math.random))
+    const next = applySuccess(bandRef.current, Math.random)
+    setBandNow(next)
+    saveSkill(GAME_ID, { cognitive: next.sequence.length })
+    addStars(GAME_ID)
     setPhaseNow('celebrate')
     scheduleFlow(() => enterJam(), tier === 'stars' ? STARS_MS : CHEER_MS)
   }

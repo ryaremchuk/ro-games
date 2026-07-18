@@ -2,9 +2,42 @@ import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
-import { initialSessionState, nextPuzzle, registerMiss, registerSolve, showHint } from './logic'
+import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
+import {
+  clampLevel,
+  initialSessionState,
+  isCelebrationSolve,
+  MAX_LEVEL,
+  MIN_LEVEL,
+  nextPuzzle,
+  registerMiss,
+  registerSolve,
+  showHint,
+} from './logic'
 import type { Puzzle, SessionState } from './logic'
 import './OddOneOutGame.css'
+
+/** Registry id — also the key the shared progress store files this under. */
+const GAME_ID = 'odd-one-out'
+
+/**
+ * Resume the saved ladder one level down (session warm-up; lower still after
+ * a long break) with the saved level as the peak, so registerSolve climbs
+ * back at warm-up speed.
+ */
+function startSession(): SessionState {
+  const saved = loadProgress(GAME_ID)
+  const savedLevel = clampLevel(saved.skill.cognitive ?? MIN_LEVEL)
+  const startLevel = clampLevel(
+    sessionStart(savedLevel, {
+      min: MIN_LEVEL,
+      max: MAX_LEVEL,
+      warmupDrop: 1,
+      lastPlayedAt: saved.lastPlayedAt,
+    }),
+  )
+  return initialSessionState(startLevel, savedLevel)
+}
 
 /**
  * Game phases (event-granularity React state — sequencing runs on setTimeout
@@ -48,8 +81,8 @@ function wobble(el: HTMLElement) {
 }
 
 export default function OddOneOutGame() {
-  const [session, setSession] = useState<SessionState>(initialSessionState)
-  const [puzzle, setPuzzle] = useState<Puzzle>(() => nextPuzzle(initialSessionState(), Math.random))
+  const [session, setSession] = useState<SessionState>(startSession)
+  const [puzzle, setPuzzle] = useState<Puzzle>(() => nextPuzzle(session, Math.random))
   const [phase, setPhase] = useState<Phase>('intro')
   const [round, setRound] = useState(0)
   const [stickers, setStickers] = useState<Sticker[]>([])
@@ -99,8 +132,10 @@ export default function OddOneOutGame() {
     [],
   )
 
-  // Standardized HUD badge mirrors the session's own L1-L5 difficulty ladder.
-  useEffect(() => reportLevel(session.level), [session.level])
+  // Standardized HUD badge: +1 per solved round (a reward counter, like
+  // every game). The adaptive L1-L5 ladder stays invisible — difficulty is
+  // never shown to the child.
+  useEffect(() => reportLevel(session.roundsCompleted + 1), [session.roundsCompleted])
 
   const setPhaseNow = (next: Phase) => {
     phaseRef.current = next
@@ -241,10 +276,14 @@ export default function OddOneOutGame() {
       setStickers((prev) => [...prev, { key, emoji: item.emoji, name: item.name }])
     }, STICKER_AT_MS)
     scheduleFlow(() => {
-      const before = sessionRef.current
-      const after = registerSolve(before, solved)
+      const after = registerSolve(sessionRef.current, solved)
       setSessionNow(after)
-      if (after.level > before.level) spawnSparkleWave()
+      // Every solve passes a level: persist the ladder (survives an abrupt
+      // exit) and bank one star (shown on the launcher tile). The sparkle
+      // wave is pure animation on its every-5 beat.
+      saveSkill(GAME_ID, { cognitive: after.level })
+      addStars(GAME_ID)
+      if (isCelebrationSolve(after.roundsCompleted)) spawnSparkleWave()
       setPuzzleNow(nextPuzzle(after, Math.random))
       setRound((r) => r + 1)
     }, NEXT_ROUND_MS)

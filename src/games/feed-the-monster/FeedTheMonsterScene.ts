@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
+import { addStars } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   COLOR_HEX,
@@ -9,12 +10,16 @@ import {
   bubbleItems,
   generateRound,
   grayedBubbleItems,
+  isBigCelebrationRound,
   isRoundComplete,
   levelForRound,
   requestTotal,
   wantsFood,
 } from './logic'
 import type { FoodRequest, Round } from './logic'
+
+/** Registry id — also the key the shared progress store files this under. */
+const GAME_ID = 'feed-the-monster'
 
 // ART SPEC palette.
 const BG_TOP = 0xffe8cc
@@ -810,7 +815,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       this.confetti.explode(60, mp.x, mp.y - this.bodyR * this.growth)
     })
 
-    const big = this.roundNumber % 3 === 0
+    // Round fed = level passed: one persistent star on the launcher tile.
+    addStars(GAME_ID)
+
+    const big = isBigCelebrationRound(this.roundNumber)
     const arpeggio = big ? [523, 659, 784, 1047] : [523, 659, 784]
     this.time.delayedCall(500, () => {
       arpeggio.forEach((freq, i) =>
