@@ -1,9 +1,14 @@
 import { test, expect } from '@playwright/test'
 import { games } from '../src/games/registry'
 
-test('launcher shows one tile per registered game', async ({ page }) => {
+// 8 game tiles (links) + 1 dice "surprise" tile (button) = a full 3×3 grid.
+const TILE_COUNT = games.length + 1
+
+test('launcher shows a tile per game plus the dice surprise tile', async ({ page }) => {
   await page.goto('./')
   await expect(page.getByRole('link')).toHaveCount(games.length)
+  await expect(page.getByRole('button', { name: 'Surprise game' })).toBeVisible()
+  await expect(page.locator('.home-tile')).toHaveCount(TILE_COUNT)
   await page.screenshot({ path: 'e2e/__screenshots__/launcher.png' })
 })
 
@@ -20,7 +25,7 @@ for (const vp of viewports) {
   test(`launcher fits without scrolling — ${vp.name}`, async ({ page }) => {
     await page.setViewportSize({ width: vp.width, height: vp.height })
     await page.goto('./')
-    await expect(page.getByRole('link')).toHaveCount(games.length)
+    await expect(page.locator('.home-tile')).toHaveCount(TILE_COUNT)
 
     const overflow = await page.evaluate(() => {
       const home = document.querySelector('.home') as HTMLElement
@@ -33,7 +38,7 @@ for (const vp of viewports) {
     expect(overflow.docScroll).toBeLessThanOrEqual(0)
 
     // Every tile fully on screen, and square.
-    for (const tile of await page.getByRole('link').all()) {
+    for (const tile of await page.locator('.home-tile').all()) {
       const box = (await tile.boundingBox())!
       expect(box.x).toBeGreaterThanOrEqual(0)
       expect(box.y).toBeGreaterThanOrEqual(0)
@@ -45,6 +50,15 @@ for (const vp of viewports) {
     }
   })
 }
+
+test('the dice tile jumps straight into a random game', async ({ page }) => {
+  const gamePaths = games.map((g) => g.path)
+  await page.goto('./')
+  await page.getByRole('button', { name: 'Surprise game' }).click()
+  await expect
+    .poll(() => new URL(page.url()).hash.replace(/^#/, ''))
+    .toEqual(expect.stringMatching(new RegExp(`^(${gamePaths.join('|')})$`)))
+})
 
 test('opening a game and pressing home returns to the launcher', async ({ page }) => {
   await page.goto('./')
