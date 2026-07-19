@@ -1,33 +1,45 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
-import { addStars } from '../../shared/progress'
+import { addStars, loadProgress, saveData, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
+  ALL_FOODS,
   COLOR_HEX,
-  FOODS,
+  SKILL_MAX,
+  SKILL_START,
   TRAY_SIZE,
   bubbleItems,
   generateRound,
   grayedBubbleItems,
-  isBigCelebrationRound,
   isRoundComplete,
   levelForRound,
   requestTotal,
+  updateSkill,
   wantsFood,
 } from './logic'
-import type { FoodRequest, Round } from './logic'
+import type { FoodRequest, Round, TaskKind } from './logic'
+import {
+  FRIENDS_PER_EPISODE,
+  GROW_STEPS,
+  darken,
+  detailsForFriend,
+  episodeFor,
+  feedStep,
+  friendColor,
+  journeyFromData,
+  journeyToData,
+  scaleForStep,
+  shrinkStep,
+  visibleDetails,
+} from './journey'
+import type { DetailKind, Episode, JourneyState } from './journey'
+import type { FeedTestApi } from './testHook'
 
 /** Registry id — also the key the shared progress store files this under. */
 const GAME_ID = 'feed-the-monster'
 
-// ART SPEC palette.
-const BG_TOP = 0xffe8cc
-const BG_BOTTOM = 0xffd8a8
-const TABLE = 0xf4bc8c
-const TABLE_EDGE = 0xe0a878
-const MONSTER = 0x9b5de5
-const MONSTER_DARK = 0x8a50d6
+// ART SPEC palette (episode palettes override the scenery at runtime).
 const PINK = 0xff8fab
 const INK = 0x3d3a4b
 const CONFETTI_TINTS = [0xff6b6b, 0xffd93d, 0x6bcb77, 0x4d96ff, 0xff8fab, 0x9b5de5]
@@ -62,6 +74,20 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private sneezing = false
   private funnyUntil = 0
 
+  // Adaptive cognitive meter (invisible; drives the task registry).
+  private skill = SKILL_START
+  private skillPeak = SKILL_START
+  private roundStartAt = 0
+  private spitBacks = 0
+  private recentKinds: TaskKind[] = []
+
+  // The visible long-term journey: growing friends, episodes (journey.ts).
+  private journey: JourneyState = { episode: 0, friendsFed: 0, growthStep: 0 }
+  private episode!: Episode
+  private detailPlan: DetailKind[] = []
+  private detailObjects = new Map<DetailKind, Phaser.GameObjects.GameObject[]>()
+  private minis: Phaser.GameObjects.Container[] = []
+
   private bgGfx!: Phaser.GameObjects.Graphics
   private tableGfx!: Phaser.GameObjects.Graphics
 
@@ -78,6 +104,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private bubble!: Phaser.GameObjects.Container
   private bubbleBg!: Phaser.GameObjects.Image
   private bubblePics: Phaser.GameObjects.Image[] = []
+  /** Extra bubble decorations (dot pips, ban overlay) cleared per request. */
+  private bubbleExtras: Phaser.GameObjects.GameObject[] = []
+  /** Dot pips of a dots round, lit one-by-one as the child feeds. */
+  private pips: Phaser.GameObjects.Arc[] = []
 
   private plates: Phaser.GameObjects.Image[] = []
   private foods: Phaser.GameObjects.Image[] = []
@@ -103,6 +133,19 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.dpr = Math.min(window.devicePixelRatio || 1, 3)
     this.bodyR = Math.min(Math.min(this.scale.width, this.scale.height) * 0.17, this.px(150))
 
+    // Resume the saved skill meter a couple of steps down (warm-up ramp);
+    // the peak makes below-peak climbs twice as fast (see logic.updateSkill).
+    const saved = loadProgress(GAME_ID)
+    this.skillPeak = saved.skill.cognitive ?? SKILL_START
+    this.skill = sessionStart(this.skillPeak, { max: SKILL_MAX, lastPlayedAt: saved.lastPlayedAt })
+
+    // Resume the journey exactly where it left off — the long-term
+    // progression (friends grown, episodes) survives restarts by design.
+    this.journey = journeyFromData(saved.data)
+    this.episode = episodeFor(this.journey)
+    this.growth = scaleForStep(this.journey.growthStep)
+    this.detailPlan = detailsForFriend(this.journey.episode, this.journey.friendsFed)
+
     this.makeTextures()
 
     this.bgGfx = this.add.graphics().setDepth(0)
@@ -113,16 +156,122 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.buildEmitters()
     this.wireInput()
 
+    // Restore the fed-friends lineup + current friend's details, no fanfare.
+    for (let i = 0; i < this.journey.friendsFed; i++) this.spawnMini(i)
+    this.syncDetails(false)
+
     this.layout()
     this.scheduleBlink()
 
+    const teardown = (): void => {
+      offViewport()
+      this.teardownTestApi()
+    }
     const offViewport = onViewportResize(this.handleWindowResize)
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, offViewport)
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, teardown)
     // React unmount calls game.destroy(), which emits DESTROY (not SHUTDOWN) —
     // without this the viewport listener leaks and fires on a dead scene.
-    this.events.once(Phaser.Scenes.Events.DESTROY, offViewport)
+    this.events.once(Phaser.Scenes.Events.DESTROY, teardown)
+
+    // Dev/e2e hook (dev builds, or prod behind `?e2e` — never in normal
+    // play). Lets Playwright read state and force a task kind — the canvas
+    // is opaque to the DOM. See testHook.
+    if (import.meta.env.DEV || location.search.includes('e2e')) this.exposeTestApi()
 
     this.time.delayedCall(350, () => this.startRound(1))
+  }
+
+  // ─── E2E test hook (dev-only) ──────────────────────────────────────────────
+
+  private testApi?: FeedTestApi
+
+  private exposeTestApi(): void {
+    const api: FeedTestApi = {
+      state: () => ({
+        round: this.roundNumber,
+        taskKind: this.round?.taskKind ?? null,
+        skill: this.skill,
+        eaten: [...this.eaten],
+        requestTotal: this.round ? requestTotal(this.round.request) : 0,
+        spitBacks: this.spitBacks,
+        transitioning: this.transitioning,
+        foods: this.foods.map((f) => ({
+          foodId: f.getData('foodId') as string,
+          correct: this.round
+            ? wantsFood(this.round.request, this.eaten, f.getData('foodId') as string)
+            : false,
+          xCss: f.x / this.dpr,
+          yCss: f.y / this.dpr,
+        })),
+        mouth: { xCss: this.mouthWorld().x / this.dpr, yCss: this.mouthWorld().y / this.dpr },
+        bubbleTiles: this.bubblePics.length,
+        journey: { ...this.journey },
+        episodeId: this.episode.id,
+        growthScale: this.monster.scaleX,
+        details: [...this.detailObjects.keys()],
+        miniCount: this.minis.length,
+      }),
+      forceKind: (kind) => {
+        if (this.transitioning || !this.round) return false
+        const round = generateRound({
+          round: this.roundNumber,
+          skill: this.skill,
+          previous: this.previousRequest,
+          foods: this.episode.foods,
+          forceKind: kind,
+        })
+        this.round = round
+        this.previousRequest = round.request
+        this.eaten = []
+        this.spitBacks = 0
+        this.roundStartAt = this.time.now
+        this.buildTray(round.tray)
+        this.showRequest(round.request)
+        return true
+      },
+      forceJourney: (partial) => {
+        if (this.transitioning || !this.round) return false
+        this.journey = journeyFromData({ ...journeyToData(this.journey), ...partial })
+        saveData(GAME_ID, journeyToData(this.journey))
+
+        // Rebuild the world at the forced point: theme, friend, lineup.
+        this.episode = episodeFor(this.journey)
+        this.makeTextures()
+        for (const mini of this.minis) {
+          this.tweens.killTweensOf(mini)
+          mini.destroy()
+        }
+        this.minis = []
+        for (let i = 0; i < this.journey.friendsFed; i++) this.spawnMini(i)
+        this.growth = scaleForStep(this.journey.growthStep)
+        this.detailPlan = detailsForFriend(this.journey.episode, this.journey.friendsFed)
+        this.buildMonster()
+        this.syncDetails(false)
+        this.layout()
+
+        // Fresh round from the (possibly new) episode pool.
+        this.previousRequest = undefined
+        const round = generateRound({
+          round: this.roundNumber,
+          skill: this.skill,
+          foods: this.episode.foods,
+        })
+        this.round = round
+        this.previousRequest = round.request
+        this.eaten = []
+        this.spitBacks = 0
+        this.roundStartAt = this.time.now
+        this.buildTray(round.tray)
+        this.showRequest(round.request)
+        return true
+      },
+    }
+    this.testApi = api
+    window.__feedTheMonster = api
+  }
+
+  private teardownTestApi(): void {
+    if (this.testApi && window.__feedTheMonster === this.testApi) delete window.__feedTheMonster
   }
 
   private handleWindowResize = (): void => {
@@ -193,24 +342,33 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     g.destroy()
   }
 
-  private makeTextures(): void {
-    const r = this.bodyR
+  /** The current friend's body hue (episode × lineup position, stable). */
+  private friendBodyColor(): number {
+    return friendColor(this.journey.episode, this.journey.friendsFed)
+  }
 
-    // Monster body: flat blob + one same-hue darker patch + antenna (no outline).
-    if (!this.textures.exists('ftm-monster')) {
-      const side = Math.ceil(r * 3)
-      const cx = side / 2
-      const cy = side / 2 + r * 0.1
-      const g = this.add.graphics()
-      g.fillStyle(MONSTER, 1)
-      g.fillRect(cx - r * 0.05, cy - r * 1.24, r * 0.1, r * 0.5)
-      g.fillCircle(cx, cy - r * 1.28, r * 0.13)
-      g.fillPoints(this.blobPoints(cx, cy, r, 7), true)
-      g.fillStyle(MONSTER_DARK, 1)
-      g.fillEllipse(cx - r * 0.2, cy + r * 0.52, r * 1.0, r * 0.42)
-      g.generateTexture('ftm-monster', side, side)
-      g.destroy()
-    }
+  /** Body blob texture per friend color: blob + darker patch + antenna. */
+  private monsterTexture(color: number): string {
+    const key = `ftm-monster-${color.toString(16)}`
+    if (this.textures.exists(key)) return key
+    const r = this.bodyR
+    const side = Math.ceil(r * 3)
+    const cx = side / 2
+    const cy = side / 2 + r * 0.1
+    const g = this.add.graphics()
+    g.fillStyle(color, 1)
+    g.fillRect(cx - r * 0.05, cy - r * 1.24, r * 0.1, r * 0.5)
+    g.fillCircle(cx, cy - r * 1.28, r * 0.13)
+    g.fillPoints(this.blobPoints(cx, cy, r, 7), true)
+    g.fillStyle(darken(color), 1)
+    g.fillEllipse(cx - r * 0.2, cy + r * 0.52, r * 1.0, r * 0.42)
+    g.generateTexture(key, side, side)
+    g.destroy()
+    return key
+  }
+
+  private makeTextures(): void {
+    this.monsterTexture(this.friendBodyColor())
 
     // Plate under each tray food.
     if (!this.textures.exists('ftm-plate')) {
@@ -227,6 +385,20 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // Thought bubble body + color splash (white, tinted per request color).
     this.makeBlobTexture('ftm-bubble', this.px(64), 0xffffff, 3)
     this.makeBlobTexture('ftm-splash', this.px(26), 0xffffff, 11)
+
+    // Ban sign for "not" rounds: red ring + diagonal bar (🚫, drawn crisp).
+    if (!this.textures.exists('ftm-ban')) {
+      const r = this.px(34)
+      const stroke = this.px(8)
+      const side = r * 2 + stroke * 2
+      const g = this.add.graphics()
+      g.lineStyle(stroke, 0xe5484d, 1)
+      g.strokeCircle(side / 2, side / 2, r)
+      const off = r * Math.SQRT1_2
+      g.lineBetween(side / 2 - off, side / 2 - off, side / 2 + off, side / 2 + off)
+      g.generateTexture('ftm-ban', side, side)
+      g.destroy()
+    }
 
     // Particles.
     if (!this.textures.exists('ftm-confetti')) {
@@ -245,19 +417,53 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     }
     this.emojiTexture('ftm-star', '⭐', 30)
 
-    for (const food of FOODS) {
+    // Crown for a fully grown friend (the final growth detail).
+    if (!this.textures.exists('ftm-crown')) {
+      const w = this.px(66)
+      const h = this.px(44)
+      const g = this.add.graphics()
+      g.fillStyle(0xffd93d, 1)
+      g.fillPoints(
+        [
+          new Phaser.Math.Vector2(0, h),
+          new Phaser.Math.Vector2(0, h * 0.25),
+          new Phaser.Math.Vector2(w * 0.25, h * 0.62),
+          new Phaser.Math.Vector2(w * 0.5, 0),
+          new Phaser.Math.Vector2(w * 0.75, h * 0.62),
+          new Phaser.Math.Vector2(w, h * 0.25),
+          new Phaser.Math.Vector2(w, h),
+        ],
+        true,
+      )
+      g.generateTexture('ftm-crown', w, h)
+      g.destroy()
+    }
+
+    for (const food of this.episode.foods) {
       this.emojiTexture(`ftm-food-${food.id}`, food.emoji, FOOD_CSS)
     }
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────
 
+  /** Build (or rebuild, for the next friend) the feedable monster. */
   private buildMonster(): void {
+    if (this.monster) {
+      this.tweens.killTweensOf(this.monster)
+      this.tweens.killTweensOf(this.monsterBody)
+      this.mouthTween?.stop()
+      this.mouthState.open = 0
+      this.monster.destroy()
+    }
+    this.detailObjects.clear()
+
+    const color = this.friendBodyColor()
     const r = this.bodyR
     this.monster = this.add.container(0, 0).setDepth(2)
+    this.monster.setScale(this.growth)
 
     const shadow = this.add.ellipse(0, r * 1.02, r * 1.5, r * 0.26, 0x000000, 0.12)
-    this.monsterBody = this.add.image(0, -r * 0.1, 'ftm-monster')
+    this.monsterBody = this.add.image(0, -r * 0.1, this.monsterTexture(color))
     this.monster.add([shadow, this.monsterBody])
 
     // Face recipe: big close-set white eyes, pupils that drift toward touch.
@@ -283,7 +489,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.mouthTongue.setAlpha(0)
     mouth.add([this.mouthLips, this.mouthTongue])
 
-    this.nose = this.add.ellipse(0, -r * 0.02, r * 0.22, r * 0.16, MONSTER_DARK)
+    this.nose = this.add.ellipse(0, -r * 0.02, r * 0.22, r * 0.16, darken(color))
 
     this.monster.add([blushL, blushR, this.eyeL, this.eyeR, mouth, this.nose])
     this.applyMouth()
@@ -300,7 +506,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
 
     // Tap the body → giggle. Tap the nose → sneeze (easter egg).
-    const frame = this.textures.getFrame('ftm-monster')
+    const frame = this.textures.getFrame(this.monsterTexture(color))
     this.monsterBody.setInteractive(
       new Phaser.Geom.Circle(frame.width / 2, frame.height / 2 + r * 0.1, r),
       Phaser.Geom.Circle.Contains,
@@ -313,6 +519,317 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       Phaser.Geom.Circle.Contains,
     )
     this.nose.on('pointerdown', () => this.sneeze())
+  }
+
+  // ─── Growth details (the friend visibly changes, not just scales) ─────────
+
+  /** Procedurally build one detail's game objects, in body-local coords. */
+  private buildDetail(kind: DetailKind): Phaser.GameObjects.GameObject[] {
+    const r = this.bodyR
+    const color = this.friendBodyColor()
+    const dark = darken(color, 0.72)
+    switch (kind) {
+      case 'horns': {
+        const horn = (side: -1 | 1) =>
+          this.add
+            .triangle(
+              side * r * 0.52,
+              -r * 0.98,
+              0,
+              r * 0.34,
+              r * 0.13,
+              0,
+              r * 0.26,
+              r * 0.34,
+              dark,
+            )
+            .setRotation(side * 0.5)
+        return [horn(-1), horn(1)]
+      }
+      case 'ears': {
+        const ear = (side: -1 | 1) => this.add.circle(side * r * 0.78, -r * 0.72, r * 0.19, dark)
+        return [ear(-1), ear(1)]
+      }
+      case 'spots':
+        return [
+          this.add.circle(-r * 0.38, r * 0.42, r * 0.11, dark, 0.55),
+          this.add.circle(r * 0.3, r * 0.58, r * 0.13, dark, 0.55),
+          this.add.circle(r * 0.02, r * 0.32, r * 0.08, dark, 0.55),
+        ]
+      case 'bowtie': {
+        const wing = (side: -1 | 1) =>
+          this.add.triangle(
+            side * r * 0.14,
+            r * 0.8,
+            0,
+            0,
+            side * r * 0.24,
+            -r * 0.11,
+            side * r * 0.24,
+            r * 0.11,
+            0xe5484d,
+          )
+        return [wing(-1), wing(1), this.add.circle(0, r * 0.8, r * 0.06, 0xc73840)]
+      }
+      case 'freckles': {
+        const dots: Phaser.GameObjects.GameObject[] = []
+        for (const side of [-1, 1] as const) {
+          for (let i = 0; i < 3; i++) {
+            dots.push(
+              this.add.circle(
+                side * (r * 0.52 + i * r * 0.09),
+                r * 0.14 + (i % 2) * r * 0.07,
+                r * 0.028,
+                INK,
+                0.7,
+              ),
+            )
+          }
+        }
+        return dots
+      }
+      case 'crown': {
+        const crown = this.add.image(0, -r * 1.0, 'ftm-crown')
+        crown.setDisplaySize(r * 0.62, r * 0.4)
+        return [crown]
+      }
+    }
+  }
+
+  /**
+   * Make the shown details match a growth step (plan prefix): pop in what's
+   * newly earned, puff away what shrank off. Defaults to the journey's step;
+   * the friend-grown moment passes GROW_STEPS to crown the walker.
+   */
+  private syncDetails(animated: boolean, step = this.journey.growthStep): void {
+    const target = new Set(visibleDetails(this.detailPlan, step))
+
+    for (const [kind, objects] of [...this.detailObjects]) {
+      if (target.has(kind)) continue
+      this.detailObjects.delete(kind)
+      for (const obj of objects) {
+        this.tweens.killTweensOf(obj)
+        obj.destroy()
+      }
+      if (animated) {
+        const mp = this.monsterPos()
+        this.puffs.explode(8, mp.x, mp.y - this.bodyR * this.growth * 0.6)
+      }
+    }
+
+    for (const kind of target) {
+      if (this.detailObjects.has(kind)) continue
+      const objects = this.buildDetail(kind)
+      this.monster.add(objects)
+      this.detailObjects.set(kind, objects)
+      if (!animated) continue
+      for (const obj of objects) {
+        const sprite = obj as Phaser.GameObjects.Shape
+        this.tweens.add({
+          targets: sprite,
+          scaleX: { from: 0, to: sprite.scaleX },
+          scaleY: { from: 0, to: sprite.scaleY },
+          duration: 380,
+          ease: 'Back.easeOut',
+        })
+      }
+      const mp = this.monsterPos()
+      this.sparkles.explode(10, mp.x, mp.y - this.bodyR * this.growth * 0.9)
+    }
+  }
+
+  // ─── Fed-friends lineup + friend/episode transitions ───────────────────────
+
+  /** Sideline slot (alternating table corners) for the i-th grown friend. */
+  private miniSlot(index: number): XY {
+    const fractions = [0.09, 0.91, 0.2, 0.8, 0.31]
+    const tableTop = this.scale.height - this.tableHeight()
+    return {
+      x: this.scale.width * fractions[index % fractions.length],
+      y: tableTop - this.bodyR * 0.28,
+    }
+  }
+
+  /** A simplified grown friend for the lineup: body + eyes, gently bobbing. */
+  private spawnMini(index: number, episode = this.journey.episode): Phaser.GameObjects.Container {
+    const color = friendColor(episode, index)
+    const r = this.bodyR
+    const slot = this.miniSlot(index)
+    const mini = this.add.container(slot.x, slot.y).setDepth(2).setScale(0.3)
+
+    const shadow = this.add.ellipse(0, r * 1.02, r * 1.5, r * 0.26, 0x000000, 0.1)
+    const body = this.add.image(0, -r * 0.1, this.monsterTexture(color))
+    const eye = (side: -1 | 1) => {
+      const white = this.add.ellipse(side * r * 0.35, -r * 0.42, r * 0.36, r * 0.36, 0xffffff)
+      const pupil = this.add.ellipse(side * r * 0.35, -r * 0.42, r * 0.17, r * 0.17, INK)
+      return [white, pupil]
+    }
+    const smile = this.add.ellipse(0, r * 0.34, r * 0.5, r * 0.22, INK)
+    const crown = this.add.image(0, -r * 1.0, 'ftm-crown')
+    crown.setDisplaySize(r * 0.62, r * 0.4)
+    mini.add([shadow, body, ...eye(-1), ...eye(1), smile, crown])
+
+    // Idle life so the lineup feels alive, staggered per slot.
+    this.tweens.add({
+      targets: mini,
+      y: slot.y - this.px(6),
+      duration: 1600 + index * 180,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    })
+
+    this.minis.push(mini)
+    return mini
+  }
+
+  /** The grown friend celebrates, walks aside, and the next one hops in. */
+  private friendGrownSequence(danceParty: boolean): void {
+    const mp = this.monsterPos()
+    // Star shower + a proud jump.
+    this.stars.explode(16, mp.x, mp.y - this.bodyR * this.growth)
+    ;[523, 659, 784, 1047].forEach((freq, i) =>
+      this.time.delayedCall(i * 120, () => playTone(freq, 160, 'triangle', 0.1)),
+    )
+    this.tweens.add({
+      targets: this.monster,
+      y: mp.y - this.px(50),
+      duration: 240,
+      yoyo: true,
+      ease: 'Quad.easeOut',
+    })
+
+    // Walk aside to the lineup slot, shrinking into a mini…
+    const grownIndex = danceParty ? FRIENDS_PER_EPISODE - 1 : this.journey.friendsFed - 1
+    const episodeAtGrow = this.journey.episode - (danceParty ? 1 : 0)
+    const slot = this.miniSlot(grownIndex)
+    this.time.delayedCall(900, () => {
+      this.tweens.add({
+        targets: this.monster,
+        x: slot.x,
+        y: slot.y,
+        scaleX: 0.3,
+        scaleY: 0.3,
+        duration: 700,
+        ease: 'Sine.easeInOut',
+        onComplete: () => {
+          // …swap the walker for a lineup mini and bring in the next friend.
+          this.monster.destroy()
+          this.detailObjects.clear()
+          const mini = this.spawnMini(grownIndex, episodeAtGrow)
+          mini.setScale(0)
+          this.tweens.add({
+            targets: mini,
+            scaleX: 0.3,
+            scaleY: 0.3,
+            duration: 260,
+            ease: 'Back.easeOut',
+          })
+          if (danceParty) this.dancePartySequence()
+          else this.nextFriendEnters()
+        },
+      })
+    })
+  }
+
+  /** A brand-new small friend hops in from the side. */
+  private nextFriendEnters(): void {
+    this.growth = scaleForStep(this.journey.growthStep)
+    this.detailPlan = detailsForFriend(this.journey.episode, this.journey.friendsFed)
+    this.buildMonster()
+    this.syncDetails(false)
+
+    const mp = this.monsterPos()
+    this.monster.setPosition(this.scale.width + this.bodyR, mp.y)
+    this.tweens.add({
+      targets: this.monster,
+      x: mp.x,
+      duration: 600,
+      ease: 'Back.easeOut',
+      onComplete: () => this.layout(),
+    })
+    playTone(659, 90, 'sine', 0.08)
+    this.time.delayedCall(110, () => playTone(880, 110, 'sine', 0.08))
+  }
+
+  /** All five grown friends dance, then the next episode fades in. */
+  private dancePartySequence(): void {
+    const cx = this.scale.width / 2
+    ;[0, 1].forEach((wave) => {
+      this.time.delayedCall(wave * 900, () => {
+        this.confetti.explode(50, cx * 0.5, this.px(90))
+        this.confetti.explode(50, cx * 1.5, this.px(90))
+        this.stars.explode(12, cx, this.px(140))
+      })
+    })
+    // Party melody + everyone bounces in a wave, twice.
+    ;[523, 659, 784, 659, 880, 784, 1047].forEach((freq, i) =>
+      this.time.delayedCall(i * 180, () => playTone(freq, 150, 'triangle', 0.1)),
+    )
+    this.minis.forEach((mini, i) => {
+      this.tweens.add({
+        targets: mini,
+        y: mini.y - this.px(46),
+        delay: i * 130,
+        duration: 260,
+        yoyo: true,
+        repeat: 3,
+        ease: 'Quad.easeOut',
+      })
+      this.tweens.add({
+        targets: mini,
+        angle: { from: -8, to: 8 },
+        delay: i * 130,
+        duration: 260,
+        yoyo: true,
+        repeat: 3,
+        ease: 'Sine.easeInOut',
+        onComplete: () => mini.setAngle(0),
+      })
+    })
+
+    this.time.delayedCall(2900, () => this.episodeTransition())
+  }
+
+  /** Soft white fade → new palette, food pool, fresh lineup, first friend. */
+  private episodeTransition(): void {
+    const veil = this.add
+      .rectangle(0, 0, this.scale.width, this.scale.height, 0xffffff)
+      .setOrigin(0)
+      .setDepth(90)
+      .setAlpha(0)
+    this.tweens.add({
+      targets: veil,
+      alpha: 1,
+      duration: 550,
+      ease: 'Sine.easeIn',
+      onComplete: () => {
+        // Behind the veil: swap the world.
+        this.episode = episodeFor(this.journey)
+        this.makeTextures()
+        for (const mini of this.minis) {
+          this.tweens.killTweensOf(mini)
+          mini.destroy()
+        }
+        this.minis = []
+        this.growth = scaleForStep(this.journey.growthStep)
+        this.detailPlan = detailsForFriend(this.journey.episode, this.journey.friendsFed)
+        this.buildMonster()
+        this.syncDetails(false)
+        this.layout()
+        ;[659, 784, 988].forEach((freq, i) =>
+          this.time.delayedCall(200 + i * 150, () => playTone(freq, 140, 'sine', 0.08)),
+        )
+        this.tweens.add({
+          targets: veil,
+          alpha: 0,
+          delay: 150,
+          duration: 600,
+          ease: 'Sine.easeOut',
+          onComplete: () => veil.destroy(),
+        })
+      },
+    })
   }
 
   private buildPlates(): void {
@@ -356,10 +873,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     )
     this.bubble.add([tail2, tail1, this.bubbleBg])
 
-    // Tapping the bubble repeats the request beeps.
+    // Tapping the bubble repeats the request cue.
     this.bubbleBg.setInteractive()
     this.bubbleBg.on('pointerdown', () => {
-      if (this.round) this.playRequestBeeps(requestTotal(this.round.request))
+      if (this.round) this.playRequestCue(this.round.request)
       this.tweens.killTweensOf(this.bubble)
       this.tweens.add({
         targets: this.bubble,
@@ -507,20 +1024,41 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const w = this.scale.width
     const h = this.scale.height
     const tableH = this.tableHeight()
+    const palette = this.episode.palette
 
     this.bgGfx.clear()
-    this.bgGfx.fillGradientStyle(BG_TOP, BG_TOP, BG_BOTTOM, BG_BOTTOM, 1)
+    this.bgGfx.fillGradientStyle(
+      palette.bgTop,
+      palette.bgTop,
+      palette.bgBottom,
+      palette.bgBottom,
+      1,
+    )
     this.bgGfx.fillRect(0, 0, w, h)
 
     this.tableGfx.clear()
-    this.tableGfx.fillStyle(TABLE_EDGE, 1)
+    this.tableGfx.fillStyle(palette.tableEdge, 1)
     this.tableGfx.fillRect(0, h - tableH - this.px(8), w, this.px(8))
-    this.tableGfx.fillStyle(TABLE, 1)
+    this.tableGfx.fillStyle(palette.table, 1)
     this.tableGfx.fillRect(0, h - tableH, w, tableH)
 
     const mp = this.monsterPos()
     this.monster.setPosition(mp.x, mp.y)
     this.positionBubble()
+
+    this.minis.forEach((mini, i) => {
+      this.tweens.killTweensOf(mini)
+      const slot = this.miniSlot(i)
+      mini.setPosition(slot.x, slot.y)
+      this.tweens.add({
+        targets: mini,
+        y: slot.y - this.px(6),
+        duration: 1600 + i * 180,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      })
+    })
 
     for (let i = 0; i < this.plates.length; i++) {
       const slot = this.slotPos(i)
@@ -586,14 +1124,24 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private startRound(n: number): void {
     this.roundNumber = n
     this.eaten = []
+    this.spitBacks = 0
     this.transitioning = false
     reportLevel(levelForRound(n))
-    const round = generateRound(n, this.previousRequest)
+    const round = generateRound({
+      round: n,
+      skill: this.skill,
+      recentKinds: this.recentKinds,
+      previous: this.previousRequest,
+      foods: this.episode.foods,
+    })
     this.round = round
     this.previousRequest = round.request
+    this.recentKinds.push(round.taskKind)
+    if (this.recentKinds.length > 6) this.recentKinds.shift()
+    this.roundStartAt = this.time.now
     this.buildTray(round.tray)
     this.showRequest(round.request)
-    this.time.delayedCall(450, () => this.playRequestBeeps(requestTotal(round.request)))
+    this.time.delayedCall(450, () => this.playRequestCue(round.request))
   }
 
   private buildTray(tray: string[]): void {
@@ -648,8 +1196,14 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   }
 
   private showRequest(request: FoodRequest): void {
-    for (const pic of this.bubblePics) pic.destroy()
+    for (const pic of this.bubblePics) {
+      this.tweens.killTweensOf(pic)
+      pic.destroy()
+    }
     this.bubblePics = []
+    for (const extra of this.bubbleExtras) extra.destroy()
+    this.bubbleExtras = []
+    this.pips = []
 
     const items = bubbleItems(request)
     const itemW = this.px(BUBBLE_ITEM_CSS + 10)
@@ -657,15 +1211,47 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const bh = this.px(96)
     this.bubbleBg.setDisplaySize(bw, bh)
 
+    const tile = this.px(BUBBLE_ITEM_CSS + 22)
     items.forEach((item, i) => {
       const x = (i - (items.length - 1) / 2) * itemW
-      const pic = item.emoji
-        ? this.add.image(x, 0, `ftm-food-${this.foodIdForEmoji(item.emoji)}`)
-        : this.add.image(x, 0, 'ftm-splash').setTint(COLOR_HEX[item.color ?? 'red'])
-      pic.setDisplaySize(this.px(BUBBLE_ITEM_CSS + 22), this.px(BUBBLE_ITEM_CSS + 22))
+      let pic: Phaser.GameObjects.Image
+      if (item.emoji !== undefined) {
+        pic = this.add.image(x, 0, `ftm-food-${this.foodIdForEmoji(item.emoji)}`)
+        pic.setDisplaySize(tile, tile)
+      } else if (item.color !== undefined) {
+        pic = this.add.image(x, 0, 'ftm-splash').setTint(COLOR_HEX[item.color])
+        pic.setDisplaySize(tile, tile)
+      } else if (item.dots !== undefined) {
+        // Subitizing tile: soft backing splash + domino-style ink pips.
+        pic = this.add.image(x, 0, 'ftm-splash').setTint(0xe6dcf7)
+        pic.setDisplaySize(tile * 1.1, tile * 1.1)
+        this.addPips(x, item.dots)
+      } else {
+        // Empty slot: pulsing lavender socket (pattern answer / not progress) —
+        // tinted so it reads against the white bubble.
+        pic = this.add.image(x, 0, 'ftm-splash').setTint(0xcabcea).setAlpha(0.8)
+        pic.setDisplaySize(tile * 0.82, tile * 0.82)
+        this.tweens.add({
+          targets: pic,
+          scaleX: pic.scaleX * 1.12,
+          scaleY: pic.scaleY * 1.12,
+          duration: 600,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.easeInOut',
+        })
+      }
+      if (item.banned) {
+        const ban = this.add.image(x, 0, 'ftm-ban')
+        ban.setDisplaySize(tile * 1.15, tile * 1.15)
+        this.bubble.add(ban)
+        this.bubbleExtras.push(ban)
+      }
       this.bubble.add(pic)
       this.bubblePics.push(pic)
     })
+    // Ban overlays must render above their food tile.
+    for (const extra of this.bubbleExtras) this.bubble.bringToTop(extra)
 
     this.tweens.killTweensOf(this.bubble)
     this.bubble.setScale(0)
@@ -678,13 +1264,124 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
   }
 
+  /** Domino-style pip offsets (in pip-spacing units) for 1..6. */
+  private static readonly PIP_LAYOUTS: ReadonlyArray<ReadonlyArray<[number, number]>> = [
+    [[0, 0]],
+    [
+      [-1, -1],
+      [1, 1],
+    ],
+    [
+      [-1, -1],
+      [0, 0],
+      [1, 1],
+    ],
+    [
+      [-1, -1],
+      [1, -1],
+      [-1, 1],
+      [1, 1],
+    ],
+    [
+      [-1, -1],
+      [1, -1],
+      [0, 0],
+      [-1, 1],
+      [1, 1],
+    ],
+    [
+      [-1, -1],
+      [1, -1],
+      [-1, 0],
+      [1, 0],
+      [-1, 1],
+      [1, 1],
+    ],
+  ]
+
+  private addPips(tileX: number, count: number): void {
+    const layout =
+      FeedTheMonsterScene.PIP_LAYOUTS[Math.min(count, FeedTheMonsterScene.PIP_LAYOUTS.length) - 1]
+    // Offsets stay well inside the irregular splash blob (radius ~tile/2).
+    const unit = this.px(11)
+    for (const [ox, oy] of layout) {
+      const pip = this.add.circle(tileX + ox * unit, oy * unit, this.px(8), INK)
+      this.bubble.add(pip)
+      this.bubbleExtras.push(pip)
+      this.pips.push(pip)
+    }
+  }
+
+  /** Light one pip per eaten food — the count lesson replays as feedback. */
+  private lightPips(): void {
+    this.eaten.forEach((_, i) => {
+      const pip = this.pips[i]
+      if (!pip || pip.getData('lit')) return
+      pip.setData('lit', true)
+      pip.setFillStyle(0xffb703)
+      this.tweens.add({
+        targets: pip,
+        scaleX: { from: 1.8, to: 1.2 },
+        scaleY: { from: 1.8, to: 1.2 },
+        duration: 260,
+        ease: 'Back.easeOut',
+      })
+    })
+  }
+
+  /** A correct "not" feed stamps the fed food into the next empty slot. */
+  private fillNotSlot(foodId: string): void {
+    const pic = this.bubblePics[this.eaten.length]
+    if (!pic) return
+    this.tweens.killTweensOf(pic)
+    const tile = this.px(BUBBLE_ITEM_CSS + 22)
+    pic.setTexture(`ftm-food-${foodId}`)
+    pic.setAlpha(1)
+    pic.setDisplaySize(tile, tile)
+    this.tweens.add({
+      targets: pic,
+      scaleX: { from: pic.scaleX * 1.4, to: pic.scaleX },
+      scaleY: { from: pic.scaleY * 1.4, to: pic.scaleY },
+      duration: 240,
+      ease: 'Back.easeOut',
+    })
+  }
+
+  /** The pattern answer lands in the slot and the whole row takes a bow. */
+  private fillPatternSlot(): void {
+    if (!this.round || this.round.request.kind !== 'pattern') return
+    const slot = this.bubblePics[this.bubblePics.length - 1]
+    if (!slot) return
+    this.tweens.killTweensOf(slot)
+    const tile = this.px(BUBBLE_ITEM_CSS + 22)
+    slot.setTexture(`ftm-food-${this.round.request.answerId}`)
+    slot.setAlpha(1)
+    slot.setDisplaySize(tile, tile)
+    // Re-read the completed sequence left-to-right — celebration doubles as
+    // the lesson (the pattern is shown whole one more time).
+    this.bubblePics.forEach((pic, i) => {
+      this.tweens.add({
+        targets: pic,
+        y: -this.px(12),
+        delay: i * 90,
+        duration: 150,
+        yoyo: true,
+        ease: 'Quad.easeOut',
+      })
+      this.time.delayedCall(i * 90, () => playTone(PENTA[i % PENTA.length], 120, 'sine', 0.08))
+    })
+  }
+
   private foodIdForEmoji(emoji: string): string {
-    const food = FOODS.find((f) => f.emoji === emoji)
-    return food ? food.id : FOODS[0].id
+    const food = ALL_FOODS.find((f) => f.emoji === emoji)
+    return food ? food.id : ALL_FOODS[0].id
   }
 
   private updateBubbleGray(): void {
     if (!this.round) return
+    // not/pattern progress is carried by slot fills, dots by lit pips.
+    const kind = this.round.request.kind
+    if (kind === 'not' || kind === 'pattern' || kind === 'dots') return
     const grayed = grayedBubbleItems(this.round.request, this.eaten)
     grayed.forEach((isGray, i) => {
       const pic = this.bubblePics[i]
@@ -705,6 +1402,34 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private playRequestBeeps(count: number): void {
     for (let i = 0; i < Math.min(count, PENTA.length); i++) {
       this.time.delayedCall(i * 170, () => playTone(PENTA[i], 150, 'sine', 0.1))
+    }
+  }
+
+  /** Audio rendering of the request — each task kind gets its own cue. */
+  private playRequestCue(request: FoodRequest): void {
+    switch (request.kind) {
+      case 'pattern': {
+        // The sequence as a melody: one tone per role, then a rising "…?".
+        const roles = [...new Set(request.sequence)]
+        request.sequence.forEach((id, i) => {
+          const tone = PENTA[(roles.indexOf(id) * 2) % PENTA.length]
+          this.time.delayedCall(i * 160, () => playTone(tone, 130, 'sine', 0.09))
+        })
+        this.time.delayedCall(request.sequence.length * 160 + 140, () =>
+          playTone(988, 170, 'sine', 0.08),
+        )
+        return
+      }
+      case 'not':
+        // "Uh-uh" — two low warning taps, then one beep per wanted food.
+        playTone(220, 120, 'sine', 0.08)
+        this.time.delayedCall(150, () => playTone(196, 140, 'sine', 0.08))
+        for (let i = 0; i < Math.min(request.count, PENTA.length); i++) {
+          this.time.delayedCall(430 + i * 170, () => playTone(PENTA[i], 150, 'sine', 0.1))
+        }
+        return
+      default:
+        this.playRequestBeeps(requestTotal(request))
     }
   }
 
@@ -742,7 +1467,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   private eatCorrect(img: Phaser.GameObjects.Image): void {
     if (!this.round) return
-    this.eaten.push(img.getData('foodId') as string)
+    const foodId = img.getData('foodId') as string
+    this.eaten.push(foodId)
     this.foods = this.foods.filter((f) => f !== img)
     img.destroy()
 
@@ -764,14 +1490,21 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const step = Math.min(this.eaten.length - 1, PENTA.length - 1)
     this.time.delayedCall(150, () => playTone(PENTA[step], 170, 'sine', 0.12))
 
-    this.updateBubbleGray()
+    const kind = this.round.request.kind
+    if (kind === 'not') this.fillNotSlot(foodId)
+    else if (kind === 'dots') this.lightPips()
+    else this.updateBubbleGray()
+
     if (isRoundComplete(this.round.request, this.eaten)) {
+      if (kind === 'pattern') this.fillPatternSlot()
       this.completeRound()
     }
   }
 
   private spitBack(img: Phaser.GameObjects.Image): void {
-    // "Blegh" — funny face, head shake, food arcs back to its plate. Never lost.
+    // "Blegh" — funny face, head shake, food arcs back to its plate. Never
+    // lost, never punished — but it IS the meter's cognitive error signal.
+    this.spitBacks++
     playTone(220, 220, 'sine', 0.07)
     this.time.delayedCall(110, () => playTone(165, 180, 'sine', 0.06))
     this.funnyUntil = this.time.now + 700
@@ -779,6 +1512,27 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.time.delayedCall(260, () => this.setMouthOpen(0, 140))
     this.squintEyes()
     this.shakeHead()
+
+    // The friend comically deflates one growth step (never below the start —
+    // no-fail), so right/wrong reads directly on the monster's body. Runs
+    // after shakeHead(), whose killTweensOf would cancel the deflate tween.
+    const shrunk = shrinkStep(this.journey)
+    if (shrunk.growthStep !== this.journey.growthStep) {
+      this.journey = shrunk
+      saveData(GAME_ID, journeyToData(this.journey))
+      this.growth = scaleForStep(this.journey.growthStep)
+      this.time.delayedCall(60, () => {
+        this.tweens.add({
+          targets: this.monster,
+          scaleX: { from: this.monster.scaleX * 1.06, to: this.growth },
+          scaleY: { from: this.monster.scaleY * 0.82, to: this.growth },
+          duration: 420,
+          ease: 'Bounce.easeOut',
+          onComplete: () => this.layout(),
+        })
+        this.syncDetails(true)
+      })
+    }
 
     const slot = this.slotPos(img.getData('slot') as number)
     this.arcTo(img, slot.x, slot.y, 550, () => {
@@ -797,16 +1551,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       this.time.delayedCall(150 + i * 40, () => this.fadeOutFood(food))
     })
 
-    // Monster grows ~3% per round (capped so it always fits).
-    this.growth = Math.min(this.growth * 1.03, 1.4)
-    this.tweens.add({
-      targets: this.monster,
-      scaleX: this.growth,
-      scaleY: this.growth,
-      duration: 320,
-      ease: 'Back.easeOut',
-    })
-
     // Burp + confetti.
     const mp = this.monsterPos()
     this.time.delayedCall(250, () => {
@@ -818,32 +1562,65 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // Round fed = level passed: one persistent star on the launcher tile.
     addStars(GAME_ID)
 
-    const big = isBigCelebrationRound(this.roundNumber)
-    const arpeggio = big ? [523, 659, 784, 1047] : [523, 659, 784]
-    this.time.delayedCall(500, () => {
-      arpeggio.forEach((freq, i) =>
-        this.time.delayedCall(i * 120, () => playTone(freq, 160, 'triangle', 0.1)),
-      )
-    })
-    if (big) {
-      // Every 3 rounds: bigger celebration — star shower + monster jump.
-      this.time.delayedCall(420, () => {
-        this.stars.explode(16, mp.x, mp.y - this.bodyR * this.growth)
-        this.confetti.explode(40, this.scale.width * 0.25, this.px(90))
-        this.confetti.explode(40, this.scale.width * 0.75, this.px(90))
-        this.tweens.add({
-          targets: this.monster,
-          y: mp.y - this.px(50),
-          duration: 240,
-          yoyo: true,
-          ease: 'Quad.easeOut',
-          onComplete: () => this.layout(),
-        })
+    // Adaptive nudge: spit-backs and round time steer the cognitive meter,
+    // saved every round so the next session resumes near this one.
+    this.skill = updateSkill(
+      this.skill,
+      { spitBacks: this.spitBacks, ms: this.time.now - this.roundStartAt },
+      this.skillPeak,
+    )
+    this.skillPeak = Math.max(this.skillPeak, this.skill)
+    saveSkill(GAME_ID, { cognitive: this.skill })
+
+    // The journey advances on care performed: this fed round grows the
+    // friend one visible step — or crowns it / completes the episode.
+    const { next, outcome } = feedStep(this.journey)
+    this.journey = next
+    saveData(GAME_ID, journeyToData(this.journey))
+
+    if (outcome === 'grew') {
+      // Visible growth pop: clearly bigger + maybe a brand-new detail.
+      this.growth = scaleForStep(this.journey.growthStep)
+      this.tweens.add({
+        targets: this.monster,
+        scaleX: this.growth,
+        scaleY: this.growth,
+        duration: 380,
+        ease: 'Back.easeOut',
+        onComplete: () => this.layout(),
       })
+      this.time.delayedCall(200, () => {
+        this.syncDetails(true)
+        this.time.delayedCall(300, () =>
+          [523, 659, 784].forEach((freq, i) =>
+            this.time.delayedCall(i * 120, () => playTone(freq, 160, 'triangle', 0.1)),
+          ),
+        )
+      })
+      this.time.delayedCall(1350, () => {
+        this.layout()
+        this.startRound(this.roundNumber + 1)
+      })
+      return
     }
 
-    // Child-paced-ish: short auto-advance; everything stays tappable meanwhile.
-    this.time.delayedCall(1200, () => {
+    // Fully grown: final size pop + the crown lands on the CURRENT friend
+    // (its plan is still active — detailPlan only swaps with the next one).
+    this.growth = scaleForStep(GROW_STEPS)
+    this.tweens.add({
+      targets: this.monster,
+      scaleX: this.growth,
+      scaleY: this.growth,
+      duration: 380,
+      ease: 'Back.easeOut',
+    })
+    this.time.delayedCall(250, () => this.syncDetails(true, GROW_STEPS))
+
+    // Then: walk to the lineup, next friend hops in (and, on the 5th, the
+    // dance party + episode change) — then play continues.
+    this.time.delayedCall(650, () => this.friendGrownSequence(outcome === 'episode-complete'))
+    const advanceAfter = outcome === 'episode-complete' ? 7400 : 3400
+    this.time.delayedCall(advanceAfter, () => {
       this.layout()
       this.startRound(this.roundNumber + 1)
     })
@@ -959,6 +1736,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   }
 
   private giggle(): void {
+    // Never during round transitions: killTweensOf would sever the
+    // walk-aside/party tween chain that carries the friend sequence.
+    if (this.transitioning) return
     playTone(784, 60, 'sine', 0.07)
     this.time.delayedCall(80, () => playTone(880, 70, 'sine', 0.07))
     this.tweens.killTweensOf(this.monster)
@@ -976,7 +1756,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   /** Easter egg: tap the nose → wind-up… ah-CHOO! */
   private sneeze(): void {
-    if (this.sneezing) return
+    // Same transition guard as giggle(): a mid-walk rebuild would kill the
+    // sneeze tween chain and strand `sneezing` forever (no blinks all session).
+    if (this.sneezing || this.transitioning) return
     this.sneezing = true
     playTone(660, 130, 'triangle', 0.07)
     for (const eye of [this.eyeL, this.eyeR]) {

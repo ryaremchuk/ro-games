@@ -4,6 +4,7 @@ import {
   getStars,
   loadProgress,
   resetProgressMemory,
+  saveData,
   saveSkill,
   sessionStart,
   WARMUP_DROP,
@@ -51,7 +52,7 @@ describe('sessionStart', () => {
 
 describe('progress storage', () => {
   it('returns an empty record for an unknown game', () => {
-    expect(loadProgress('nope')).toEqual({ stars: 0, skill: {}, lastPlayedAt: null })
+    expect(loadProgress('nope')).toEqual({ stars: 0, skill: {}, data: {}, lastPlayedAt: null })
   })
 
   it('round-trips skill axes and stamps lastPlayedAt', () => {
@@ -87,9 +88,9 @@ describe('progress storage', () => {
 
   it('recovers from corrupt storage', () => {
     localStorage.setItem('ro-games:progress:g', '{not json')
-    expect(loadProgress('g')).toEqual({ stars: 0, skill: {}, lastPlayedAt: null })
+    expect(loadProgress('g')).toEqual({ stars: 0, skill: {}, data: {}, lastPlayedAt: null })
     localStorage.setItem('ro-games:progress:g', JSON.stringify({ stars: 'many', skill: 3 }))
-    expect(loadProgress('g')).toEqual({ stars: 0, skill: {}, lastPlayedAt: null })
+    expect(loadProgress('g')).toEqual({ stars: 0, skill: {}, data: {}, lastPlayedAt: null })
   })
 
   it('drops non-finite skill values on load', () => {
@@ -97,7 +98,25 @@ describe('progress storage', () => {
       'ro-games:progress:g',
       JSON.stringify({ stars: 2.9, skill: { motor: 4, broken: 'x' }, lastPlayedAt: 5 }),
     )
-    expect(loadProgress('g')).toEqual({ stars: 2, skill: { motor: 4 }, lastPlayedAt: 5 })
+    expect(loadProgress('g')).toEqual({ stars: 2, skill: { motor: 4 }, data: {}, lastPlayedAt: 5 })
+  })
+
+  it('round-trips game data, merging patches and staying separate from skill', () => {
+    saveData('g', { episode: 1, friendsFed: 3 })
+    saveData('g', { friendsFed: 4, growthStep: 2 })
+    const progress = loadProgress('g')
+    expect(progress.data).toEqual({ episode: 1, friendsFed: 4, growthStep: 2 })
+    expect(progress.skill).toEqual({})
+    saveSkill('g', { cognitive: 5 })
+    expect(loadProgress('g').data).toEqual({ episode: 1, friendsFed: 4, growthStep: 2 })
+  })
+
+  it('drops non-finite data values on load', () => {
+    localStorage.setItem(
+      'ro-games:progress:g',
+      JSON.stringify({ data: { episode: 2, broken: 'x', nan: null } }),
+    )
+    expect(loadProgress('g').data).toEqual({ episode: 2 })
   })
 
   it('falls back to memory when localStorage writes throw', () => {
