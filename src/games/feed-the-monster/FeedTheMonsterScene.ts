@@ -121,6 +121,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private bubbleExtras: Phaser.GameObjects.GameObject[] = []
   /** Dot pips of a dots round, lit one-by-one as the child feeds. */
   private pips: Phaser.GameObjects.Arc[] = []
+  /** Accent ring around the pattern's answer socket (cleared per request). */
+  private patternRing: Phaser.GameObjects.Arc | null = null
 
   private plates: Phaser.GameObjects.Image[] = []
   private foods: Phaser.GameObjects.Image[] = []
@@ -988,7 +990,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.bubble.addAt(this.panelHit, 1) // above the plate, below the tiles
     this.panelHit.setInteractive()
     this.panelHit.on('pointerdown', () => {
-      if (this.round) this.playRequestCue(this.round.request)
+      // Not during transitions: a mid-celebration replay would hop tiles
+      // that the completion bow is already animating.
+      if (this.round && !this.transitioning) this.playRequestCue(this.round.request)
       this.tweens.killTweensOf(this.bubble)
       this.tweens.add({
         targets: this.bubble,
@@ -1348,9 +1352,16 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     for (const extra of this.bubbleExtras) extra.destroy()
     this.bubbleExtras = []
     this.pips = []
+    this.patternRing = null
 
+    // Pattern rounds ask for exactly ONE food (the sequence's continuation),
+    // yet their tiles used to look identical to a "feed all of these" combo —
+    // the reported early-win confusion. The sequence is drawn as smaller
+    // context tiles; the ringed pulsing socket is the only "want". Pattern
+    // spacing is wider so the ring never overlaps the last context tile.
+    const isPattern = request.kind === 'pattern'
     const items = bubbleItems(request)
-    const itemW = this.px(BUBBLE_ITEM_CSS + 10)
+    const itemW = this.px(BUBBLE_ITEM_CSS + (isPattern ? 18 : 10))
     const bw = items.length * itemW + this.px(52)
     this.drawPanel(bw)
 
@@ -1360,7 +1371,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       let pic: Phaser.GameObjects.Image
       if (item.emoji !== undefined) {
         pic = this.add.image(x, 0, this.foodTexture(this.foodIdForEmoji(item.emoji)))
-        pic.setDisplaySize(tile, tile)
+        const size = isPattern ? tile * 0.78 : tile
+        pic.setDisplaySize(size, size)
       } else if (item.color !== undefined) {
         pic = this.add.image(x, 0, 'ftm-splash').setTint(COLOR_HEX[item.color])
         pic.setDisplaySize(tile, tile)
@@ -1369,9 +1381,28 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         pic = this.add.image(x, 0, 'ftm-splash').setTint(0xe6dcf7)
         pic.setDisplaySize(tile * 1.1, tile * 1.1)
         this.addPips(x, item.dots)
+      } else if (isPattern) {
+        // The pattern's answer socket — THE ask of the round: one bright
+        // ringed pulsing hole at the end of the row.
+        pic = this.add.image(x, 0, 'ftm-splash').setTint(0xcabcea)
+        pic.setDisplaySize(tile * 0.9, tile * 0.9)
+        const ring = this.add.circle(x, 0, tile * 0.5, 0x000000, 0)
+        ring.setStrokeStyle(this.px(4), this.episode.palette.table, 1)
+        this.bubble.add(ring)
+        this.bubbleExtras.push(ring)
+        this.patternRing = ring
+        this.tweens.add({
+          targets: pic,
+          scaleX: pic.scaleX * 1.12,
+          scaleY: pic.scaleY * 1.12,
+          duration: 600,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.easeInOut',
+        })
       } else {
-        // Empty slot: pulsing lavender socket (pattern answer / not progress) —
-        // tinted so it reads against the white bubble.
+        // Not-round progress slot: pulsing lavender socket — tinted so it
+        // reads against the white panel.
         pic = this.add.image(x, 0, 'ftm-splash').setTint(0xcabcea).setAlpha(0.8)
         pic.setDisplaySize(tile * 0.82, tile * 0.82)
         this.tweens.add({
@@ -1500,6 +1531,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     slot.setTexture(this.foodTexture(this.round.request.answerId))
     slot.setAlpha(1)
     slot.setDisplaySize(tile, tile)
+    // The socket is answered — its ring bows out.
+    if (this.patternRing) {
+      this.tweens.killTweensOf(this.patternRing)
+      this.tweens.add({ targets: this.patternRing, alpha: 0, duration: 300, ease: 'Quad.easeOut' })
+    }
     // Re-read the completed sequence left-to-right — celebration doubles as
     // the lesson (the pattern is shown whole one more time).
     this.bubblePics.forEach((pic, i) => {
@@ -1542,6 +1578,34 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
   }
 
+  /** Hop one panel tile (pattern cue re-reads the row tile by tile). */
+  private hopBubblePic(index: number): void {
+    const pic = this.bubblePics[index]
+    if (!pic || !pic.active || this.transitioning) return
+    this.tweens.add({
+      targets: pic,
+      y: { from: 0, to: -this.px(12) },
+      duration: 140,
+      yoyo: true,
+      ease: 'Quad.easeOut',
+    })
+  }
+
+  /** Flash the pattern answer ring — "this one is missing". */
+  private punchPatternRing(): void {
+    const ring = this.patternRing
+    if (!ring || !ring.active || this.transitioning) return
+    this.tweens.killTweensOf(ring)
+    ring.setScale(1)
+    this.tweens.add({
+      targets: ring,
+      scaleX: { from: 1.25, to: 1 },
+      scaleY: { from: 1.25, to: 1 },
+      duration: 320,
+      ease: 'Back.easeOut',
+    })
+  }
+
   private playRequestBeeps(count: number): void {
     for (let i = 0; i < Math.min(count, PENTA.length); i++) {
       this.time.delayedCall(i * 170, () => playTone(PENTA[i], 150, 'sine', 0.1))
@@ -1552,15 +1616,21 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private playRequestCue(request: FoodRequest): void {
     switch (request.kind) {
       case 'pattern': {
-        // The sequence as a melody: one tone per role, then a rising "…?".
+        // The sequence as a melody, re-taught visually: each context tile
+        // hops with its tone, then the answer socket flashes on the rising
+        // "…?" — the row leads to the one missing food.
         const roles = [...new Set(request.sequence)]
         request.sequence.forEach((id, i) => {
           const tone = PENTA[(roles.indexOf(id) * 2) % PENTA.length]
-          this.time.delayedCall(i * 160, () => playTone(tone, 130, 'sine', 0.09))
+          this.time.delayedCall(i * 160, () => {
+            playTone(tone, 130, 'sine', 0.09)
+            this.hopBubblePic(i)
+          })
         })
-        this.time.delayedCall(request.sequence.length * 160 + 140, () =>
-          playTone(988, 170, 'sine', 0.08),
-        )
+        this.time.delayedCall(request.sequence.length * 160 + 140, () => {
+          playTone(988, 170, 'sine', 0.08)
+          this.punchPatternRing()
+        })
         return
       }
       case 'not':
