@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   ACTIVE_POOL_SIZE,
-  BIG_CELEBRATION_EVERY_ROUNDS,
   COLOR_HEX,
   FAST_ROUND_MS,
   FOODS,
@@ -20,7 +19,6 @@ import {
   foodById,
   generateRound,
   grayedBubbleItems,
-  isBigCelebrationRound,
   isRoundComplete,
   levelForRound,
   pickTaskKind,
@@ -481,12 +479,5 @@ describe('levels', () => {
     expect(levelForRound(1)).toBe(1)
     expect(levelForRound(7)).toBe(7)
     expect(levelForRound(0)).toBe(1) // defensive: never below level 1
-  })
-
-  it('fires the big celebration exactly on its every-N beat', () => {
-    expect(isBigCelebrationRound(0)).toBe(false)
-    expect(isBigCelebrationRound(BIG_CELEBRATION_EVERY_ROUNDS - 1)).toBe(false)
-    expect(isBigCelebrationRound(BIG_CELEBRATION_EVERY_ROUNDS)).toBe(true)
-    expect(isBigCelebrationRound(BIG_CELEBRATION_EVERY_ROUNDS + 1)).toBe(false)
   })
 })

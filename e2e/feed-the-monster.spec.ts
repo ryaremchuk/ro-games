@@ -4,6 +4,8 @@ import type { Page } from '@playwright/test'
 // augmentation so the in-browser evaluate() callbacks below are typed.
 import type { FeedTestState } from '../src/games/feed-the-monster/testHook'
 import type { TaskKind } from '../src/games/feed-the-monster/logic'
+import type { JourneyState } from '../src/games/feed-the-monster/journey'
+import { EPISODES, FRIENDS_PER_EPISODE, GROW_STEPS } from '../src/games/feed-the-monster/journey'
 
 // The liveness polls below carry generous internal deadlines (a throttled
 // headless clock can freeze Phaser for 15s+ mid-celebration), so the default
@@ -82,6 +84,22 @@ async function forceKindSettled(page: Page, kind: TaskKind): Promise<void> {
     const ok = await page.evaluate((k) => window.__feedTheMonster!.forceKind(k as TaskKind), kind)
     if (ok) break
     if (Date.now() > deadline) throw new Error(`forceKind(${kind}) never accepted`)
+    await page.waitForTimeout(400)
+  }
+  await waitTraySettled(page)
+}
+
+/** Jump the journey to a given point, retrying while mid-transition. */
+async function forceJourneySettled(page: Page, journey: Partial<JourneyState>): Promise<void> {
+  const deadline = Date.now() + 20_000
+  for (;;) {
+    await keepAwake(page)
+    const ok = await page.evaluate(
+      (j) => window.__feedTheMonster!.forceJourney(j as Partial<JourneyState>),
+      journey,
+    )
+    if (ok) break
+    if (Date.now() > deadline) throw new Error(`forceJourney never accepted`)
     await page.waitForTimeout(400)
   }
   await waitTraySettled(page)
@@ -189,6 +207,97 @@ test('feed: clean rounds climb the adaptive meter and advance rounds', async ({ 
   const s = await readState(page)
   expect(s.round).toBeGreaterThanOrEqual(3)
   expect(s.skill, 'two clean quick rounds must climb the meter').toBeGreaterThan(skillBefore)
+})
+
+test('feed: a fed round visibly grows the friend; a wrong feed deflates it', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  // Jump mid-growth so both directions are observable.
+  await forceJourneySettled(page, { growthStep: 3 })
+  const mid = await readState(page)
+  expect(mid.journey.growthStep).toBe(3)
+  const scaleBefore = mid.growthScale
+  const detailsBefore = mid.details.length
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-friend-mid.png' })
+
+  // Wrong feed → one step smaller (and one detail may pop away).
+  const wrong = mid.foods.find((f) => !f.correct)!
+  await dragToMouth(page, wrong)
+  await pollState(page, 'friend deflated', (s) => s.journey.growthStep === 2)
+  await pollState(page, 'shrink animated', (s) => s.growthScale < scaleBefore)
+
+  // Complete the round → the journey grows back a step, visibly.
+  const shrunkScale = (await readState(page)).growthScale
+  await feedRound(page)
+  const after = await readState(page)
+  expect(after.journey.growthStep).toBe(3)
+  expect(after.growthScale).toBeGreaterThan(shrunkScale)
+  expect(after.details.length).toBeGreaterThanOrEqual(detailsBefore)
+})
+
+test('feed: a fully grown friend joins the lineup and a new small friend arrives', async ({
+  page,
+}) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  // One bite away from full growth.
+  await forceJourneySettled(page, { growthStep: GROW_STEPS - 1 })
+  expect((await readState(page)).miniCount).toBe(0)
+
+  await feedRound(page)
+
+  const s = await readState(page)
+  expect(s.journey.friendsFed).toBe(1)
+  expect(s.journey.growthStep).toBe(0)
+  expect(s.miniCount).toBe(1)
+  expect(s.growthScale).toBeLessThan(1) // the new friend starts small again
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-friend-grown.png' })
+})
+
+test('feed: the 5th grown friend throws a dance party and opens the next episode', async ({
+  page,
+}) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  await forceJourneySettled(page, {
+    friendsFed: FRIENDS_PER_EPISODE - 1,
+    growthStep: GROW_STEPS - 1,
+  })
+  expect((await readState(page)).miniCount).toBe(FRIENDS_PER_EPISODE - 1)
+  expect((await readState(page)).episodeId).toBe(EPISODES[0].id)
+
+  await feedRound(page)
+
+  const s = await readState(page)
+  expect(s.journey).toEqual({ episode: 1, friendsFed: 0, growthStep: 0 })
+  expect(s.episodeId).toBe(EPISODES[1].id)
+  expect(s.miniCount).toBe(0) // fresh lineup for the new episode
+  // The tray now serves the new episode's food pool.
+  const episodeFoodIds = new Set(EPISODES[1].foods.map((f) => f.id))
+  for (const food of s.foods) expect(episodeFoodIds.has(food.foodId)).toBe(true)
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-episode2.png' })
+})
+
+test('feed: the journey survives a reload (persistent long-term progression)', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  await forceJourneySettled(page, { episode: 2, friendsFed: 2, growthStep: 4 })
+
+  await page.reload()
+  await waitForReady(page)
+  const s = await waitTraySettled(page)
+  expect(s.journey).toEqual({ episode: 2, friendsFed: 2, growthStep: 4 })
+  expect(s.episodeId).toBe(EPISODES[2].id)
+  expect(s.miniCount).toBe(2)
+  expect(s.details.length).toBeGreaterThan(0)
 })
 
 for (const kind of ['dots', 'not', 'pattern', 'mix'] as const) {

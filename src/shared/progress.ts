@@ -12,6 +12,9 @@
  * - STARS — a forever-accumulating reward counter (+1 per celebration beat
  *   inside a game). Shown on the launcher tile; the one number that only
  *   ever grows, whatever the adaptive meters do.
+ * - DATA — game-defined numeric state with no meter semantics (e.g. the
+ *   feed-the-monster journey: episode / friends fed / growth step), saved so
+ *   visible long-term progression survives restarts.
  *
  * Storage failures (private mode, quota) fall back to an in-memory map so a
  * session still behaves; it just won't survive a restart.
@@ -22,6 +25,12 @@ export interface GameProgress {
   stars: number
   /** Saved adaptive meters, keyed by game-defined axis name. */
   skill: Record<string, number>
+  /**
+   * Game-defined numeric state that must survive restarts but is NOT an
+   * adaptive meter (no warm-up/decay semantics) — e.g. feed-the-monster's
+   * journey (episode / friends fed / growth step).
+   */
+  data: Record<string, number>
   /** Epoch ms of the last save, for the decay calculation. */
   lastPlayedAt: number | null
 }
@@ -46,7 +55,14 @@ export function resetProgressMemory(): void {
 }
 
 function emptyProgress(): GameProgress {
-  return { stars: 0, skill: {}, lastPlayedAt: null }
+  return { stars: 0, skill: {}, data: {}, lastPlayedAt: null }
+}
+
+function copyFiniteNumbers(source: unknown, into: Record<string, number>): void {
+  if (typeof source !== 'object' || source === null) return
+  for (const [key, value] of Object.entries(source as Record<string, unknown>)) {
+    if (typeof value === 'number' && Number.isFinite(value)) into[key] = value
+  }
 }
 
 function sanitize(raw: unknown): GameProgress {
@@ -56,11 +72,8 @@ function sanitize(raw: unknown): GameProgress {
   if (typeof record.stars === 'number' && Number.isFinite(record.stars)) {
     progress.stars = Math.max(0, Math.floor(record.stars))
   }
-  if (typeof record.skill === 'object' && record.skill !== null) {
-    for (const [axis, value] of Object.entries(record.skill as Record<string, unknown>)) {
-      if (typeof value === 'number' && Number.isFinite(value)) progress.skill[axis] = value
-    }
-  }
+  copyFiniteNumbers(record.skill, progress.skill)
+  copyFiniteNumbers(record.data, progress.data)
   if (typeof record.lastPlayedAt === 'number' && Number.isFinite(record.lastPlayedAt)) {
     progress.lastPlayedAt = record.lastPlayedAt
   }
@@ -98,6 +111,14 @@ function store(gameId: string, progress: GameProgress): void {
 export function saveSkill(gameId: string, skill: Record<string, number>): void {
   const progress = loadProgress(gameId)
   progress.skill = { ...progress.skill, ...skill }
+  progress.lastPlayedAt = Date.now()
+  store(gameId, progress)
+}
+
+/** Save game-defined numeric state (merged over any keys not mentioned). */
+export function saveData(gameId: string, data: Record<string, number>): void {
+  const progress = loadProgress(gameId)
+  progress.data = { ...progress.data, ...data }
   progress.lastPlayedAt = Date.now()
   store(gameId, progress)
 }

@@ -56,8 +56,39 @@ export const FOODS: readonly Food[] = [
   { id: 'pretzel', emoji: '🥨', color: 'brown' },
 ]
 
+/**
+ * Foods that only appear in later journey episodes (journey.ts composes
+ * per-episode pools out of the full catalog below).
+ */
+export const EXTRA_FOODS: readonly Food[] = [
+  { id: 'bacon', emoji: '🥓', color: 'red' },
+  { id: 'egg', emoji: '🍳', color: 'yellow' },
+  { id: 'butter', emoji: '🧈', color: 'yellow' },
+  { id: 'avocado', emoji: '🥑', color: 'green' },
+  { id: 'lettuce', emoji: '🥬', color: 'green' },
+  { id: 'pumpkin', emoji: '🎃', color: 'orange' },
+  { id: 'sweet-potato', emoji: '🍠', color: 'purple' },
+  { id: 'bread', emoji: '🍞', color: 'brown' },
+  { id: 'waffle', emoji: '🧇', color: 'brown' },
+  { id: 'watermelon', emoji: '🍉', color: 'red' },
+  { id: 'cherries', emoji: '🍒', color: 'red' },
+  { id: 'corn', emoji: '🌽', color: 'yellow' },
+  { id: 'green-apple', emoji: '🍏', color: 'green' },
+  { id: 'peach', emoji: '🍑', color: 'orange' },
+  { id: 'burger', emoji: '🍔', color: 'brown' },
+  { id: 'hotdog', emoji: '🌭', color: 'brown' },
+  { id: 'custard', emoji: '🍮', color: 'yellow' },
+  { id: 'honey', emoji: '🍯', color: 'yellow' },
+  { id: 'kiwi', emoji: '🥝', color: 'green' },
+  { id: 'melon', emoji: '🍈', color: 'green' },
+  { id: 'chocolate', emoji: '🍫', color: 'brown' },
+]
+
+/** Every food the game knows, across all episodes. */
+export const ALL_FOODS: readonly Food[] = [...FOODS, ...EXTRA_FOODS]
+
 export function foodById(id: string): Food {
-  const food = FOODS.find((f) => f.id === id)
+  const food = ALL_FOODS.find((f) => f.id === id)
   if (!food) throw new Error(`Unknown food id: ${id}`)
   return food
 }
@@ -267,9 +298,9 @@ export const TRAY_SIZE = 8
 export const ACTIVE_POOL_SIZE = 8
 
 /** Every 3 rounds, 2 new foods rotate in (wrapping) so the tray never looks the same. */
-export function activePoolForRound(round: number): Food[] {
-  const shift = (Math.floor((round - 1) / 3) * 2) % FOODS.length
-  return Array.from({ length: ACTIVE_POOL_SIZE }, (_, i) => FOODS[(shift + i) % FOODS.length])
+export function activePoolForRound(round: number, foods: readonly Food[] = FOODS): Food[] {
+  const shift = (Math.floor((round - 1) / 3) * 2) % foods.length
+  return Array.from({ length: ACTIVE_POOL_SIZE }, (_, i) => foods[(shift + i) % foods.length])
 }
 
 // ─── Per-kind difficulty dials (all scale with the meter) ────────────────────
@@ -562,6 +593,11 @@ export interface RoundContext {
   recentKinds?: readonly TaskKind[]
   /** The previous request, to avoid a back-to-back primary-target repeat. */
   previous?: FoodRequest
+  /**
+   * The rotating food list (an episode pool; defaults to episode 1's FOODS).
+   * Must be full 6-color cycles — see journey.EPISODES.
+   */
+  foods?: readonly Food[]
   /** Test/e2e override: force a specific kind regardless of the meter. */
   forceKind?: TaskKind
 }
@@ -570,7 +606,7 @@ export interface RoundContext {
 export function generateRound(context: RoundContext, rng: Rng = Math.random): Round {
   const skill = clampSkill(context.skill)
   const taskKind = context.forceKind ?? pickTaskKind(skill, context.recentKinds ?? [], rng)
-  const pool = activePoolForRound(context.round)
+  const pool = activePoolForRound(context.round, context.foods ?? FOODS)
   const request = generateRequest(taskKind, skill, pool, rng, context.previous)
   return { round: context.round, taskKind, request, tray: generateTray(request, pool, rng) }
 }
@@ -701,15 +737,9 @@ export function grayedBubbleItems(request: FoodRequest, eaten: readonly string[]
   }
 }
 
-// ─── Levels & celebrations (reward rhythm, decoupled from the meter) ─────────
-
-/** Every this many rounds: the bigger star-shower celebration (animation). */
-export const BIG_CELEBRATION_EVERY_ROUNDS = 3
-
-/** The big celebration fires exactly when a round total crosses the beat. */
-export function isBigCelebrationRound(round: number): boolean {
-  return round > 0 && round % BIG_CELEBRATION_EVERY_ROUNDS === 0
-}
+// ─── Levels (reward rhythm, decoupled from the meter) ────────────────────────
+// Celebration beats live on the journey (friend grown / dance party) — see
+// journey.ts. Levels stay per-round: steady badge + star rhythm.
 
 /** 1-based HUD level = the current round: every fed round passes a level. */
 export function levelForRound(round: number): number {
