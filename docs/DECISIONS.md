@@ -123,6 +123,31 @@ its ceiling), and the chosen hybrid:
   rather than skill keeps the economy fair: a child at the skill ceiling
   earns stars at the same rate as one still climbing.
 
+## Feed the Monster: care-based journey (friends, episodes) beside the meter
+
+Decided with the friends/episodes feature (July 2026). The adaptive meter is
+deliberately invisible — which left the game with no progression a child could
+SEE. The visible layer must not leak difficulty (locking content behind
+performance punishes the struggling child the invisible meter is protecting),
+so it advances on care performed, never on skill:
+
+- **Growth is the feedback.** Every fed round grows the friend one visible
+  step (~12.5% size + a new body detail: horns, ears, spots, bowtie,
+  freckles… crown last); every spat-back wrong food deflates one step, comic,
+  floored at the starting size. Right/wrong reads directly on the monster's
+  body — no score, no text.
+- **Friends and episodes are the long game.** A fully grown friend joins the
+  on-screen lineup; five friends throw a dance party and open the next
+  episode (new food pool — always three full 6-color cycles — plus new
+  palette and friend colors, wrapping forever). State persists via the
+  `data` bag added to `shared/progress.ts` (numbers-only, no meter
+  semantics), so the journey spans days.
+- **One big-celebration cadence.** The old every-3-rounds star shower died;
+  friend-grown (~6 rounds) and the dance party (~30) are the animation
+  beats. Stars still bank +1 per fed round, unchanged, and the journey never
+  gates play — precedent: StoryToys' Hungry Caterpillar (content on care,
+  not tests) and Curious Learning's Feed the Monster (collection of friends).
+
 ## Deferred (not done yet, on purpose)
 
 - **Parent gate** (hold-to-confirm) before leaving a game or opening external

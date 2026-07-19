@@ -10,6 +10,7 @@
  */
 
 import type { TaskKind } from './logic'
+import type { JourneyState } from './journey'
 
 export interface FeedTrayFood {
   foodId: string
@@ -41,6 +42,16 @@ export interface FeedTestState {
   mouth: { xCss: number; yCss: number }
   /** How many picture tiles the thought bubble shows. */
   bubbleTiles: number
+  /** The visible long-term journey (episode / friends fed / growth step). */
+  journey: JourneyState
+  /** Active episode theme id (drives the food pool + palette). */
+  episodeId: string
+  /** Current monster container scale (visible growth). */
+  growthScale: number
+  /** Growth details currently shown on the friend's body. */
+  details: string[]
+  /** Fed friends standing in the lineup. */
+  miniCount: number
 }
 
 export interface FeedTestApi {
@@ -52,6 +63,13 @@ export interface FeedTestApi {
    * Returns false while a round transition is in flight.
    */
   forceKind: (kind: TaskKind) => boolean
+  /**
+   * Jump the journey to a given point (persisted, visuals rebuilt, round
+   * regenerated from the episode's pool) — so a spec can reach the
+   * friend-grown / dance-party moments without feeding 6/30 rounds.
+   * Returns false while a round transition is in flight.
+   */
+  forceJourney: (journey: Partial<JourneyState>) => boolean
 }
 
 declare global {
