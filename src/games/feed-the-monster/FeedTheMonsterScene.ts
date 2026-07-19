@@ -1,11 +1,13 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
-import { addStars } from '../../shared/progress'
+import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   COLOR_HEX,
   FOODS,
+  SKILL_MAX,
+  SKILL_START,
   TRAY_SIZE,
   bubbleItems,
   generateRound,
@@ -14,9 +16,11 @@ import {
   isRoundComplete,
   levelForRound,
   requestTotal,
+  updateSkill,
   wantsFood,
 } from './logic'
-import type { FoodRequest, Round } from './logic'
+import type { FoodRequest, Round, TaskKind } from './logic'
+import type { FeedTestApi } from './testHook'
 
 /** Registry id — also the key the shared progress store files this under. */
 const GAME_ID = 'feed-the-monster'
@@ -62,6 +66,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private sneezing = false
   private funnyUntil = 0
 
+  // Adaptive cognitive meter (invisible; drives the task registry).
+  private skill = SKILL_START
+  private skillPeak = SKILL_START
+  private roundStartAt = 0
+  private spitBacks = 0
+  private recentKinds: TaskKind[] = []
+
   private bgGfx!: Phaser.GameObjects.Graphics
   private tableGfx!: Phaser.GameObjects.Graphics
 
@@ -78,6 +89,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private bubble!: Phaser.GameObjects.Container
   private bubbleBg!: Phaser.GameObjects.Image
   private bubblePics: Phaser.GameObjects.Image[] = []
+  /** Extra bubble decorations (dot pips, ban overlay) cleared per request. */
+  private bubbleExtras: Phaser.GameObjects.GameObject[] = []
+  /** Dot pips of a dots round, lit one-by-one as the child feeds. */
+  private pips: Phaser.GameObjects.Arc[] = []
 
   private plates: Phaser.GameObjects.Image[] = []
   private foods: Phaser.GameObjects.Image[] = []
@@ -103,6 +118,12 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.dpr = Math.min(window.devicePixelRatio || 1, 3)
     this.bodyR = Math.min(Math.min(this.scale.width, this.scale.height) * 0.17, this.px(150))
 
+    // Resume the saved skill meter a couple of steps down (warm-up ramp);
+    // the peak makes below-peak climbs twice as fast (see logic.updateSkill).
+    const saved = loadProgress(GAME_ID)
+    this.skillPeak = saved.skill.cognitive ?? SKILL_START
+    this.skill = sessionStart(this.skillPeak, { max: SKILL_MAX, lastPlayedAt: saved.lastPlayedAt })
+
     this.makeTextures()
 
     this.bgGfx = this.add.graphics().setDepth(0)
@@ -116,13 +137,73 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.layout()
     this.scheduleBlink()
 
+    const teardown = (): void => {
+      offViewport()
+      this.teardownTestApi()
+    }
     const offViewport = onViewportResize(this.handleWindowResize)
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, offViewport)
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, teardown)
     // React unmount calls game.destroy(), which emits DESTROY (not SHUTDOWN) —
     // without this the viewport listener leaks and fires on a dead scene.
-    this.events.once(Phaser.Scenes.Events.DESTROY, offViewport)
+    this.events.once(Phaser.Scenes.Events.DESTROY, teardown)
+
+    // Dev/e2e hook (dev builds, or prod behind `?e2e` — never in normal
+    // play). Lets Playwright read state and force a task kind — the canvas
+    // is opaque to the DOM. See testHook.
+    if (import.meta.env.DEV || location.search.includes('e2e')) this.exposeTestApi()
 
     this.time.delayedCall(350, () => this.startRound(1))
+  }
+
+  // ─── E2E test hook (dev-only) ──────────────────────────────────────────────
+
+  private testApi?: FeedTestApi
+
+  private exposeTestApi(): void {
+    const api: FeedTestApi = {
+      state: () => ({
+        round: this.roundNumber,
+        taskKind: this.round?.taskKind ?? null,
+        skill: this.skill,
+        eaten: [...this.eaten],
+        requestTotal: this.round ? requestTotal(this.round.request) : 0,
+        spitBacks: this.spitBacks,
+        transitioning: this.transitioning,
+        foods: this.foods.map((f) => ({
+          foodId: f.getData('foodId') as string,
+          correct: this.round
+            ? wantsFood(this.round.request, this.eaten, f.getData('foodId') as string)
+            : false,
+          xCss: f.x / this.dpr,
+          yCss: f.y / this.dpr,
+        })),
+        mouth: { xCss: this.mouthWorld().x / this.dpr, yCss: this.mouthWorld().y / this.dpr },
+        bubbleTiles: this.bubblePics.length,
+      }),
+      forceKind: (kind) => {
+        if (this.transitioning || !this.round) return false
+        const round = generateRound({
+          round: this.roundNumber,
+          skill: this.skill,
+          previous: this.previousRequest,
+          forceKind: kind,
+        })
+        this.round = round
+        this.previousRequest = round.request
+        this.eaten = []
+        this.spitBacks = 0
+        this.roundStartAt = this.time.now
+        this.buildTray(round.tray)
+        this.showRequest(round.request)
+        return true
+      },
+    }
+    this.testApi = api
+    window.__feedTheMonster = api
+  }
+
+  private teardownTestApi(): void {
+    if (this.testApi && window.__feedTheMonster === this.testApi) delete window.__feedTheMonster
   }
 
   private handleWindowResize = (): void => {
@@ -227,6 +308,20 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // Thought bubble body + color splash (white, tinted per request color).
     this.makeBlobTexture('ftm-bubble', this.px(64), 0xffffff, 3)
     this.makeBlobTexture('ftm-splash', this.px(26), 0xffffff, 11)
+
+    // Ban sign for "not" rounds: red ring + diagonal bar (🚫, drawn crisp).
+    if (!this.textures.exists('ftm-ban')) {
+      const r = this.px(34)
+      const stroke = this.px(8)
+      const side = r * 2 + stroke * 2
+      const g = this.add.graphics()
+      g.lineStyle(stroke, 0xe5484d, 1)
+      g.strokeCircle(side / 2, side / 2, r)
+      const off = r * Math.SQRT1_2
+      g.lineBetween(side / 2 - off, side / 2 - off, side / 2 + off, side / 2 + off)
+      g.generateTexture('ftm-ban', side, side)
+      g.destroy()
+    }
 
     // Particles.
     if (!this.textures.exists('ftm-confetti')) {
@@ -356,10 +451,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     )
     this.bubble.add([tail2, tail1, this.bubbleBg])
 
-    // Tapping the bubble repeats the request beeps.
+    // Tapping the bubble repeats the request cue.
     this.bubbleBg.setInteractive()
     this.bubbleBg.on('pointerdown', () => {
-      if (this.round) this.playRequestBeeps(requestTotal(this.round.request))
+      if (this.round) this.playRequestCue(this.round.request)
       this.tweens.killTweensOf(this.bubble)
       this.tweens.add({
         targets: this.bubble,
@@ -586,14 +681,23 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private startRound(n: number): void {
     this.roundNumber = n
     this.eaten = []
+    this.spitBacks = 0
     this.transitioning = false
     reportLevel(levelForRound(n))
-    const round = generateRound(n, this.previousRequest)
+    const round = generateRound({
+      round: n,
+      skill: this.skill,
+      recentKinds: this.recentKinds,
+      previous: this.previousRequest,
+    })
     this.round = round
     this.previousRequest = round.request
+    this.recentKinds.push(round.taskKind)
+    if (this.recentKinds.length > 6) this.recentKinds.shift()
+    this.roundStartAt = this.time.now
     this.buildTray(round.tray)
     this.showRequest(round.request)
-    this.time.delayedCall(450, () => this.playRequestBeeps(requestTotal(round.request)))
+    this.time.delayedCall(450, () => this.playRequestCue(round.request))
   }
 
   private buildTray(tray: string[]): void {
@@ -648,8 +752,14 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   }
 
   private showRequest(request: FoodRequest): void {
-    for (const pic of this.bubblePics) pic.destroy()
+    for (const pic of this.bubblePics) {
+      this.tweens.killTweensOf(pic)
+      pic.destroy()
+    }
     this.bubblePics = []
+    for (const extra of this.bubbleExtras) extra.destroy()
+    this.bubbleExtras = []
+    this.pips = []
 
     const items = bubbleItems(request)
     const itemW = this.px(BUBBLE_ITEM_CSS + 10)
@@ -657,15 +767,47 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const bh = this.px(96)
     this.bubbleBg.setDisplaySize(bw, bh)
 
+    const tile = this.px(BUBBLE_ITEM_CSS + 22)
     items.forEach((item, i) => {
       const x = (i - (items.length - 1) / 2) * itemW
-      const pic = item.emoji
-        ? this.add.image(x, 0, `ftm-food-${this.foodIdForEmoji(item.emoji)}`)
-        : this.add.image(x, 0, 'ftm-splash').setTint(COLOR_HEX[item.color ?? 'red'])
-      pic.setDisplaySize(this.px(BUBBLE_ITEM_CSS + 22), this.px(BUBBLE_ITEM_CSS + 22))
+      let pic: Phaser.GameObjects.Image
+      if (item.emoji !== undefined) {
+        pic = this.add.image(x, 0, `ftm-food-${this.foodIdForEmoji(item.emoji)}`)
+        pic.setDisplaySize(tile, tile)
+      } else if (item.color !== undefined) {
+        pic = this.add.image(x, 0, 'ftm-splash').setTint(COLOR_HEX[item.color])
+        pic.setDisplaySize(tile, tile)
+      } else if (item.dots !== undefined) {
+        // Subitizing tile: soft backing splash + domino-style ink pips.
+        pic = this.add.image(x, 0, 'ftm-splash').setTint(0xe6dcf7)
+        pic.setDisplaySize(tile * 1.1, tile * 1.1)
+        this.addPips(x, item.dots)
+      } else {
+        // Empty slot: pulsing lavender socket (pattern answer / not progress) —
+        // tinted so it reads against the white bubble.
+        pic = this.add.image(x, 0, 'ftm-splash').setTint(0xcabcea).setAlpha(0.8)
+        pic.setDisplaySize(tile * 0.82, tile * 0.82)
+        this.tweens.add({
+          targets: pic,
+          scaleX: pic.scaleX * 1.12,
+          scaleY: pic.scaleY * 1.12,
+          duration: 600,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.easeInOut',
+        })
+      }
+      if (item.banned) {
+        const ban = this.add.image(x, 0, 'ftm-ban')
+        ban.setDisplaySize(tile * 1.15, tile * 1.15)
+        this.bubble.add(ban)
+        this.bubbleExtras.push(ban)
+      }
       this.bubble.add(pic)
       this.bubblePics.push(pic)
     })
+    // Ban overlays must render above their food tile.
+    for (const extra of this.bubbleExtras) this.bubble.bringToTop(extra)
 
     this.tweens.killTweensOf(this.bubble)
     this.bubble.setScale(0)
@@ -678,6 +820,114 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
   }
 
+  /** Domino-style pip offsets (in pip-spacing units) for 1..6. */
+  private static readonly PIP_LAYOUTS: ReadonlyArray<ReadonlyArray<[number, number]>> = [
+    [[0, 0]],
+    [
+      [-1, -1],
+      [1, 1],
+    ],
+    [
+      [-1, -1],
+      [0, 0],
+      [1, 1],
+    ],
+    [
+      [-1, -1],
+      [1, -1],
+      [-1, 1],
+      [1, 1],
+    ],
+    [
+      [-1, -1],
+      [1, -1],
+      [0, 0],
+      [-1, 1],
+      [1, 1],
+    ],
+    [
+      [-1, -1],
+      [1, -1],
+      [-1, 0],
+      [1, 0],
+      [-1, 1],
+      [1, 1],
+    ],
+  ]
+
+  private addPips(tileX: number, count: number): void {
+    const layout =
+      FeedTheMonsterScene.PIP_LAYOUTS[Math.min(count, FeedTheMonsterScene.PIP_LAYOUTS.length) - 1]
+    // Offsets stay well inside the irregular splash blob (radius ~tile/2).
+    const unit = this.px(11)
+    for (const [ox, oy] of layout) {
+      const pip = this.add.circle(tileX + ox * unit, oy * unit, this.px(8), INK)
+      this.bubble.add(pip)
+      this.bubbleExtras.push(pip)
+      this.pips.push(pip)
+    }
+  }
+
+  /** Light one pip per eaten food — the count lesson replays as feedback. */
+  private lightPips(): void {
+    this.eaten.forEach((_, i) => {
+      const pip = this.pips[i]
+      if (!pip || pip.getData('lit')) return
+      pip.setData('lit', true)
+      pip.setFillStyle(0xffb703)
+      this.tweens.add({
+        targets: pip,
+        scaleX: { from: 1.8, to: 1.2 },
+        scaleY: { from: 1.8, to: 1.2 },
+        duration: 260,
+        ease: 'Back.easeOut',
+      })
+    })
+  }
+
+  /** A correct "not" feed stamps the fed food into the next empty slot. */
+  private fillNotSlot(foodId: string): void {
+    const pic = this.bubblePics[this.eaten.length]
+    if (!pic) return
+    this.tweens.killTweensOf(pic)
+    const tile = this.px(BUBBLE_ITEM_CSS + 22)
+    pic.setTexture(`ftm-food-${foodId}`)
+    pic.setAlpha(1)
+    pic.setDisplaySize(tile, tile)
+    this.tweens.add({
+      targets: pic,
+      scaleX: { from: pic.scaleX * 1.4, to: pic.scaleX },
+      scaleY: { from: pic.scaleY * 1.4, to: pic.scaleY },
+      duration: 240,
+      ease: 'Back.easeOut',
+    })
+  }
+
+  /** The pattern answer lands in the slot and the whole row takes a bow. */
+  private fillPatternSlot(): void {
+    if (!this.round || this.round.request.kind !== 'pattern') return
+    const slot = this.bubblePics[this.bubblePics.length - 1]
+    if (!slot) return
+    this.tweens.killTweensOf(slot)
+    const tile = this.px(BUBBLE_ITEM_CSS + 22)
+    slot.setTexture(`ftm-food-${this.round.request.answerId}`)
+    slot.setAlpha(1)
+    slot.setDisplaySize(tile, tile)
+    // Re-read the completed sequence left-to-right — celebration doubles as
+    // the lesson (the pattern is shown whole one more time).
+    this.bubblePics.forEach((pic, i) => {
+      this.tweens.add({
+        targets: pic,
+        y: -this.px(12),
+        delay: i * 90,
+        duration: 150,
+        yoyo: true,
+        ease: 'Quad.easeOut',
+      })
+      this.time.delayedCall(i * 90, () => playTone(PENTA[i % PENTA.length], 120, 'sine', 0.08))
+    })
+  }
+
   private foodIdForEmoji(emoji: string): string {
     const food = FOODS.find((f) => f.emoji === emoji)
     return food ? food.id : FOODS[0].id
@@ -685,6 +935,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   private updateBubbleGray(): void {
     if (!this.round) return
+    // not/pattern progress is carried by slot fills, dots by lit pips.
+    const kind = this.round.request.kind
+    if (kind === 'not' || kind === 'pattern' || kind === 'dots') return
     const grayed = grayedBubbleItems(this.round.request, this.eaten)
     grayed.forEach((isGray, i) => {
       const pic = this.bubblePics[i]
@@ -705,6 +958,34 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private playRequestBeeps(count: number): void {
     for (let i = 0; i < Math.min(count, PENTA.length); i++) {
       this.time.delayedCall(i * 170, () => playTone(PENTA[i], 150, 'sine', 0.1))
+    }
+  }
+
+  /** Audio rendering of the request — each task kind gets its own cue. */
+  private playRequestCue(request: FoodRequest): void {
+    switch (request.kind) {
+      case 'pattern': {
+        // The sequence as a melody: one tone per role, then a rising "…?".
+        const roles = [...new Set(request.sequence)]
+        request.sequence.forEach((id, i) => {
+          const tone = PENTA[(roles.indexOf(id) * 2) % PENTA.length]
+          this.time.delayedCall(i * 160, () => playTone(tone, 130, 'sine', 0.09))
+        })
+        this.time.delayedCall(request.sequence.length * 160 + 140, () =>
+          playTone(988, 170, 'sine', 0.08),
+        )
+        return
+      }
+      case 'not':
+        // "Uh-uh" — two low warning taps, then one beep per wanted food.
+        playTone(220, 120, 'sine', 0.08)
+        this.time.delayedCall(150, () => playTone(196, 140, 'sine', 0.08))
+        for (let i = 0; i < Math.min(request.count, PENTA.length); i++) {
+          this.time.delayedCall(430 + i * 170, () => playTone(PENTA[i], 150, 'sine', 0.1))
+        }
+        return
+      default:
+        this.playRequestBeeps(requestTotal(request))
     }
   }
 
@@ -742,7 +1023,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   private eatCorrect(img: Phaser.GameObjects.Image): void {
     if (!this.round) return
-    this.eaten.push(img.getData('foodId') as string)
+    const foodId = img.getData('foodId') as string
+    this.eaten.push(foodId)
     this.foods = this.foods.filter((f) => f !== img)
     img.destroy()
 
@@ -764,14 +1046,21 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const step = Math.min(this.eaten.length - 1, PENTA.length - 1)
     this.time.delayedCall(150, () => playTone(PENTA[step], 170, 'sine', 0.12))
 
-    this.updateBubbleGray()
+    const kind = this.round.request.kind
+    if (kind === 'not') this.fillNotSlot(foodId)
+    else if (kind === 'dots') this.lightPips()
+    else this.updateBubbleGray()
+
     if (isRoundComplete(this.round.request, this.eaten)) {
+      if (kind === 'pattern') this.fillPatternSlot()
       this.completeRound()
     }
   }
 
   private spitBack(img: Phaser.GameObjects.Image): void {
-    // "Blegh" — funny face, head shake, food arcs back to its plate. Never lost.
+    // "Blegh" — funny face, head shake, food arcs back to its plate. Never
+    // lost, never punished — but it IS the meter's cognitive error signal.
+    this.spitBacks++
     playTone(220, 220, 'sine', 0.07)
     this.time.delayedCall(110, () => playTone(165, 180, 'sine', 0.06))
     this.funnyUntil = this.time.now + 700
@@ -817,6 +1106,16 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
     // Round fed = level passed: one persistent star on the launcher tile.
     addStars(GAME_ID)
+
+    // Adaptive nudge: spit-backs and round time steer the cognitive meter,
+    // saved every round so the next session resumes near this one.
+    this.skill = updateSkill(
+      this.skill,
+      { spitBacks: this.spitBacks, ms: this.time.now - this.roundStartAt },
+      this.skillPeak,
+    )
+    this.skillPeak = Math.max(this.skillPeak, this.skill)
+    saveSkill(GAME_ID, { cognitive: this.skill })
 
     const big = isBigCelebrationRound(this.roundNumber)
     const arpeggio = big ? [523, 659, 784, 1047] : [523, 659, 784]
