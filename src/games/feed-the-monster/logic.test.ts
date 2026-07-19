@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   ACTIVE_POOL_SIZE,
+  BIG_CELEBRATION_EVERY_ROUNDS,
   COLOR_HEX,
   FOODS,
-  ROUNDS_PER_LEVEL,
   TRAY_SIZE,
   activePoolForRound,
   bubbleItems,
   foodById,
   generateRound,
   grayedBubbleItems,
+  isBigCelebrationRound,
   isRoundComplete,
   levelForRound,
   requestTotal,
@@ -287,21 +288,18 @@ describe('thought bubble pictures', () => {
 })
 
 describe('levels', () => {
-  it('advances one level per 3 rounds, aligned with the big celebration', () => {
+  it('passes one level per fed round', () => {
     expect(levelForRound(1)).toBe(1)
-    expect(levelForRound(ROUNDS_PER_LEVEL)).toBe(1)
-    expect(levelForRound(ROUNDS_PER_LEVEL + 1)).toBe(2)
-    expect(levelForRound(2 * ROUNDS_PER_LEVEL)).toBe(2)
-    expect(levelForRound(2 * ROUNDS_PER_LEVEL + 1)).toBe(3)
+    expect(levelForRound(2)).toBe(2)
+    expect(levelForRound(7)).toBe(7)
     expect(levelForRound(0)).toBe(1) // defensive: never below level 1
   })
 
-  it('is monotonic in round number', () => {
-    let last = 0
-    for (let round = 1; round <= 40; round++) {
-      const level = levelForRound(round)
-      expect(level).toBeGreaterThanOrEqual(last)
-      last = level
-    }
+  it('fires the big celebration exactly on its every-N beat', () => {
+    expect(isBigCelebrationRound(0)).toBe(false)
+    expect(isBigCelebrationRound(BIG_CELEBRATION_EVERY_ROUNDS - 1)).toBe(false)
+    expect(isBigCelebrationRound(BIG_CELEBRATION_EVERY_ROUNDS)).toBe(true)
+    expect(isBigCelebrationRound(BIG_CELEBRATION_EVERY_ROUNDS + 1)).toBe(false)
+    expect(isBigCelebrationRound(BIG_CELEBRATION_EVERY_ROUNDS * 4)).toBe(true)
   })
 })

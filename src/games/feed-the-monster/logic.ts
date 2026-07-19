@@ -68,12 +68,17 @@ export function stageForRound(round: number): Stage {
   return 'combo'
 }
 
-/** Rounds per HUD level — matches the every-3-rounds big celebration. */
-export const ROUNDS_PER_LEVEL = 3
+/** Every this many rounds: the bigger star-shower celebration (animation). */
+export const BIG_CELEBRATION_EVERY_ROUNDS = 3
 
-/** 1-based level for the CURRENT round number (rounds 1-3 → L1, 4-6 → L2, …). */
+/** The big celebration fires exactly when a round total crosses the beat. */
+export function isBigCelebrationRound(round: number): boolean {
+  return round > 0 && round % BIG_CELEBRATION_EVERY_ROUNDS === 0
+}
+
+/** 1-based HUD level = the current round: every fed round passes a level. */
 export function levelForRound(round: number): number {
-  return Math.floor(Math.max(round - 1, 0) / ROUNDS_PER_LEVEL) + 1
+  return Math.max(round, 1)
 }
 
 export interface CountEntry {

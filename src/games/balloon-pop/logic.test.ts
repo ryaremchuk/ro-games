@@ -4,9 +4,8 @@ import {
   BALLOON_SHAPES,
   CELEBRATION_EVERY_ROUNDS,
   DICE_LAYOUTS,
-  DIFFICULTY_MAX,
-  DIFFICULTY_START,
   FAST_ROUND_MS,
+  MATCH_ESCAPES_BEFORE_EASE,
   MAX_BALLOON_VALUE,
   MAX_MATCHES_ON_SCREEN,
   MAX_TASK_REPEAT,
@@ -14,9 +13,11 @@ import {
   RISE_SPEED_MAX,
   RISE_SPEED_START,
   SCAFFOLD_ROUNDS,
-  STAGE2_DIFFICULTY,
-  STAGE3_DIFFICULTY,
-  STAGE4_DIFFICULTY,
+  SKILL_MAX,
+  SKILL_START,
+  STAGE2_COGNITIVE,
+  STAGE3_COGNITIVE,
+  STAGE4_COGNITIVE,
   TASKS,
   WRONG_TAPS_BEFORE_HINT,
   baseRiseSpeed,
@@ -33,9 +34,17 @@ import {
   shouldShowHint,
   stageFor,
   unlockedTasks,
-  updateDifficulty,
+  updateSkill,
 } from './logic'
-import type { BalloonSpec, DotLayoutKind, RoundPlan, Rng, SpawnContext, TaskId } from './logic'
+import type {
+  BalloonSpec,
+  DotLayoutKind,
+  RoundPlan,
+  Rng,
+  SkillPair,
+  SpawnContext,
+  TaskId,
+} from './logic'
 
 /** Seeded RNG so every property below is reproducible. */
 function mulberry32(seed: number): Rng {
@@ -50,24 +59,29 @@ function mulberry32(seed: number): Rng {
 
 const SEEDS = Array.from({ length: 10 }, (_, i) => i + 1)
 
-/** Representative difficulties pinned inside each stage band. */
+/** Representative skill values pinned inside each stage band. */
 const D_S1 = 0
-const D_S2 = STAGE2_DIFFICULTY
-const D_S3 = STAGE3_DIFFICULTY
-const D_S4 = STAGE4_DIFFICULTY
-const D_MAX = DIFFICULTY_MAX
+const D_S2 = STAGE2_COGNITIVE
+const D_S3 = STAGE3_COGNITIVE
+const D_S4 = STAGE4_COGNITIVE
+const D_MAX = SKILL_MAX
 
-/** A post-scaffold round at a difficulty, for a task (defaults to dots). */
-function roundAt(difficulty: number, rng: Rng, taskId: TaskId = 'count-dots'): RoundPlan {
+/** Both axes at the same value — the common case in these band tests. */
+function skillAt(value: number): SkillPair {
+  return { motor: value, cognitive: value }
+}
+
+/** A post-scaffold round at a skill value, for a task (defaults to dots). */
+function roundAt(skill: number, rng: Rng, taskId: TaskId = 'count-dots'): RoundPlan {
   return planRound(
-    { difficulty, roundsCompleted: SCAFFOLD_ROUNDS + 5, prevTarget: null, taskId },
+    { skill: skillAt(skill), roundsCompleted: SCAFFOLD_ROUNDS + 5, prevTarget: null, taskId },
     rng,
   )
 }
 
 function spawnMany(
   round: RoundPlan,
-  difficulty: number,
+  skill: number,
   count: number,
   activeMatchCount: number,
   rng: Rng,
@@ -77,7 +91,7 @@ function spawnMany(
   for (let i = 0; i < count; i++) {
     const ctx: SpawnContext = {
       round,
-      difficulty,
+      skill: skillAt(skill),
       activeMatchCount,
       activeXFracs: [],
       lastColorIndex: lastColor,
@@ -146,70 +160,105 @@ describe('balloon shapes', () => {
   })
 })
 
-// ─── Adaptive difficulty ─────────────────────────────────────────────────────
+// ─── Adaptive skill meters ───────────────────────────────────────────────────
 
-describe('adaptive difficulty', () => {
-  const clean = { wrongTaps: 0, ms: 5_000 }
-  const slow = { wrongTaps: 0, ms: FAST_ROUND_MS + 1 }
-  const slip = { wrongTaps: 1, ms: 5_000 }
-  const hinted = { wrongTaps: WRONG_TAPS_BEFORE_HINT, ms: 5_000 }
+describe('adaptive skill meters', () => {
+  const clean = { wrongTaps: 0, matchEscapes: 0, ms: 5_000 }
+  const slow = { wrongTaps: 0, matchEscapes: 0, ms: FAST_ROUND_MS + 1 }
+  const slip = { wrongTaps: 1, matchEscapes: 0, ms: 5_000 }
+  const hinted = { wrongTaps: WRONG_TAPS_BEFORE_HINT, matchEscapes: 0, ms: 5_000 }
+  const oneEscape = { wrongTaps: 0, matchEscapes: 1, ms: 5_000 }
+  const escaped = { wrongTaps: 0, matchEscapes: MATCH_ESCAPES_BEFORE_EASE, ms: 5_000 }
+  const meltdown = { wrongTaps: 5, matchEscapes: 3, ms: 60_000 }
 
   it('starts at the friendly floor', () => {
-    expect(DIFFICULTY_START).toBe(0)
-    expect(stageFor(DIFFICULTY_START)).toBe(1)
+    expect(SKILL_START).toBe(0)
+    expect(stageFor(SKILL_START)).toBe(1)
   })
 
-  it('moves up one step on a clean, quick round', () => {
-    expect(updateDifficulty(0, clean)).toBe(1)
-    expect(updateDifficulty(5, clean)).toBe(6)
+  it('moves both axes up one step on a clean, quick round', () => {
+    expect(updateSkill(skillAt(0), clean)).toEqual(skillAt(1))
+    expect(updateSkill(skillAt(5), clean)).toEqual(skillAt(6))
   })
 
-  it('holds steady on a slow-but-correct round (no rush pressure)', () => {
-    expect(updateDifficulty(5, slow)).toBe(5)
+  it('holds both axes on a slow-but-correct round (no rush pressure)', () => {
+    expect(updateSkill(skillAt(5), slow)).toEqual(skillAt(5))
   })
 
-  it('holds steady on a single slip', () => {
-    expect(updateDifficulty(5, slip)).toBe(5)
+  it('holds both axes on a single slip', () => {
+    expect(updateSkill(skillAt(5), slip)).toEqual(skillAt(5))
   })
 
-  it('eases down one step when the glow hint was needed', () => {
-    expect(updateDifficulty(5, hinted)).toBe(4)
-    expect(updateDifficulty(5, { wrongTaps: 6, ms: 60_000 })).toBe(4)
+  it('eases ONLY cognitive down when the glow hint was needed', () => {
+    expect(updateSkill(skillAt(5), hinted)).toEqual({ motor: 5, cognitive: 4 })
+    expect(updateSkill(skillAt(5), { wrongTaps: 6, matchEscapes: 0, ms: 60_000 })).toEqual({
+      motor: 5,
+      cognitive: 4,
+    })
   })
 
-  it('clamps to [0, DIFFICULTY_MAX] and never jumps more than one step', () => {
-    expect(updateDifficulty(0, hinted)).toBe(0)
-    expect(updateDifficulty(DIFFICULTY_MAX, clean)).toBe(DIFFICULTY_MAX)
-    for (let d = 0; d <= DIFFICULTY_MAX; d++) {
-      for (const result of [clean, slow, slip, hinted]) {
-        const next = updateDifficulty(d, result)
-        expect(Math.abs(next - d)).toBeLessThanOrEqual(1)
-        expect(next).toBeGreaterThanOrEqual(0)
-        expect(next).toBeLessThanOrEqual(DIFFICULTY_MAX)
+  it('holds motor on a single escape, eases it on repeat escapes', () => {
+    expect(updateSkill(skillAt(5), oneEscape)).toEqual({ motor: 5, cognitive: 6 })
+    expect(updateSkill(skillAt(5), escaped)).toEqual({ motor: 4, cognitive: 6 })
+  })
+
+  it('keeps the axes decoupled: a rough+escaped round eases both', () => {
+    expect(updateSkill(skillAt(5), meltdown)).toEqual(skillAt(4))
+  })
+
+  it('never raises motor during a cognitively rough round', () => {
+    const roughButCaught = { wrongTaps: WRONG_TAPS_BEFORE_HINT, matchEscapes: 0, ms: 5_000 }
+    expect(updateSkill(skillAt(5), roughButCaught).motor).toBe(5)
+  })
+
+  it('doubles up-steps while below the saved peak (session warm-up)', () => {
+    const peak = { motor: 8, cognitive: 10 }
+    expect(updateSkill(skillAt(5), clean, peak)).toEqual({ motor: 7, cognitive: 7 })
+    // At/above the peak the step drops back to one.
+    expect(updateSkill({ motor: 8, cognitive: 10 }, clean, peak)).toEqual({
+      motor: 9,
+      cognitive: 11,
+    })
+  })
+
+  it('clamps to [0, SKILL_MAX]; steps stay within ±1 (±2 in warm-up)', () => {
+    expect(updateSkill(skillAt(0), meltdown)).toEqual(skillAt(0))
+    expect(updateSkill(skillAt(SKILL_MAX), clean)).toEqual(skillAt(SKILL_MAX))
+    const peak = skillAt(SKILL_MAX)
+    for (let d = 0; d <= SKILL_MAX; d++) {
+      for (const result of [clean, slow, slip, hinted, oneEscape, escaped, meltdown]) {
+        for (const p of [skillAt(0), peak]) {
+          const next = updateSkill(skillAt(d), result, p)
+          for (const axis of ['motor', 'cognitive'] as const) {
+            expect(Math.abs(next[axis] - d)).toBeLessThanOrEqual(2)
+            expect(next[axis]).toBeGreaterThanOrEqual(0)
+            expect(next[axis]).toBeLessThanOrEqual(SKILL_MAX)
+          }
+        }
       }
     }
   })
 
-  it('a session of clean rounds walks the whole ramp; hints walk it back', () => {
-    let d = DIFFICULTY_START
-    for (let i = 0; i < 20; i++) d = updateDifficulty(d, clean)
-    expect(d).toBe(DIFFICULTY_MAX)
-    for (let i = 0; i < 20; i++) d = updateDifficulty(d, hinted)
-    expect(d).toBe(0)
+  it('a session of clean rounds walks the whole ramp; rough ones walk it back', () => {
+    let skill = skillAt(SKILL_START)
+    for (let i = 0; i < 20; i++) skill = updateSkill(skill, clean)
+    expect(skill).toEqual(skillAt(SKILL_MAX))
+    for (let i = 0; i < 20; i++) skill = updateSkill(skill, meltdown)
+    expect(skill).toEqual(skillAt(0))
   })
 })
 
 describe('stage bands', () => {
-  it('maps difficulty to stages at the briefed thresholds, monotonically', () => {
+  it('maps cognitive skill to stages at the briefed thresholds, monotonically', () => {
     expect(stageFor(0)).toBe(1)
-    expect(stageFor(STAGE2_DIFFICULTY - 1)).toBe(1)
-    expect(stageFor(STAGE2_DIFFICULTY)).toBe(2)
-    expect(stageFor(STAGE3_DIFFICULTY - 1)).toBe(2)
-    expect(stageFor(STAGE3_DIFFICULTY)).toBe(3)
-    expect(stageFor(STAGE4_DIFFICULTY - 1)).toBe(3)
-    expect(stageFor(STAGE4_DIFFICULTY)).toBe(4)
+    expect(stageFor(STAGE2_COGNITIVE - 1)).toBe(1)
+    expect(stageFor(STAGE2_COGNITIVE)).toBe(2)
+    expect(stageFor(STAGE3_COGNITIVE - 1)).toBe(2)
+    expect(stageFor(STAGE3_COGNITIVE)).toBe(3)
+    expect(stageFor(STAGE4_COGNITIVE - 1)).toBe(3)
+    expect(stageFor(STAGE4_COGNITIVE)).toBe(4)
     let last = 0
-    for (let d = 0; d <= DIFFICULTY_MAX; d++) {
+    for (let d = 0; d <= SKILL_MAX; d++) {
       const stage = stageFor(d)
       expect(stage).toBeGreaterThanOrEqual(last)
       last = stage
@@ -226,25 +275,25 @@ describe('task registry', () => {
     expect(unlockedTasks(0).map((t) => t.id)).toEqual(['count-dots'])
   })
 
-  it('unlocks tasks in curriculum order as difficulty grows', () => {
+  it('unlocks tasks in curriculum order as cognitive skill grows', () => {
     let lastCount = 0
-    for (let d = 0; d <= DIFFICULTY_MAX; d++) {
+    for (let d = 0; d <= SKILL_MAX; d++) {
       const count = unlockedTasks(d).length
       expect(count).toBeGreaterThanOrEqual(lastCount)
       lastCount = count
     }
-    expect(unlockedTasks(DIFFICULTY_MAX).length).toBe(TASKS.length)
+    expect(unlockedTasks(SKILL_MAX).length).toBe(TASKS.length)
     // Every task is reachable strictly below the cap, so the rotation at the
     // top always has the full variety.
     for (const task of TASKS) {
-      expect(task.minDifficulty).toBeLessThan(DIFFICULTY_MAX)
+      expect(task.minCognitive).toBeLessThan(SKILL_MAX)
     }
   })
 
   it('only ever picks unlocked tasks', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
-      for (let d = 0; d <= DIFFICULTY_MAX; d++) {
+      for (let d = 0; d <= SKILL_MAX; d++) {
         const unlocked = new Set(unlockedTasks(d).map((t) => t.id))
         for (let i = 0; i < 30; i++) {
           expect(unlocked.has(pickTask(d, [], rng))).toBe(true)
@@ -260,7 +309,7 @@ describe('task registry', () => {
       let streak = 0
       let prev: TaskId | null = null
       for (let i = 0; i < 300; i++) {
-        const id = pickTask(DIFFICULTY_MAX, recent, rng)
+        const id = pickTask(SKILL_MAX, recent, rng)
         streak = id === prev ? streak + 1 : 1
         expect(streak).toBeLessThanOrEqual(MAX_TASK_REPEAT)
         prev = id
@@ -283,7 +332,7 @@ describe('task registry', () => {
     const recent: TaskId[] = []
     const seen = new Set<TaskId>()
     for (let i = 0; i < 400; i++) {
-      const id = pickTask(DIFFICULTY_MAX, recent, rng)
+      const id = pickTask(SKILL_MAX, recent, rng)
       seen.add(id)
       recent.push(id)
       if (recent.length > 4) recent.shift()
@@ -300,7 +349,12 @@ describe('round planning', () => {
       const rng = mulberry32(seed)
       for (let rounds = 0; rounds < SCAFFOLD_ROUNDS; rounds++) {
         const round = planRound(
-          { difficulty: D_MAX, roundsCompleted: rounds, prevTarget: null, taskId: 'cross-rep' },
+          {
+            skill: skillAt(D_MAX),
+            roundsCompleted: rounds,
+            prevTarget: null,
+            taskId: 'cross-rep',
+          },
           rng,
         )
         expect(round.target).toBe(rounds + 1)
@@ -415,7 +469,7 @@ describe('target progression', () => {
       for (let i = 0; i < 60; i++) {
         const round = planRound(
           {
-            difficulty: D_S2,
+            skill: skillAt(D_S2),
             roundsCompleted: SCAFFOLD_ROUNDS + i,
             prevTarget: prev,
             taskId: 'count-dots',
@@ -430,12 +484,16 @@ describe('target progression', () => {
 })
 
 describe('levels', () => {
-  it('advances one level per rainbow (every 5 rounds)', () => {
+  it('passes one level per solved round, starting at 1', () => {
     expect(levelFor(0)).toBe(1)
-    expect(levelFor(CELEBRATION_EVERY_ROUNDS - 1)).toBe(1)
-    expect(levelFor(CELEBRATION_EVERY_ROUNDS)).toBe(2)
-    expect(levelFor(2 * CELEBRATION_EVERY_ROUNDS - 1)).toBe(2)
-    expect(levelFor(2 * CELEBRATION_EVERY_ROUNDS)).toBe(3)
+    expect(levelFor(1)).toBe(2)
+    expect(levelFor(7)).toBe(8)
+  })
+
+  it('moves independently of the rainbow beat (pure animation every 5)', () => {
+    expect(levelFor(CELEBRATION_EVERY_ROUNDS)).toBe(CELEBRATION_EVERY_ROUNDS + 1)
+    expect(isSkyCelebration(CELEBRATION_EVERY_ROUNDS)).toBe(true)
+    expect(isSkyCelebration(CELEBRATION_EVERY_ROUNDS - 1)).toBe(false)
   })
 })
 
@@ -515,7 +573,7 @@ describe('matching balloon invariant (CRITICAL)', () => {
           const spec = planBalloon(
             {
               round,
-              difficulty: d,
+              skill: skillAt(d),
               activeMatchCount: 0,
               activeXFracs: [],
               lastColorIndex: null,
@@ -534,7 +592,7 @@ describe('matching balloon invariant (CRITICAL)', () => {
       const rng = mulberry32(seed)
       for (const d of [D_S1, D_S2, D_S3, D_S4]) {
         const round = roundAt(d, rng)
-        const wave = planInitialWave(round, d, rng)
+        const wave = planInitialWave(round, skillAt(d), rng)
         expect(wave).toHaveLength(round.concurrent)
         expect(wave.some((spec) => spec.isMatch)).toBe(true)
       }
@@ -545,7 +603,7 @@ describe('matching balloon invariant (CRITICAL)', () => {
     for (const seed of SEEDS) {
       const rng = mulberry32(seed)
       const round = roundAt(D_S3, rng)
-      const afloat = planInitialWave(round, D_S3, rng)
+      const afloat = planInitialWave(round, skillAt(D_S3), rng)
       for (let step = 0; step < 300; step++) {
         // A random balloon drifts off the top and is replaced.
         const leaving = Math.floor(rng() * afloat.length)
@@ -554,7 +612,7 @@ describe('matching balloon invariant (CRITICAL)', () => {
         const spec = planBalloon(
           {
             round,
-            difficulty: D_S3,
+            skill: skillAt(D_S3),
             activeMatchCount: matches,
             activeXFracs: afloat.map((s) => s.xFrac),
             lastColorIndex: afloat.length ? afloat[afloat.length - 1].colorIndex : null,
@@ -575,7 +633,7 @@ describe('matching balloon invariant (CRITICAL)', () => {
       const rng = mulberry32(seed)
       for (const d of [D_S1, D_S2, D_S3, D_S4]) {
         const round = roundAt(d, rng)
-        const wave = planInitialWave(round, d, rng)
+        const wave = planInitialWave(round, skillAt(d), rng)
         expect(wave.some((spec) => spec.isMatch)).toBe(true)
         waves++
         if (!wave[0].isMatch) leadMisses++
@@ -595,7 +653,7 @@ describe('matching balloon invariant (CRITICAL)', () => {
         planBalloon(
           {
             round,
-            difficulty: D_S2,
+            skill: skillAt(D_S2),
             activeMatchCount: 0,
             activeXFracs: [],
             lastColorIndex: null,
@@ -616,7 +674,7 @@ describe('matching balloon invariant (CRITICAL)', () => {
       const spec = planBalloon(
         {
           round,
-          difficulty: D_S2,
+          skill: skillAt(D_S2),
           activeMatchCount: MAX_MATCHES_ON_SCREEN,
           activeXFracs: [],
           lastColorIndex: null,
@@ -641,13 +699,13 @@ describe('concurrency', () => {
 })
 
 describe('speed ramp', () => {
-  it('rides the difficulty meter, monotonic and clamped', () => {
+  it('rides the motor meter, monotonic and clamped', () => {
     expect(baseRiseSpeed(0)).toBe(RISE_SPEED_START)
-    expect(baseRiseSpeed(DIFFICULTY_MAX)).toBe(RISE_SPEED_MAX)
-    expect(baseRiseSpeed(DIFFICULTY_MAX + 100)).toBe(RISE_SPEED_MAX)
+    expect(baseRiseSpeed(SKILL_MAX)).toBe(RISE_SPEED_MAX)
+    expect(baseRiseSpeed(SKILL_MAX + 100)).toBe(RISE_SPEED_MAX)
     expect(baseRiseSpeed(-3)).toBe(RISE_SPEED_START)
     let last = 0
-    for (let d = 0; d <= DIFFICULTY_MAX; d++) {
+    for (let d = 0; d <= SKILL_MAX; d++) {
       const speed = baseRiseSpeed(d)
       expect(speed).toBeGreaterThanOrEqual(last)
       expect(speed).toBeLessThanOrEqual(RISE_SPEED_MAX)
@@ -751,69 +809,98 @@ describe('hints and celebrations', () => {
 // ─── Whole-session simulation (flow) ─────────────────────────────────────────
 
 describe('session flow simulation', () => {
+  interface PlayResult {
+    wrongTaps: number
+    matchEscapes: number
+    ms: number
+  }
+
   /** Simulate a full session: plan → play (skill profile) → adapt, N rounds. */
   function simulate(
     rounds: number,
-    play: (round: RoundPlan, d: number, rng: Rng) => { wrongTaps: number; ms: number },
+    play: (round: RoundPlan, skill: SkillPair, rng: Rng) => PlayResult,
     seed: number,
-  ): { rounds: RoundPlan[]; difficulties: number[] } {
+    start: SkillPair = skillAt(SKILL_START),
+    peak: SkillPair = skillAt(SKILL_START),
+  ): { rounds: RoundPlan[]; skills: SkillPair[] } {
     const rng = mulberry32(seed)
     const plans: RoundPlan[] = []
-    const difficulties: number[] = []
-    let d = DIFFICULTY_START
+    const skills: SkillPair[] = []
+    let skill = start
     let prevTarget: number | null = null
     const recent: TaskId[] = []
     for (let i = 0; i < rounds; i++) {
-      const taskId = pickTask(d, recent, rng)
-      const round = planRound({ difficulty: d, roundsCompleted: i, prevTarget, taskId }, rng)
+      const taskId = pickTask(skill.cognitive, recent, rng)
+      const round = planRound({ skill, roundsCompleted: i, prevTarget, taskId }, rng)
       plans.push(round)
-      difficulties.push(d)
+      skills.push(skill)
       prevTarget = round.target
       recent.push(round.taskId)
       if (recent.length > 4) recent.shift()
-      d = updateDifficulty(d, play(round, d, rng))
+      skill = updateSkill(skill, play(round, skill, rng), peak)
     }
-    return { rounds: plans, difficulties }
+    return { rounds: plans, skills }
   }
 
-  const ace = () => ({ wrongTaps: 0, ms: 6_000 })
-  const struggler = () => ({ wrongTaps: 3, ms: 30_000 })
+  const ace = (): PlayResult => ({ wrongTaps: 0, matchEscapes: 0, ms: 6_000 })
+  const struggler = (): PlayResult => ({ wrongTaps: 3, matchEscapes: 1, ms: 30_000 })
+  /** Counts perfectly but can't catch: clean rounds, matches keep escaping. */
+  const slowHands = (): PlayResult => ({ wrongTaps: 0, matchEscapes: 2, ms: 6_000 })
 
   it('an acing child reaches full variety and the speed ceiling', () => {
-    const { rounds, difficulties } = simulate(60, ace, 5)
-    expect(difficulties[difficulties.length - 1]).toBe(DIFFICULTY_MAX)
+    const { rounds, skills } = simulate(60, ace, 5)
+    expect(skills[skills.length - 1]).toEqual(skillAt(SKILL_MAX))
     const tasks = new Set(rounds.map((r) => r.taskId))
     expect(tasks.size).toBe(TASKS.length)
-    // Difficulty never drops for a clean player.
-    for (let i = 1; i < difficulties.length; i++) {
-      expect(difficulties[i]).toBeGreaterThanOrEqual(difficulties[i - 1])
+    // Neither axis ever drops for a clean player.
+    for (let i = 1; i < skills.length; i++) {
+      expect(skills[i].motor).toBeGreaterThanOrEqual(skills[i - 1].motor)
+      expect(skills[i].cognitive).toBeGreaterThanOrEqual(skills[i - 1].cognitive)
     }
   })
 
   it('a struggling child stays in the friendly zone: dots only, targets ≤ 3', () => {
-    const { rounds, difficulties } = simulate(60, struggler, 6)
-    for (const d of difficulties) expect(d).toBeLessThanOrEqual(STAGE2_DIFFICULTY)
+    const { rounds, skills } = simulate(60, struggler, 6)
+    for (const s of skills) expect(s.cognitive).toBeLessThanOrEqual(STAGE2_COGNITIVE)
     for (const round of rounds) {
       expect(round.taskId).toBe('count-dots')
       expect(round.target).toBeLessThanOrEqual(4)
     }
   })
 
+  it('slow hands + sharp mind: numbers advance while the sky stays slow', () => {
+    const { skills } = simulate(60, slowHands, 9)
+    const last = skills[skills.length - 1]
+    expect(last.cognitive).toBe(SKILL_MAX)
+    expect(last.motor).toBe(0)
+  })
+
+  it('a returning player warm-ups back to the saved peak in a few rounds', () => {
+    const peak = skillAt(10)
+    const start = skillAt(8) // sessionStart: 10 − WARMUP_DROP
+    const { skills } = simulate(10, ace, 10, start, peak)
+    const reached = skills.findIndex((s) => s.cognitive >= peak.cognitive)
+    expect(reached).toBeGreaterThan(0)
+    expect(reached).toBeLessThanOrEqual(2)
+  })
+
   it('a mixed player oscillates without whiplash (one step at a time)', () => {
     let flip = 0
-    const mixed = () => (flip++ % 3 === 2 ? { wrongTaps: 2, ms: 9_000 } : ace())
-    const { difficulties } = simulate(80, mixed, 7)
-    for (let i = 1; i < difficulties.length; i++) {
-      expect(Math.abs(difficulties[i] - difficulties[i - 1])).toBeLessThanOrEqual(1)
+    const mixed = (): PlayResult =>
+      flip++ % 3 === 2 ? { wrongTaps: 2, matchEscapes: 0, ms: 9_000 } : ace()
+    const { skills } = simulate(80, mixed, 7)
+    for (let i = 1; i < skills.length; i++) {
+      expect(Math.abs(skills[i].motor - skills[i - 1].motor)).toBeLessThanOrEqual(1)
+      expect(Math.abs(skills[i].cognitive - skills[i - 1].cognitive)).toBeLessThanOrEqual(1)
     }
   })
 
   it('long ace sessions keep task variety high (no 3-in-a-row once unlocked)', () => {
-    const { rounds, difficulties } = simulate(120, ace, 8)
+    const { rounds, skills } = simulate(120, ace, 8)
     for (let i = 2; i < rounds.length; i++) {
-      // While count-dots is the only unlocked task (early difficulty), repeats
+      // While count-dots is the only unlocked task (early skill), repeats
       // are unavoidable and fine — the constraint kicks in with alternatives.
-      if (unlockedTasks(difficulties[i]).length < 2) continue
+      if (unlockedTasks(skills[i].cognitive).length < 2) continue
       const same =
         rounds[i].taskId === rounds[i - 1].taskId && rounds[i].taskId === rounds[i - 2].taskId
       expect(same).toBe(false)
