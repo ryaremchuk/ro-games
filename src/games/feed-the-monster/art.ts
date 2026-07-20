@@ -15,13 +15,15 @@
 import { FRIENDS_PER_EPISODE } from './journey'
 import type { DetailKind } from './journey'
 
-const ART_URLS = import.meta.glob('./art/*.png', {
+// Sprites are transparent PNGs; full-bleed backgrounds are opaque JPEGs (soft
+// sky gradients — JPEG avoids palette banding at a fraction of the size).
+const ART_URLS = import.meta.glob('./art/*.{png,jpg}', {
   eager: true,
   query: '?url',
   import: 'default',
 }) as Record<string, string>
 
-/** `art/<name>.png` → its Phaser texture key. */
+/** `art/<name>.<ext>` → its Phaser texture key. */
 export function artKey(name: string): string {
   return `ftm-art-${name}`
 }
@@ -29,7 +31,7 @@ export function artKey(name: string): string {
 /** All shipped art as [name, url] pairs for the scene's preload(). */
 export function artEntries(): Array<[string, string]> {
   return Object.entries(ART_URLS).map(([path, url]) => {
-    const name = path.slice(path.lastIndexOf('/') + 1).replace(/\.png$/, '')
+    const name = path.slice(path.lastIndexOf('/') + 1).replace(/\.(png|jpg)$/, '')
     return [name, url]
   })
 }
