@@ -525,7 +525,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const buildEye = (x: number): Phaser.GameObjects.Container => {
       const eye = this.add.container(x, r * spec.faceY)
       const white = this.hasArt('face-eye')
-        ? this.add.image(0, 0, artKey('face-eye')).setDisplaySize(eyeR * 2.2, eyeR * 2.2)
+        ? this.add.image(0, 0, artKey('face-eye')).setDisplaySize(eyeR * 2, eyeR * 2)
         : this.add.ellipse(0, 0, eyeR * 2, eyeR * 2, 0xffffff)
       const pupil = this.add.ellipse(0, 0, eyeR, eyeR, INK)
       eye.add([white, pupil])
@@ -607,8 +607,28 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const r = this.bodyR
     const art = DETAIL_ART[kind]
     if (this.hasArt(art.art)) {
-      const img = this.add.image(r * art.x, r * art.y, artKey(art.art))
-      img.setScale((r * art.width) / img.width)
+      const spec = friendSpec(this.journey.episode, this.journey.friendsFed)
+      const img = this.add.image(0, 0, artKey(art.art))
+      const scale = (r * art.width) / img.width
+      img.setScale(scale)
+      const dh = img.height * scale
+      let x = r * art.x
+      let y = r * art.y
+      // The tall hat is anchored by its BASE at the forehead (a center anchor
+      // would droop the wide brim over the eyes); the crown's base rides the
+      // very top of the head; glasses center on the (per-friend) eye line, so
+      // the drawn eyes look out through the transparent lens holes.
+      if (kind === 'horns') {
+        x = 0
+        y = r * (spec.faceY - 0.28) - dh / 2
+      } else if (kind === 'crown') {
+        x = 0
+        y = r * (spec.faceY - 0.42) - dh / 2
+      } else if (kind === 'ears') {
+        x = 0
+        y = r * spec.faceY
+      }
+      img.setPosition(x, y)
       return [img]
     }
     const color = this.friendBodyColor()
@@ -748,16 +768,30 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
           .image(0, -r * 0.1, artKey(spec.art))
           .setScale((r * 2.3) / this.textures.getFrame(artKey(spec.art)).height)
       : this.add.image(0, -r * 0.1, this.monsterTexture(color))
+    // Match the walker's face anchors so the lineup mini reads as the same
+    // animal (eyes on its own patch, mouth below, crown on its head).
     const eye = (side: -1 | 1) => {
-      const white = this.add.ellipse(side * r * 0.35, -r * 0.42, r * 0.36, r * 0.36, 0xffffff)
-      const pupil = this.add.ellipse(side * r * 0.35, -r * 0.42, r * 0.17, r * 0.17, INK)
+      const white = this.add.ellipse(
+        side * r * spec.eyeGap,
+        r * spec.faceY,
+        r * 0.34,
+        r * 0.34,
+        0xffffff,
+      )
+      const pupil = this.add.ellipse(
+        side * r * spec.eyeGap,
+        r * spec.faceY,
+        r * 0.16,
+        r * 0.16,
+        INK,
+      )
       return [white, pupil]
     }
-    const smile = this.add.ellipse(0, r * 0.34, r * 0.5, r * 0.22, INK)
+    const smile = this.add.ellipse(0, r * spec.mouthY, r * 0.46, r * 0.2, INK)
     const crownArt = DETAIL_ART.crown
     const crown = this.add.image(
-      r * crownArt.x,
-      r * crownArt.y,
+      0,
+      r * (spec.faceY - 0.42) - r * 0.2, // base on the head-top (matches buildDetail)
       this.hasArt(crownArt.art) ? artKey(crownArt.art) : 'ftm-crown',
     )
     crown.setDisplaySize(r * 0.62, r * 0.4)

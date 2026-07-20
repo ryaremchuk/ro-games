@@ -45,32 +45,36 @@ export interface FriendSpec {
   art: string
   /** Eye-line Y (× bodyR). */
   faceY: number
-  /** Eye X offset from center (× bodyR). */
+  /** Eye X offset from center (× bodyR) — eyes sit at ±eyeGap. */
   eyeGap: number
   /** Mouth center Y (× bodyR). */
   mouthY: number
-  /** Headwear anchor Y (× bodyR) — hat/crown sit here. */
-  hatY: number
 }
 
-const face = { faceY: -0.32, eyeGap: 0.35, mouthY: 0.38, hatY: -1.0 }
-
 /**
+ * Per-friend face anchors, in body-local × bodyR units. Derived by measuring
+ * the cream face-patch centroid + extent on each sliced body sprite (the body
+ * is drawn at 2.3× bodyR tall, centered at y = -0.1 bodyR), so the
+ * engine-drawn eyes and mouth land on the blank patch of THIS animal
+ * (headwear/glasses anchor off faceY too — see buildDetail). eyeGap is clamped
+ * to a close-set kawaii range; the hippo has no cream patch (cyan muzzle) so
+ * its values are hand-set to the muzzle.
+ *
  * Index-aligned with journey.FRIEND_COLORS (same length, same cycle), so a
  * friend's sprite and its fallback/particle color always describe the same
  * character.
  */
 export const FRIEND_ROSTER: readonly FriendSpec[] = [
-  { art: 'friend-0-bunny', ...face },
-  { art: 'friend-1-turtle', ...face },
-  { art: 'friend-2-puppy', ...face },
-  { art: 'friend-3-kitten', ...face },
-  { art: 'friend-4-dino', ...face },
-  { art: 'friend-5-fox', ...face },
-  { art: 'friend-6-koala', ...face },
-  { art: 'friend-7-hippo', ...face },
-  { art: 'friend-8-mouse', ...face },
-  { art: 'friend-9-bear', ...face },
+  { art: 'friend-0-bunny', faceY: -0.42, eyeGap: 0.34, mouthY: 0.14 },
+  { art: 'friend-1-turtle', faceY: -0.5, eyeGap: 0.41, mouthY: -0.08 },
+  { art: 'friend-2-puppy', faceY: -0.46, eyeGap: 0.4, mouthY: -0.05 },
+  { art: 'friend-3-kitten', faceY: -0.42, eyeGap: 0.38, mouthY: -0.02 },
+  { art: 'friend-4-dino', faceY: -0.48, eyeGap: 0.43, mouthY: 0.1 },
+  { art: 'friend-5-fox', faceY: -0.46, eyeGap: 0.44, mouthY: 0.12 },
+  { art: 'friend-6-koala', faceY: -0.4, eyeGap: 0.38, mouthY: -0.02 },
+  { art: 'friend-7-hippo', faceY: -0.42, eyeGap: 0.4, mouthY: -0.04 },
+  { art: 'friend-8-mouse', faceY: -0.36, eyeGap: 0.36, mouthY: 0.02 },
+  { art: 'friend-9-bear', faceY: -0.48, eyeGap: 0.38, mouthY: -0.08 },
 ]
 
 /** Stable look for a friend across sessions (mirrors journey.friendColor). */
@@ -85,7 +89,7 @@ export function friendSpec(episode: number, friendIndex: number): FriendSpec {
  */
 export const DETAIL_ART: Record<DetailKind, { art: string; x: number; y: number; width: number }> =
   {
-    horns: { art: 'acc-hat', x: 0, y: -1.02, width: 0.9 },
+    horns: { art: 'acc-hat', x: 0, y: -1.02, width: 0.82 },
     ears: { art: 'acc-glasses', x: 0, y: -0.32, width: 1.2 },
     spots: { art: 'acc-scarf', x: 0, y: 0.52, width: 1.25 },
     bowtie: { art: 'acc-bowtie', x: 0, y: 0.8, width: 0.55 },
