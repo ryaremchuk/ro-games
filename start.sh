@@ -16,4 +16,8 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
-npm run dev
+# Serve on all network interfaces (--host binds 0.0.0.0), so the app is
+# reachable both at http://localhost:5173/ro-games/ on this machine and at
+# http://<this-machine-ip>:5173/ro-games/ from other devices on the LAN
+# (e.g. the iPad). Vite prints the exact Local + Network URLs on startup.
+npm run dev -- --host
