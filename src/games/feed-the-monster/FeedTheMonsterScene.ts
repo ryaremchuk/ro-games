@@ -1022,8 +1022,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.time.delayedCall(900 + Math.random() * 1900, () => this.scheduleMiniGlance(nodes))
   }
 
-  /** The grown friend celebrates, walks aside, and the next one hops in. */
-  private friendGrownSequence(danceParty: boolean): void {
+  /**
+   * The grown friend celebrates and walks aside to join the lineup; then the
+   * whole lineup dances to welcome the newcomer before the next friend arrives.
+   * On the fifth friend the dance is grander and hands off to the next episode.
+   * `onResume` restarts play once the new (or next-episode) friend is on stage.
+   */
+  private friendGrownSequence(danceParty: boolean, onResume: () => void): void {
     const mp = this.monsterPos()
     // Star shower + a proud jump.
     this.stars.explode(16, mp.x, mp.y - this.bodyR * this.growth)
@@ -1052,7 +1057,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         duration: 700,
         ease: 'Sine.easeInOut',
         onComplete: () => {
-          // …swap the walker for a lineup mini and bring in the next friend.
+          // …swap the walker for a lineup mini…
           this.monster.destroy()
           const mini = this.spawnMini(grownIndex, episodeAtGrow)
           mini.setScale(0)
@@ -1063,15 +1068,21 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
             duration: 260,
             ease: 'Back.easeOut',
           })
-          if (danceParty) this.dancePartySequence()
-          else this.nextFriendEnters()
+          // …then the whole lineup dances to greet the new friend. Only after
+          // the dance does the next friend hop in (or, on the fifth, the world
+          // turns over to the next episode).
+          const danceMs = this.celebrateLineup(danceParty)
+          this.time.delayedCall(danceMs + 300, () => {
+            if (danceParty) this.episodeTransition(onResume)
+            else this.nextFriendEnters(onResume)
+          })
         },
       })
     })
   }
 
-  /** A brand-new small friend hops in from the side. */
-  private nextFriendEnters(): void {
+  /** A brand-new small friend hops in from the side, then play resumes. */
+  private nextFriendEnters(onResume: () => void): void {
     this.growth = scaleForStep(this.journey.growthStep)
     this.buildMonster()
 
@@ -1082,26 +1093,38 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       x: mp.x,
       duration: 600,
       ease: 'Back.easeOut',
-      onComplete: () => this.layout(),
+      onComplete: () => {
+        this.layout()
+        onResume()
+      },
     })
     playTone(659, 90, 'sine', 0.08)
     this.time.delayedCall(110, () => playTone(880, 110, 'sine', 0.08))
   }
 
-  /** All five grown friends dance, then the next episode fades in. */
-  private dancePartySequence(): void {
+  /**
+   * The fed friends in the lineup dance — a staggered bounce-and-wobble wave
+   * with confetti, stars and a little melody. Played every time a friend joins
+   * (light) and again, grander, when the fifth completes the episode. Returns
+   * the wave's duration in ms so the caller can time what comes next.
+   */
+  private celebrateLineup(grand: boolean): number {
     const cx = this.scale.width / 2
-    ;[0, 1].forEach((wave) => {
+    const repeat = grand ? 3 : 1
+    const waves = grand ? [0, 1] : [0]
+    waves.forEach((wave) => {
       this.time.delayedCall(wave * 900, () => {
-        this.confetti.explode(50, cx * 0.5, this.px(90))
-        this.confetti.explode(50, cx * 1.5, this.px(90))
-        this.stars.explode(12, cx, this.px(140))
+        this.confetti.explode(grand ? 50 : 26, cx * 0.5, this.px(90))
+        this.confetti.explode(grand ? 50 : 26, cx * 1.5, this.px(90))
+        this.stars.explode(grand ? 12 : 8, cx, this.px(140))
       })
     })
-    // Party melody + everyone bounces in a wave, twice.
-    ;[523, 659, 784, 659, 880, 784, 1047].forEach((freq, i) =>
+    // A little party melody — a longer flourish for the episode finale.
+    const melody = grand ? [523, 659, 784, 659, 880, 784, 1047] : [523, 659, 784, 1047]
+    melody.forEach((freq, i) =>
       this.time.delayedCall(i * 180, () => playTone(freq, 150, 'triangle', 0.1)),
     )
+    // Everyone bounces + wobbles in a staggered wave.
     this.minis.forEach((mini, i) => {
       this.tweens.add({
         targets: mini,
@@ -1109,7 +1132,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         delay: i * 130,
         duration: 260,
         yoyo: true,
-        repeat: 3,
+        repeat,
         ease: 'Quad.easeOut',
       })
       this.tweens.add({
@@ -1118,17 +1141,18 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         delay: i * 130,
         duration: 260,
         yoyo: true,
-        repeat: 3,
+        repeat,
         ease: 'Sine.easeInOut',
         onComplete: () => mini.setAngle(0),
       })
     })
 
-    this.time.delayedCall(2900, () => this.episodeTransition())
+    const lastDelay = Math.max(this.minis.length - 1, 0) * 130
+    return lastDelay + 260 * 2 * (repeat + 1)
   }
 
   /** Soft white fade → new palette, food pool, fresh lineup, first friend. */
-  private episodeTransition(): void {
+  private episodeTransition(onResume: () => void): void {
     const veil = this.add
       .rectangle(0, 0, this.scale.width, this.scale.height, 0xffffff)
       .setOrigin(0)
@@ -1161,7 +1185,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
           delay: 150,
           duration: 600,
           ease: 'Sine.easeOut',
-          onComplete: () => veil.destroy(),
+          onComplete: () => {
+            veil.destroy()
+            onResume()
+          },
         })
       },
     })
@@ -2283,14 +2310,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
     this.time.delayedCall(250, () => this.applyAura(true, GROW_STEPS))
 
-    // Then: walk to the lineup, next friend hops in (and, on the 5th, the
-    // dance party + episode change) — then play continues.
-    this.time.delayedCall(650, () => this.friendGrownSequence(outcome === 'episode-complete'))
-    const advanceAfter = outcome === 'episode-complete' ? 7400 : 3400
-    this.time.delayedCall(advanceAfter, () => {
-      this.layout()
-      this.startRound(this.roundNumber + 1)
-    })
+    // Then: walk to the lineup, the whole lineup dances to welcome the new
+    // friend, and the next friend hops in (on the 5th, the grander dance +
+    // episode change) — play resumes once that friend is on stage and feedable.
+    const resume = () => this.startRound(this.roundNumber + 1)
+    this.time.delayedCall(650, () =>
+      this.friendGrownSequence(outcome === 'episode-complete', resume),
+    )
   }
 
   private fadeOutFood(food: Phaser.GameObjects.Image): void {
