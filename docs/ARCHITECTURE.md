@@ -40,6 +40,8 @@ Shared frame only (`src/shared/`), never shared game logic:
 - `level.ts` — shared level store: games call `reportLevel(n)` and the badge
   updates. Each game owns its level RULES in its own `logic.ts` (pure,
   tested); this store only carries the current value.
+- `progress.ts` — persists per-game adaptive skill meters and reward stars in
+  `localStorage` (see "Progress: skill, levels, stars" below).
 
 ## Directory map
 
@@ -54,6 +56,8 @@ src/
     GameFrame.tsx/.css  chrome around every game
     PhaserGame.tsx      Phaser mount point (day-0 infra)
     audio.ts            Web Audio helpers
+    level.ts            shared level store (current value → badge)
+    progress.ts         adaptive skill meters + reward stars (localStorage)
   games/
     registry.tsx        SINGLE SOURCE OF TRUTH for games
     drawing/            first game (Canvas 2D)
@@ -103,6 +107,23 @@ public/
   (Phaser does this for you) or imperative Canvas draws in event handlers.
 - Design for touch: large targets, no hover, no right-click, pointer events
   (one code path for touch + mouse), `touch-action: none` on drawing surfaces.
+
+## Progress: skill, levels, stars
+
+`shared/progress.ts` persists per-game state in `localStorage`. Three decoupled
+currencies:
+
+- **Skill** — invisible and adaptive, on two axes (motor / cognitive) where the
+  skills differ. Games save the meter every round and start each session below
+  the saved value via `sessionStart()` (warm-up + break decay), then climb back
+  faster while below the saved peak.
+- **Levels** — a session-scoped reward rhythm. Uniform rule in every game:
+  passing a level (the game's own unit — solved round, bopped critter, cleared
+  board) ticks the badge +1 and banks one star via `addStars()`.
+- **Stars** — forever.
+
+Celebrations are pure animations on per-game `CELEBRATION_EVERY_*` beats. See
+`docs/DECISIONS.md` ("Progress: two-axis adaptive skill").
 
 ## PWA & hosting
 
