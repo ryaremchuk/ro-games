@@ -1,6 +1,8 @@
 import Phaser from 'phaser'
+import { useSearchParams } from 'react-router-dom'
 import PhaserGame from '../../shared/PhaserGame'
 import { viewportSize } from '../../shared/viewport'
+import FeedDevPanel from './FeedDevPanel'
 import FeedTheMonsterScene from './FeedTheMonsterScene'
 
 /**
@@ -13,6 +15,10 @@ import FeedTheMonsterScene from './FeedTheMonsterScene'
  * The scene relayouts itself on window resize/orientation change.
  */
 export default function FeedTheMonsterGame() {
+  // `?dev` (e.g. #/feed-the-monster?dev) reveals the developer cheat overlay.
+  const [params] = useSearchParams()
+  const dev = params.has('dev')
+
   const dpr = Math.min(window.devicePixelRatio || 1, 3)
   const vp = viewportSize()
   const config: Omit<Phaser.Types.Core.GameConfig, 'parent'> = {
@@ -34,6 +40,7 @@ export default function FeedTheMonsterGame() {
       style={{ width: '100%', height: '100%' }}
     >
       <PhaserGame config={config} />
+      {dev && <FeedDevPanel />}
     </div>
   )
 }

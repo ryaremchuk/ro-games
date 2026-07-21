@@ -22,8 +22,8 @@ import type { FoodRequest, Round, TaskKind } from './logic'
 import {
   FRIENDS_PER_EPISODE,
   GROW_STEPS,
+  auraIntensity,
   darken,
-  detailsForFriend,
   episodeFor,
   feedStep,
   friendColor,
@@ -31,9 +31,9 @@ import {
   journeyToData,
   scaleForStep,
   shrinkStep,
-  visibleDetails,
 } from './journey'
-import type { DetailKind, Episode, JourneyState } from './journey'
+import type { Episode, JourneyState } from './journey'
+import { artEntries, artKey, friendSpec } from './art'
 import type { FeedTestApi } from './testHook'
 
 /** Registry id — also the key the shared progress store files this under. */
@@ -49,6 +49,11 @@ const PENTA = [523, 587, 659, 784, 880]
 
 const FOOD_CSS = 64 // emoji strike stays crisp at ≤80 css px
 const BUBBLE_ITEM_CSS = 44
+
+// The task panel lives at the very top of the screen, in its own bar —
+// detached from the friend (was: a thought bubble above the head).
+const PANEL_H_CSS = 96
+const PANEL_CENTER_Y_CSS = 58
 
 interface XY {
   x: number
@@ -84,30 +89,72 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   // The visible long-term journey: growing friends, episodes (journey.ts).
   private journey: JourneyState = { episode: 0, friendsFed: 0, growthStep: 0 }
   private episode!: Episode
-  private detailPlan: DetailKind[] = []
-  private detailObjects = new Map<DetailKind, Phaser.GameObjects.GameObject[]>()
   private minis: Phaser.GameObjects.Container[] = []
 
   private bgGfx!: Phaser.GameObjects.Graphics
-  private tableGfx!: Phaser.GameObjects.Graphics
+  private bgImage!: Phaser.GameObjects.Image
 
   private monster!: Phaser.GameObjects.Container
+  /**
+   * Breathing/idle-life layer INSIDE monster: body + face + accessories all
+   * live here so they animate as one. monster carries growth + chomp/squash +
+   * position (it must not also breathe); rig carries the ~3% idle breathe, so
+   * the face and worn accessories never float while the body pulses (the old
+   * bug: breathe ran on monsterBody alone, its siblings stayed rigid).
+   */
+  private rig!: Phaser.GameObjects.Container
   private monsterBody!: Phaser.GameObjects.Image
+  /** monsterBody's resting scale (art sprites need ≠1; breathe is relative). */
+  private bodyScale = 1
+  /**
+   * Growth aura: a soft glowing halo behind the body whose alpha + scale ramp
+   * with the growth step (applyAura). This — plus the ambient sparkles — is how
+   * a friend reads as "grown up" now, replacing the old worn accessories. A
+   * plain sprite (not a renderer FX), so it behaves identically everywhere.
+   * haloFull is its display scale at full size (set per friend in buildMonster).
+   */
+  private halo!: Phaser.GameObjects.Image
+  private haloFull = 1
   private eyeL!: Phaser.GameObjects.Container
   private eyeR!: Phaser.GameObjects.Container
-  private pupilL!: Phaser.GameObjects.Ellipse
-  private pupilR!: Phaser.GameObjects.Ellipse
-  private mouthLips!: Phaser.GameObjects.Ellipse
+  /** Pupil is a node (dark disc + white catchlight glint) that tracks touch. */
+  private pupilL!: Phaser.GameObjects.Container
+  private pupilR!: Phaser.GameObjects.Container
+  /** White backing + the happy `^` arc — swapped for happy/closed eyes. */
+  private eyeWhiteL!: Phaser.GameObjects.Image | Phaser.GameObjects.Ellipse
+  private eyeWhiteR!: Phaser.GameObjects.Image | Phaser.GameObjects.Ellipse
+  private mouthGiggle: Phaser.GameObjects.Image | null = null
+  private happyL: Phaser.GameObjects.Image | null = null
+  private happyR: Phaser.GameObjects.Image | null = null
+  private happyEyes = false
+  private mouthLips!: Phaser.GameObjects.Ellipse | Phaser.GameObjects.Image
   private mouthTongue!: Phaser.GameObjects.Ellipse
+  /** Resting closed-smile sprite; crossfades with the open mouth (or null). */
+  private mouthSmile: Phaser.GameObjects.Image | null = null
+  /** mouthLips' resting scale — applyMouth animates relative to it. */
+  private mouthBase = { x: 1, y: 1 }
+  private mouthBaseSmile = { x: 1, y: 1 }
+  /** True when mouthLips is the face-mouth sprite (tongue is baked in). */
+  private artMouth = false
+  /** Current friend's horizontal face shift in px (spec.faceX × bodyR). */
+  private faceOffX = 0
   private nose!: Phaser.GameObjects.Ellipse
+  /** Lineup minis' pupils (node + its eye container) for pointer tracking. */
+  private miniPupils: Array<{
+    node: Phaser.GameObjects.Container
+    eye: Phaser.GameObjects.Container
+  }> = []
 
   private bubble!: Phaser.GameObjects.Container
-  private bubbleBg!: Phaser.GameObjects.Image
+  private panelGfx!: Phaser.GameObjects.Graphics
+  private panelHit: Phaser.GameObjects.Rectangle | null = null
   private bubblePics: Phaser.GameObjects.Image[] = []
   /** Extra bubble decorations (dot pips, ban overlay) cleared per request. */
   private bubbleExtras: Phaser.GameObjects.GameObject[] = []
   /** Dot pips of a dots round, lit one-by-one as the child feeds. */
   private pips: Phaser.GameObjects.Arc[] = []
+  /** Accent ring around the pattern's answer socket (cleared per request). */
+  private patternRing: Phaser.GameObjects.Arc | null = null
 
   private plates: Phaser.GameObjects.Image[] = []
   private foods: Phaser.GameObjects.Image[] = []
@@ -117,6 +164,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private stars!: Phaser.GameObjects.Particles.ParticleEmitter
   private sparkles!: Phaser.GameObjects.Particles.ParticleEmitter
   private puffs!: Phaser.GameObjects.Particles.ParticleEmitter
+  /** Continuous growth-aura sparkles orbiting the friend (rate ∝ growth). */
+  private auraSparkle!: Phaser.GameObjects.Particles.ParticleEmitter
 
   private mouthState = { open: 0 }
   private mouthTween: Phaser.Tweens.Tween | null = null
@@ -127,6 +176,18 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   private px(css: number): number {
     return css * this.dpr
+  }
+
+  /** Register whatever reskin art shipped (art.ts glob); missing = fallback. */
+  preload(): void {
+    for (const [name, url] of artEntries()) {
+      this.load.image(artKey(name), url)
+    }
+  }
+
+  /** Is this art sprite available? Consumers fall back to procedural looks. */
+  private hasArt(name: string): boolean {
+    return this.textures.exists(artKey(name))
   }
 
   create(): void {
@@ -144,24 +205,28 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.journey = journeyFromData(saved.data)
     this.episode = episodeFor(this.journey)
     this.growth = scaleForStep(this.journey.growthStep)
-    this.detailPlan = detailsForFriend(this.journey.episode, this.journey.friendsFed)
 
     this.makeTextures()
 
     this.bgGfx = this.add.graphics().setDepth(0)
+    // Full-bleed episode backdrop (bg-<episode>.png), cover-scaled in layout();
+    // the gradient beneath stays as the fallback and edge filler.
+    this.bgImage = this.add.image(0, 0, '__DEFAULT').setDepth(0).setVisible(false)
     this.buildMonster()
-    this.tableGfx = this.add.graphics().setDepth(3)
     this.buildPlates()
     this.buildBubble()
     this.buildEmitters()
     this.wireInput()
 
-    // Restore the fed-friends lineup + current friend's details, no fanfare.
+    // Restore the fed-friends lineup, no fanfare (buildMonster already lit the
+    // current friend's aura to its growth step).
     for (let i = 0; i < this.journey.friendsFed; i++) this.spawnMini(i)
-    this.syncDetails(false)
 
     this.layout()
     this.scheduleBlink()
+    // Ambient growth sparkles: a steady tick that emits denser the more grown
+    // the current friend is (tickAura reads the live growth each time).
+    this.time.addEvent({ delay: 130, loop: true, callback: this.tickAura, callbackScope: this })
 
     const teardown = (): void => {
       offViewport()
@@ -173,10 +238,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // without this the viewport listener leaks and fires on a dead scene.
     this.events.once(Phaser.Scenes.Events.DESTROY, teardown)
 
-    // Dev/e2e hook (dev builds, or prod behind `?e2e` — never in normal
-    // play). Lets Playwright read state and force a task kind — the canvas
-    // is opaque to the DOM. See testHook.
-    if (import.meta.env.DEV || location.search.includes('e2e')) this.exposeTestApi()
+    // Dev/e2e hook (dev builds, or prod behind `?e2e` / `?dev` — never in
+    // normal play). Lets Playwright read state and force a task kind, and
+    // backs the `?dev` cheat overlay — the canvas is opaque to the DOM.
+    // See testHook.
+    if (import.meta.env.DEV || this.urlFlag('e2e') || this.urlFlag('dev')) this.exposeTestApi()
 
     this.time.delayedCall(350, () => this.startRound(1))
   }
@@ -208,62 +274,29 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         journey: { ...this.journey },
         episodeId: this.episode.id,
         growthScale: this.monster.scaleX,
-        details: [...this.detailObjects.keys()],
+        aura: auraIntensity(this.journey.growthStep),
         miniCount: this.minis.length,
       }),
       forceKind: (kind) => {
         if (this.transitioning || !this.round) return false
-        const round = generateRound({
-          round: this.roundNumber,
-          skill: this.skill,
-          previous: this.previousRequest,
-          foods: this.episode.foods,
-          forceKind: kind,
-        })
-        this.round = round
-        this.previousRequest = round.request
-        this.eaten = []
-        this.spitBacks = 0
-        this.roundStartAt = this.time.now
-        this.buildTray(round.tray)
-        this.showRequest(round.request)
+        this.buildFreshRound({ forceKind: kind, previous: this.previousRequest })
         return true
       },
       forceJourney: (partial) => {
         if (this.transitioning || !this.round) return false
-        this.journey = journeyFromData({ ...journeyToData(this.journey), ...partial })
-        saveData(GAME_ID, journeyToData(this.journey))
-
-        // Rebuild the world at the forced point: theme, friend, lineup.
-        this.episode = episodeFor(this.journey)
-        this.makeTextures()
-        for (const mini of this.minis) {
-          this.tweens.killTweensOf(mini)
-          mini.destroy()
-        }
-        this.minis = []
-        for (let i = 0; i < this.journey.friendsFed; i++) this.spawnMini(i)
-        this.growth = scaleForStep(this.journey.growthStep)
-        this.detailPlan = detailsForFriend(this.journey.episode, this.journey.friendsFed)
-        this.buildMonster()
-        this.syncDetails(false)
-        this.layout()
-
-        // Fresh round from the (possibly new) episode pool.
-        this.previousRequest = undefined
-        const round = generateRound({
-          round: this.roundNumber,
-          skill: this.skill,
-          foods: this.episode.foods,
-        })
-        this.round = round
-        this.previousRequest = round.request
-        this.eaten = []
-        this.spitBacks = 0
-        this.roundStartAt = this.time.now
-        this.buildTray(round.tray)
-        this.showRequest(round.request)
+        this.applyJourney(journeyFromData({ ...journeyToData(this.journey), ...partial }))
         return true
+      },
+
+      // Dev cheats behind the `?dev` overlay (see FeedDevPanel): nudge one
+      // journey axis / re-deal a round for faster manual testing. Each no-ops
+      // mid-transition so a celebration's tween chain is never severed.
+      devHeroLevel: (delta) => this.devNudgeJourney({ growthStep: delta }),
+      devFriends: (delta) => this.devNudgeJourney({ friendsFed: delta }),
+      devEpisode: (delta) => this.devNudgeJourney({ episode: delta }),
+      devRegenerate: () => {
+        if (this.transitioning || !this.round) return
+        this.buildFreshRound({ previous: this.previousRequest, recentKinds: this.recentKinds })
       },
     }
     this.testApi = api
@@ -272,6 +305,80 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   private teardownTestApi(): void {
     if (this.testApi && window.__feedTheMonster === this.testApi) delete window.__feedTheMonster
+  }
+
+  /**
+   * Rebuild the whole world at a journey point (theme, friend, lineup,
+   * growth, details) and deal a fresh round from its pool. Shared by the e2e
+   * forceJourney hook and the `?dev` overlay nudges.
+   */
+  private applyJourney(next: JourneyState): void {
+    this.journey = next
+    saveData(GAME_ID, journeyToData(this.journey))
+
+    this.episode = episodeFor(this.journey)
+    this.makeTextures()
+    for (const mini of this.minis) {
+      this.tweens.killTweensOf(mini)
+      mini.destroy()
+    }
+    this.minis = []
+    for (let i = 0; i < this.journey.friendsFed; i++) this.spawnMini(i)
+    this.growth = scaleForStep(this.journey.growthStep)
+    this.buildMonster()
+    this.layout()
+
+    this.previousRequest = undefined
+    this.buildFreshRound({})
+  }
+
+  /** Nudge one journey axis by delta (clamped to its valid range), rebuild. */
+  private devNudgeJourney(delta: Partial<JourneyState>): void {
+    if (this.transitioning || !this.round) return
+    const next: JourneyState = {
+      episode: Math.max(0, this.journey.episode + (delta.episode ?? 0)),
+      friendsFed: Phaser.Math.Clamp(
+        this.journey.friendsFed + (delta.friendsFed ?? 0),
+        0,
+        FRIENDS_PER_EPISODE - 1,
+      ),
+      growthStep: Phaser.Math.Clamp(
+        this.journey.growthStep + (delta.growthStep ?? 0),
+        0,
+        GROW_STEPS - 1,
+      ),
+    }
+    this.applyJourney(next)
+  }
+
+  /** Deal a fresh round from the current episode / skill / round number. */
+  private buildFreshRound(opts: {
+    forceKind?: TaskKind
+    previous?: FoodRequest
+    recentKinds?: readonly TaskKind[]
+  }): void {
+    const round = generateRound({
+      round: this.roundNumber,
+      skill: this.skill,
+      recentKinds: opts.recentKinds,
+      previous: opts.previous,
+      foods: this.episode.foods,
+      forceKind: opts.forceKind,
+    })
+    this.round = round
+    this.previousRequest = round.request
+    this.eaten = []
+    this.spitBacks = 0
+    this.roundStartAt = this.time.now
+    this.buildTray(round.tray)
+    this.showRequest(round.request)
+  }
+
+  /** Is `?<name>` present in the URL (top-level search or the hash query)? */
+  private urlFlag(name: string): boolean {
+    if (new URLSearchParams(location.search).has(name)) return true
+    const q = location.hash.indexOf('?')
+    return q >= 0 && new URLSearchParams(location.hash.slice(q + 1)).has(name)
   }
 
   private handleWindowResize = (): void => {
@@ -382,8 +489,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       g.destroy()
     }
 
-    // Thought bubble body + color splash (white, tinted per request color).
-    this.makeBlobTexture('ftm-bubble', this.px(64), 0xffffff, 3)
+    // Color splash for the task panel tiles (white, tinted per request color).
     this.makeBlobTexture('ftm-splash', this.px(26), 0xffffff, 11)
 
     // Ban sign for "not" rounds: red ring + diagonal bar (🚫, drawn crisp).
@@ -417,31 +523,43 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     }
     this.emojiTexture('ftm-star', '⭐', 30)
 
-    // Crown for a fully grown friend (the final growth detail).
-    if (!this.textures.exists('ftm-crown')) {
-      const w = this.px(66)
-      const h = this.px(44)
-      const g = this.add.graphics()
-      g.fillStyle(0xffd93d, 1)
-      g.fillPoints(
-        [
-          new Phaser.Math.Vector2(0, h),
-          new Phaser.Math.Vector2(0, h * 0.25),
-          new Phaser.Math.Vector2(w * 0.25, h * 0.62),
-          new Phaser.Math.Vector2(w * 0.5, 0),
-          new Phaser.Math.Vector2(w * 0.75, h * 0.62),
-          new Phaser.Math.Vector2(w, h * 0.25),
-          new Phaser.Math.Vector2(w, h),
-        ],
-        true,
-      )
-      g.generateTexture('ftm-crown', w, h)
-      g.destroy()
+    // Growth-aura halo: a soft radial glow, tinted per friend and scaled/faded
+    // by growth in applyAura. A CanvasTexture gradient stays a crisp bloom at
+    // any display size (a generated blob would band when scaled up).
+    if (!this.textures.exists('ftm-halo')) {
+      const rad = this.px(150)
+      const size = rad * 2
+      const tex = this.textures.createCanvas('ftm-halo', size, size)
+      if (tex) {
+        const ctx = tex.getContext()
+        const grad = ctx.createRadialGradient(rad, rad, rad * 0.08, rad, rad, rad)
+        grad.addColorStop(0, 'rgba(255,255,255,0.95)')
+        grad.addColorStop(0.4, 'rgba(255,255,255,0.4)')
+        grad.addColorStop(1, 'rgba(255,255,255,0)')
+        ctx.fillStyle = grad
+        ctx.fillRect(0, 0, size, size)
+        tex.refresh() // required for the WebGL upload
+      }
     }
 
     for (const food of this.episode.foods) {
-      this.emojiTexture(`ftm-food-${food.id}`, food.emoji, FOOD_CSS)
+      if (!this.hasArt(`food-${food.id}`))
+        this.emojiTexture(`ftm-food-${food.id}`, food.emoji, FOOD_CSS)
     }
+  }
+
+  /** Texture for a food: reskin sprite when shipped, emoji strike otherwise. */
+  private foodTexture(foodId: string): string {
+    return this.hasArt(`food-${foodId}`) ? artKey(`food-${foodId}`) : `ftm-food-${foodId}`
+  }
+
+  /**
+   * A tray food's resting scale (1 for emoji textures; reskin sprites are
+   * normalized down from atlas resolution). All food scale tweens are
+   * multiples of this.
+   */
+  private foodBaseScale(img: Phaser.GameObjects.Image): number {
+    return (img.getData('baseScale') as number | undefined) ?? 1
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────
@@ -450,53 +568,150 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private buildMonster(): void {
     if (this.monster) {
       this.tweens.killTweensOf(this.monster)
+      this.tweens.killTweensOf(this.rig)
       this.tweens.killTweensOf(this.monsterBody)
+      if (this.halo) this.tweens.killTweensOf(this.halo)
       this.mouthTween?.stop()
       this.mouthState.open = 0
+      this.happyEyes = false
       this.monster.destroy()
     }
-    this.detailObjects.clear()
 
     const color = this.friendBodyColor()
+    const spec = friendSpec(this.journey.episode, this.journey.friendsFed)
+    const artBody = this.hasArt(spec.art)
     const r = this.bodyR
     this.monster = this.add.container(0, 0).setDepth(2)
     this.monster.setScale(this.growth)
+    // rig holds everything that breathes together (halo + body + face); the
+    // shadow stays on monster so ground contact never pulses.
+    this.rig = this.add.container(0, 0)
 
     const shadow = this.add.ellipse(0, r * 1.02, r * 1.5, r * 0.26, 0x000000, 0.12)
-    this.monsterBody = this.add.image(0, -r * 0.1, this.monsterTexture(color))
-    this.monster.add([shadow, this.monsterBody])
+    // Growth-aura halo, behind the body inside the rig so it grows, breathes
+    // and moves as one with the friend. Tinted a lightened body hue; applyAura
+    // sets its alpha/scale from the current growth step.
+    this.halo = this.add.image(0, -r * 0.1, 'ftm-halo').setTint(this.lighten(color, 0.55))
+    this.haloFull = (r * 3.2) / this.halo.width
+    this.halo.setScale(this.haloFull)
+    this.rig.add(this.halo)
+    if (artBody) {
+      this.monsterBody = this.add.image(0, -r * 0.1, artKey(spec.art))
+      this.bodyScale = (r * 2.3) / this.monsterBody.height
+    } else {
+      this.monsterBody = this.add.image(0, -r * 0.1, this.monsterTexture(color))
+      this.bodyScale = 1
+    }
+    this.monsterBody.setScale(this.bodyScale)
+    this.rig.add(this.monsterBody)
+    this.monster.add([shadow, this.rig])
 
     // Face recipe: big close-set white eyes, pupils that drift toward touch.
+    // Always engine-drawn (never baked into body art) so every friend blinks,
+    // tracks and chomps the same way; face-eye/face-mouth sprites re-skin it.
+    // Off-center face patch (e.g. the fox, whose tail widens the sprite): the
+    // whole face shifts by faceX so it lands on the muzzle.
+    this.faceOffX = (spec.faceX ?? 0) * r
+    const fx = this.faceOffX
     const eyeR = r * 0.2
-    const buildEye = (x: number): Phaser.GameObjects.Container => {
-      const eye = this.add.container(x, -r * 0.32)
-      const white = this.add.ellipse(0, 0, eyeR * 2, eyeR * 2, 0xffffff)
-      const pupil = this.add.ellipse(0, 0, eyeR, eyeR, INK)
-      eye.add([white, pupil])
-      if (x < 0) this.pupilL = pupil
-      else this.pupilR = pupil
+    const buildEye = (side: -1 | 1): Phaser.GameObjects.Container => {
+      const eye = this.add.container(fx + side * r * spec.eyeGap, r * spec.faceY)
+      const white = this.hasArt('face-eye')
+        ? this.add.image(0, 0, artKey('face-eye')).setDisplaySize(eyeR * 2, eyeR * 2)
+        : this.add.ellipse(0, 0, eyeR * 2, eyeR * 2, 0xffffff)
+      // Pupil node = a big dark disc + a bright catchlight glint. The glint is
+      // what turns a blank stare into a warm, alive eye; it rides with the
+      // pupil as it tracks the touch.
+      const pupil = this.add.container(0, 0)
+      const dark = this.add.ellipse(0, 0, eyeR * 1.05, eyeR * 1.05, INK)
+      const glint = this.add.circle(-eyeR * 0.28, -eyeR * 0.3, eyeR * 0.24, 0xffffff)
+      pupil.add([dark, glint])
+      // Happy `^` closed eye for celebration/yum — hidden until toggled.
+      // Squashed to ~half its old height (and a touch narrower) so the arc
+      // reads as a delicate, thin `^` instead of a heavy chunky wedge.
+      const happy = this.hasArt('face-eye-happy')
+        ? this.add
+            .image(0, 0, artKey('face-eye-happy'))
+            .setDisplaySize(eyeR * 2.1, eyeR * 0.75)
+            .setVisible(false)
+        : null
+      eye.add(happy ? [white, pupil, happy] : [white, pupil])
+      if (side < 0) {
+        this.pupilL = pupil
+        this.eyeWhiteL = white
+        this.happyL = happy
+      } else {
+        this.pupilR = pupil
+        this.eyeWhiteR = white
+        this.happyR = happy
+      }
       return eye
     }
-    this.eyeL = buildEye(-r * 0.35)
-    this.eyeR = buildEye(r * 0.35)
+    this.eyeL = buildEye(-1)
+    this.eyeR = buildEye(1)
 
-    const blushL = this.add.ellipse(-r * 0.62, r * 0.08, r * 0.22, r * 0.15, PINK, 0.4)
-    const blushR = this.add.ellipse(r * 0.62, r * 0.08, r * 0.22, r * 0.15, PINK, 0.4)
+    // Art bodies bake their own blush next to the face patch.
+    const blush: Phaser.GameObjects.GameObject[] = artBody
+      ? []
+      : [
+          this.add.ellipse(fx - r * 0.62, r * 0.08, r * 0.22, r * 0.15, PINK, 0.4),
+          this.add.ellipse(fx + r * 0.62, r * 0.08, r * 0.22, r * 0.15, PINK, 0.4),
+        ]
 
-    const mouth = this.add.container(0, r * 0.38)
-    this.mouthLips = this.add.ellipse(0, 0, r * 0.9, r * 0.6, INK)
+    const mouth = this.add.container(fx, r * spec.mouthY)
+    this.artMouth = this.hasArt('face-mouth')
+    if (this.artMouth) {
+      const lips = this.add.image(0, 0, artKey('face-mouth'))
+      this.mouthBase = { x: (r * 0.9) / lips.width, y: (r * 0.6) / lips.height }
+      this.mouthLips = lips
+    } else {
+      this.mouthLips = this.add.ellipse(0, 0, r * 0.9, r * 0.6, INK)
+      this.mouthBase = { x: 1, y: 1 }
+    }
     this.mouthTongue = this.add.ellipse(0, r * 0.1, r * 0.5, r * 0.34, PINK)
     this.mouthTongue.setAlpha(0)
+    this.mouthTongue.setVisible(!this.artMouth) // sprite mouth bakes the tongue
     mouth.add([this.mouthLips, this.mouthTongue])
 
-    this.nose = this.add.ellipse(0, -r * 0.02, r * 0.22, r * 0.16, darken(color))
+    // Resting face = a closed smile sprite; the open mouth is only for eating.
+    // applyMouth crossfades them so the friend looks content at rest instead of
+    // frozen with a flattened/gaping mouth (the old "creepy" resting look).
+    if (this.artMouth && this.hasArt('face-mouth-smile')) {
+      const smile = this.add.image(0, 0, artKey('face-mouth-smile'))
+      // Half the previous height (origin is centered, so it shrinks in place —
+      // the smile's vertical center stays put) → a thinner, calmer smile.
+      this.mouthBaseSmile = { x: (r * 0.58) / smile.width, y: (r * 0.13) / smile.height }
+      smile.setScale(this.mouthBaseSmile.x, this.mouthBaseSmile.y)
+      // Sit the resting smile higher than the (lower) open mouth — it reads as
+      // a small content smile, and the crossfade to the open mouth then plays
+      // as the mouth naturally dropping open to eat.
+      smile.setPosition(0, -r * 0.15)
+      this.mouthSmile = smile
+      mouth.add(smile)
+    } else {
+      this.mouthSmile = null
+    }
+    // Wide laugh, shown on happy beats (beHappy) instead of the smile/open.
+    if (this.artMouth && this.hasArt('face-mouth-giggle')) {
+      const giggle = this.add.image(0, 0, artKey('face-mouth-giggle')).setVisible(false)
+      giggle.setScale((r * 0.95) / giggle.width, (r * 0.48) / giggle.height)
+      this.mouthGiggle = giggle
+      mouth.add(giggle)
+    } else {
+      this.mouthGiggle = null
+    }
 
-    this.monster.add([blushL, blushR, this.eyeL, this.eyeR, mouth, this.nose])
+    this.nose = this.add.ellipse(fx, -r * 0.02, r * 0.22, r * 0.16, darken(color))
+    if (artBody) this.nose.setAlpha(0.001) // keep the sneeze hotspot, hide the blot
+
+    this.rig.add([...blush, this.eyeL, this.eyeR, mouth, this.nose])
     this.applyMouth()
 
-    // Idle life: breathe (container scale is reserved for growth/squash).
+    // Idle life: the whole rig breathes as one, so the halo, body and face
+    // pulse together (monster's own scale is reserved for growth/squash — see
+    // the rig field note).
     this.tweens.add({
-      targets: this.monsterBody,
+      targets: this.rig,
       scaleX: 1.03,
       scaleY: 1.03,
       duration: 2200,
@@ -506,9 +721,14 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
 
     // Tap the body → giggle. Tap the nose → sneeze (easter egg).
-    const frame = this.textures.getFrame(this.monsterTexture(color))
+    // Hit shapes live in unscaled frame coords, hence the /bodyScale.
+    const frame = this.textures.getFrame(this.monsterBody.texture.key)
     this.monsterBody.setInteractive(
-      new Phaser.Geom.Circle(frame.width / 2, frame.height / 2 + r * 0.1, r),
+      new Phaser.Geom.Circle(
+        frame.width / 2,
+        frame.height / 2 + (artBody ? 0 : r * 0.1),
+        r / this.bodyScale,
+      ),
       Phaser.Geom.Circle.Contains,
     )
     this.monsterBody.on('pointerup', (pointer: Phaser.Input.Pointer) => {
@@ -519,134 +739,98 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       Phaser.Geom.Circle.Contains,
     )
     this.nose.on('pointerdown', () => this.sneeze())
+
+    // Light the aura to this friend's growth step (instant on a fresh build;
+    // the grow/shrink pops animate via applyAura(true)).
+    this.applyAura(false)
   }
 
-  // ─── Growth details (the friend visibly changes, not just scales) ─────────
+  // ─── Growth aura (the friend "grows up" without any worn accessories) ─────
 
-  /** Procedurally build one detail's game objects, in body-local coords. */
-  private buildDetail(kind: DetailKind): Phaser.GameObjects.GameObject[] {
-    const r = this.bodyR
-    const color = this.friendBodyColor()
-    const dark = darken(color, 0.72)
-    switch (kind) {
-      case 'horns': {
-        const horn = (side: -1 | 1) =>
-          this.add
-            .triangle(
-              side * r * 0.52,
-              -r * 0.98,
-              0,
-              r * 0.34,
-              r * 0.13,
-              0,
-              r * 0.26,
-              r * 0.34,
-              dark,
-            )
-            .setRotation(side * 0.5)
-        return [horn(-1), horn(1)]
-      }
-      case 'ears': {
-        const ear = (side: -1 | 1) => this.add.circle(side * r * 0.78, -r * 0.72, r * 0.19, dark)
-        return [ear(-1), ear(1)]
-      }
-      case 'spots':
-        return [
-          this.add.circle(-r * 0.38, r * 0.42, r * 0.11, dark, 0.55),
-          this.add.circle(r * 0.3, r * 0.58, r * 0.13, dark, 0.55),
-          this.add.circle(r * 0.02, r * 0.32, r * 0.08, dark, 0.55),
-        ]
-      case 'bowtie': {
-        const wing = (side: -1 | 1) =>
-          this.add.triangle(
-            side * r * 0.14,
-            r * 0.8,
-            0,
-            0,
-            side * r * 0.24,
-            -r * 0.11,
-            side * r * 0.24,
-            r * 0.11,
-            0xe5484d,
-          )
-        return [wing(-1), wing(1), this.add.circle(0, r * 0.8, r * 0.06, 0xc73840)]
-      }
-      case 'freckles': {
-        const dots: Phaser.GameObjects.GameObject[] = []
-        for (const side of [-1, 1] as const) {
-          for (let i = 0; i < 3; i++) {
-            dots.push(
-              this.add.circle(
-                side * (r * 0.52 + i * r * 0.09),
-                r * 0.14 + (i % 2) * r * 0.07,
-                r * 0.028,
-                INK,
-                0.7,
-              ),
-            )
-          }
-        }
-        return dots
-      }
-      case 'crown': {
-        const crown = this.add.image(0, -r * 1.0, 'ftm-crown')
-        crown.setDisplaySize(r * 0.62, r * 0.4)
-        return [crown]
-      }
+  /** Blend a hex color toward white by t (0 = unchanged, 1 = white). */
+  private lighten(color: number, t: number): number {
+    const mix = (c: number): number => Math.round(c + (255 - c) * t)
+    return (mix((color >> 16) & 0xff) << 16) | (mix((color >> 8) & 0xff) << 8) | mix(color & 0xff)
+  }
+
+  /**
+   * Push the growth-aura halo to a growth step's intensity (brighter + wider
+   * the more grown) — animated for the grow/shrink pop, instant on a rebuild.
+   * The fully-grown finale passes GROW_STEPS so the just-completed friend blazes
+   * at full before it walks aside to the (also glowing) lineup.
+   */
+  private applyAura(animated: boolean, step = this.journey.growthStep): void {
+    const t = auraIntensity(step)
+    const alpha = 0.2 + 0.55 * t
+    const scale = this.haloFull * (0.85 + 0.3 * t)
+    if (animated) {
+      this.tweens.add({
+        targets: this.halo,
+        alpha,
+        scaleX: scale,
+        scaleY: scale,
+        duration: 420,
+        ease: 'Sine.easeOut',
+      })
+    } else {
+      this.halo.setAlpha(alpha).setScale(scale)
     }
   }
 
   /**
-   * Make the shown details match a growth step (plan prefix): pop in what's
-   * newly earned, puff away what shrank off. Defaults to the journey's step;
-   * the friend-grown moment passes GROW_STEPS to crown the walker.
+   * One tick of the ambient growth sparkles: a few glints pop on a ring around
+   * the friend, denser the more grown it is (rate ∝ auraIntensity). Read off
+   * the LIVE monster transform so they track it through growth and the
+   * walk-aside; skipped while the walker is torn down between friends.
    */
-  private syncDetails(animated: boolean, step = this.journey.growthStep): void {
-    const target = new Set(visibleDetails(this.detailPlan, step))
-
-    for (const [kind, objects] of [...this.detailObjects]) {
-      if (target.has(kind)) continue
-      this.detailObjects.delete(kind)
-      for (const obj of objects) {
-        this.tweens.killTweensOf(obj)
-        obj.destroy()
-      }
-      if (animated) {
-        const mp = this.monsterPos()
-        this.puffs.explode(8, mp.x, mp.y - this.bodyR * this.growth * 0.6)
-      }
-    }
-
-    for (const kind of target) {
-      if (this.detailObjects.has(kind)) continue
-      const objects = this.buildDetail(kind)
-      this.monster.add(objects)
-      this.detailObjects.set(kind, objects)
-      if (!animated) continue
-      for (const obj of objects) {
-        const sprite = obj as Phaser.GameObjects.Shape
-        this.tweens.add({
-          targets: sprite,
-          scaleX: { from: 0, to: sprite.scaleX },
-          scaleY: { from: 0, to: sprite.scaleY },
-          duration: 380,
-          ease: 'Back.easeOut',
-        })
-      }
-      const mp = this.monsterPos()
-      this.sparkles.explode(10, mp.x, mp.y - this.bodyR * this.growth * 0.9)
+  private tickAura(): void {
+    if (!this.monster || !this.monster.active) return
+    const t = auraIntensity(this.journey.growthStep)
+    let n = 0
+    if (Math.random() < t) n++
+    if (Math.random() < t * 0.6) n++
+    if (n === 0) return
+    const rx = this.bodyR * this.monster.scaleX
+    const cy = this.monster.y - this.bodyR * this.monster.scaleY * 0.12
+    for (let i = 0; i < n; i++) {
+      const angle = Math.random() * Math.PI * 2
+      const rr = rx * (0.6 + Math.random() * 0.5)
+      this.auraSparkle.emitParticleAt(
+        this.monster.x + Math.cos(angle) * rr,
+        cy + Math.sin(angle) * rr * 0.8,
+        1,
+      )
     }
   }
 
   // ─── Fed-friends lineup + friend/episode transitions ───────────────────────
 
-  /** Sideline slot (alternating table corners) for the i-th grown friend. */
+  /**
+   * Fed friends huddle together as a cozy pile in the bottom-left corner —
+   * they overlap and stack (a heap, not a spread-out lineup). Offsets are in
+   * bodyR units; the pile is lifted with the hero (heroLift) so the whole
+   * scene sits higher, nearer the screen center.
+   */
   private miniSlot(index: number): XY {
-    const fractions = [0.09, 0.91, 0.2, 0.8, 0.31]
-    const tableTop = this.scale.height - this.tableHeight()
+    // dx/dy pile offsets (bodyR units): all friends huddle on one level, each
+    // shifted out far enough to partially overlap its neighbour (index 3 sits
+    // just right of index 1, index 4 mirrors on the left) — a snug cluster.
+    const pile = [
+      { dx: 0.0, dy: 0.0 },
+      { dx: 0.4, dy: 0.03 },
+      { dx: -0.36, dy: 0.05 },
+      { dx: 0.72, dy: 0.02 },
+      { dx: -0.72, dy: 0.04 },
+    ]
+    const p = pile[index % pile.length]
+    // Extra friends beyond the five slots stack a further tier up (defensive;
+    // an episode only ever fills the five slots above).
+    const tier = Math.floor(index / pile.length)
+    const baseX = Math.max(this.scale.width * 0.1, this.bodyR)
+    const baseY = this.groundY() - this.bodyR * 0.28 - this.heroLift()
     return {
-      x: this.scale.width * fractions[index % fractions.length],
-      y: tableTop - this.bodyR * 0.28,
+      x: baseX + p.dx * this.bodyR,
+      y: baseY + (p.dy - tier * 0.6) * this.bodyR,
     }
   }
 
@@ -658,16 +842,41 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const mini = this.add.container(slot.x, slot.y).setDepth(2).setScale(0.3)
 
     const shadow = this.add.ellipse(0, r * 1.02, r * 1.5, r * 0.26, 0x000000, 0.1)
-    const body = this.add.image(0, -r * 0.1, this.monsterTexture(color))
-    const eye = (side: -1 | 1) => {
-      const white = this.add.ellipse(side * r * 0.35, -r * 0.42, r * 0.36, r * 0.36, 0xffffff)
-      const pupil = this.add.ellipse(side * r * 0.35, -r * 0.42, r * 0.17, r * 0.17, INK)
-      return [white, pupil]
+    const spec = friendSpec(episode, index)
+    const body = this.hasArt(spec.art)
+      ? this.add
+          .image(0, -r * 0.1, artKey(spec.art))
+          .setScale((r * 2.3) / this.textures.getFrame(artKey(spec.art)).height)
+      : this.add.image(0, -r * 0.1, this.monsterTexture(color))
+    // Match the walker's face anchors so the lineup mini reads as the same
+    // animal (eyes on its own patch, mouth below). Each eye is a container with
+    // a pupil node so the mini can idle-glance on its own (scheduleMiniGlance)
+    // — alive, but never cursor-tracking (no iPad cursor).
+    const fx = (spec.faceX ?? 0) * r // shift the face onto an off-center patch
+    const glanceNodes: Phaser.GameObjects.Container[] = []
+    const eye = (side: -1 | 1): Phaser.GameObjects.Container => {
+      const ec = this.add.container(fx + side * r * spec.eyeGap, r * spec.faceY)
+      const white = this.add.ellipse(0, 0, r * 0.34, r * 0.34, 0xffffff)
+      const node = this.add.container(0, 0)
+      const dark = this.add.ellipse(0, 0, r * 0.2, r * 0.2, INK)
+      const glint = this.add.circle(-r * 0.05, -r * 0.06, r * 0.05, 0xffffff)
+      node.add([dark, glint])
+      ec.add([white, node])
+      this.miniPupils.push({ node, eye: ec })
+      glanceNodes.push(node)
+      return ec
     }
-    const smile = this.add.ellipse(0, r * 0.34, r * 0.5, r * 0.22, INK)
-    const crown = this.add.image(0, -r * 1.0, 'ftm-crown')
-    crown.setDisplaySize(r * 0.62, r * 0.4)
-    mini.add([shadow, body, ...eye(-1), ...eye(1), smile, crown])
+    const smile = this.hasArt('face-mouth-smile')
+      ? this.add
+          .image(fx, r * spec.mouthY - r * 0.13, artKey('face-mouth-smile'))
+          .setDisplaySize(r * 0.55, r * 0.15)
+      : this.add.ellipse(fx, r * spec.mouthY - r * 0.13, r * 0.42, r * 0.09, INK)
+    // A soft, full-strength halo marks the lineup friend as fully grown — the
+    // same growth aura the walker earned, standing in for the old crown. Behind
+    // the body, tinted a lightened body hue (art.ts socket rig is gone).
+    const halo = this.add.image(0, -r * 0.1, 'ftm-halo').setTint(this.lighten(color, 0.55))
+    halo.setDisplaySize(r * 3.2, r * 3.2).setAlpha(0.5)
+    mini.add([shadow, halo, body, eye(-1), eye(1), smile])
 
     // Idle life so the lineup feels alive, staggered per slot.
     this.tweens.add({
@@ -678,9 +887,31 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       repeat: -1,
       ease: 'Sine.easeInOut',
     })
+    this.scheduleMiniGlance(glanceNodes)
 
     this.minis.push(mini)
     return mini
+  }
+
+  /**
+   * A lineup friend idly looks around on its own — both eyes drift together to
+   * a gentle random direction (or straight ahead), then re-schedule after a
+   * random pause. Independent per mini and untethered from any pointer, so the
+   * lineup feels curious and alive on a touch device with no cursor. The chain
+   * self-terminates once the mini's pupils are destroyed (rebuild/episode).
+   */
+  private scheduleMiniGlance(nodes: Phaser.GameObjects.Container[]): void {
+    const alive = nodes.filter((n) => n.active)
+    if (alive.length === 0) return
+    const reach = this.bodyR * 0.06
+    const ahead = Math.random() < 0.35
+    const angle = Math.random() * Math.PI * 2
+    const dx = ahead ? 0 : Math.cos(angle) * reach
+    const dy = ahead ? 0 : Math.sin(angle) * reach * 0.7 // less vertical travel
+    for (const node of alive) {
+      this.tweens.add({ targets: node, x: dx, y: dy, duration: 420, ease: 'Sine.easeInOut' })
+    }
+    this.time.delayedCall(900 + Math.random() * 1900, () => this.scheduleMiniGlance(nodes))
   }
 
   /** The grown friend celebrates, walks aside, and the next one hops in. */
@@ -715,7 +946,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         onComplete: () => {
           // …swap the walker for a lineup mini and bring in the next friend.
           this.monster.destroy()
-          this.detailObjects.clear()
           const mini = this.spawnMini(grownIndex, episodeAtGrow)
           mini.setScale(0)
           this.tweens.add({
@@ -735,9 +965,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   /** A brand-new small friend hops in from the side. */
   private nextFriendEnters(): void {
     this.growth = scaleForStep(this.journey.growthStep)
-    this.detailPlan = detailsForFriend(this.journey.episode, this.journey.friendsFed)
     this.buildMonster()
-    this.syncDetails(false)
 
     const mp = this.monsterPos()
     this.monster.setPosition(this.scale.width + this.bodyR, mp.y)
@@ -812,10 +1040,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
           mini.destroy()
         }
         this.minis = []
+        this.miniPupils = []
         this.growth = scaleForStep(this.journey.growthStep)
-        this.detailPlan = detailsForFriend(this.journey.episode, this.journey.friendsFed)
         this.buildMonster()
-        this.syncDetails(false)
         this.layout()
         ;[659, 784, 988].forEach((freq, i) =>
           this.time.delayedCall(200 + i * 150, () => playTone(freq, 140, 'sine', 0.08)),
@@ -835,15 +1062,17 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private buildPlates(): void {
     for (let i = 0; i < TRAY_SIZE; i++) {
       const plate = this.add.image(0, 0, 'ftm-plate').setDepth(4)
-      plate.setScale(1, 0.55)
+      this.dressPlate(plate)
       plate.setInteractive()
       plate.on('pointerdown', () => {
         playTone(659, 45, 'sine', 0.05)
+        const baseX = plate.getData('baseSX') as number
+        const baseY = plate.getData('baseSY') as number
         this.tweens.killTweensOf(plate)
         this.tweens.add({
           targets: plate,
-          scaleX: { from: 0.92, to: 1 },
-          scaleY: { from: 0.5, to: 0.55 },
+          scaleX: { from: baseX * 0.92, to: baseX },
+          scaleY: { from: baseY * 0.9, to: baseY },
           duration: 220,
           ease: 'Back.easeOut',
         })
@@ -852,31 +1081,51 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     }
   }
 
+  /** Skin one tray slot: the episode's marker sprite, or the plate fallback. */
+  private dressPlate(plate: Phaser.GameObjects.Image): void {
+    const marker = `marker-${this.episode.id}`
+    if (this.hasArt(marker)) {
+      if (plate.texture.key !== artKey(marker)) plate.setTexture(artKey(marker))
+      plate.setDisplaySize(this.px(104), this.px(52))
+    } else {
+      if (plate.texture.key !== 'ftm-plate') plate.setTexture('ftm-plate')
+      plate.setScale(1, 0.55)
+    }
+    plate.setData('baseSX', plate.scaleX)
+    plate.setData('baseSY', plate.scaleY)
+  }
+
   private buildBubble(): void {
     this.bubble = this.add.container(0, 0).setDepth(6)
-    this.bubbleBg = this.add.image(0, 0, 'ftm-bubble').setAlpha(0.96)
-    const tail1 = this.add.ellipse(
-      -this.px(18),
-      this.px(58),
-      this.px(18),
-      this.px(16),
-      0xffffff,
-      0.96,
-    )
-    const tail2 = this.add.ellipse(
-      -this.px(30),
-      this.px(82),
-      this.px(10),
-      this.px(9),
-      0xffffff,
-      0.96,
-    )
-    this.bubble.add([tail2, tail1, this.bubbleBg])
+    this.panelGfx = this.add.graphics()
+    this.bubble.add(this.panelGfx)
+    this.drawPanel(this.px(220))
+    this.bubble.setScale(0)
+  }
 
-    // Tapping the bubble repeats the request cue.
-    this.bubbleBg.setInteractive()
-    this.bubbleBg.on('pointerdown', () => {
-      if (this.round) this.playRequestCue(this.round.request)
+  /**
+   * (Re)draw the task panel plate at the given width and rebuild its tap
+   * target (tapping the panel repeats the request cue). Drawing per request
+   * keeps rounded corners crisp at any width; the border is tinted by the
+   * episode palette so the panel changes with the world.
+   */
+  private drawPanel(width: number): void {
+    const bh = this.px(PANEL_H_CSS)
+    const radius = this.px(26)
+    this.panelGfx.clear()
+    this.panelGfx.fillStyle(0xffffff, 0.96)
+    this.panelGfx.fillRoundedRect(-width / 2, -bh / 2, width, bh, radius)
+    this.panelGfx.lineStyle(this.px(5), this.episode.palette.table, 1)
+    this.panelGfx.strokeRoundedRect(-width / 2, -bh / 2, width, bh, radius)
+
+    this.panelHit?.destroy()
+    this.panelHit = this.add.rectangle(0, 0, width, bh, 0xffffff, 0)
+    this.bubble.addAt(this.panelHit, 1) // above the plate, below the tiles
+    this.panelHit.setInteractive()
+    this.panelHit.on('pointerdown', () => {
+      // Not during transitions: a mid-celebration replay would hop tiles
+      // that the completion bow is already animating.
+      if (this.round && !this.transitioning) this.playRequestCue(this.round.request)
       this.tweens.killTweensOf(this.bubble)
       this.tweens.add({
         targets: this.bubble,
@@ -886,7 +1135,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         ease: 'Back.easeOut',
       })
     })
-    this.bubble.setScale(0)
   }
 
   private buildEmitters(): void {
@@ -927,6 +1175,22 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     for (const emitter of [this.confetti, this.stars, this.sparkles, this.puffs]) {
       emitter.setDepth(50)
     }
+
+    // Ambient growth aura: tiny warm glints that drift up off the friend,
+    // emitted on a timer (tickAura) at a rate that scales with how grown it is.
+    // Sits just above the friend (depth 3) so glints read as its own glow.
+    this.auraSparkle = this.add
+      .particles(0, 0, 'ftm-dot', {
+        speed: { min: this.px(8), max: this.px(40) },
+        gravityY: -this.px(24),
+        lifespan: { min: 650, max: 1300 },
+        scale: { start: 0.5, end: 0 },
+        alpha: { start: 0.9, end: 0 },
+        tint: [0xffe9a8, 0xffffff, 0xfff2c2],
+        blendMode: 'ADD',
+        emitting: false,
+      })
+      .setDepth(3)
   }
 
   private wireInput(): void {
@@ -940,7 +1204,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         this.tweens.killTweensOf(img)
         this.dragged = img
         img.setDepth(20)
-        img.setScale(1.15)
+        img.setScale(this.foodBaseScale(img) * 1.15)
         playTone(523, 50, 'sine', 0.06)
       },
     )
@@ -1000,30 +1264,64 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   // ─── Layout (RESIZE-safe for portrait + landscape) ───────────────────────
 
-  private tableHeight(): number {
-    return Math.max(this.scale.height * 0.2, this.px(140))
+  /**
+   * Bottom margin under the food row. Raised well clear of the screen's
+   * bottom edge — on the iPad, drags that start near the edge trigger the
+   * iOS home-indicator gesture and minimize the game.
+   */
+  private trayMargin(): number {
+    return Math.max(this.scale.height * 0.14, this.px(120))
+  }
+
+  /** The food row + plate placeholders sit lifted this far up (5% of height). */
+  private trayLift(): number {
+    return this.scale.height * 0.05
   }
 
   private trayY(): number {
-    return this.scale.height - this.tableHeight() * 0.45
+    return this.scale.height - this.trayMargin() - this.trayLift()
+  }
+
+  /**
+   * The invisible line the friends stand on (there is no table anymore —
+   * backgrounds are full-bleed scenery, layout owns all positioning). Anchored
+   * to the screen bottom (not trayY) so lifting the tray doesn't drag the
+   * hero + friends up with it.
+   */
+  private groundY(): number {
+    return this.scale.height - this.trayMargin() - this.px(88)
   }
 
   private slotPos(index: number): XY {
+    // Cluster the tray toward the center: half the old full-width spacing
+    // (was width/TRAY_SIZE), so the row is snug and easy for small hands to
+    // reach across instead of stretched over the whole screen.
+    const spacing = this.scale.width / (TRAY_SIZE * 2)
     return {
-      x: (this.scale.width * (index + 0.5)) / TRAY_SIZE,
-      y: this.trayY() - this.px(12),
+      x: this.scale.width / 2 + (index - (TRAY_SIZE - 1) / 2) * spacing,
+      y: this.trayY(),
     }
   }
 
+  /**
+   * How far up the hero + friends are lifted off the ground line (~20% of the
+   * screen height) so the scene sits higher, nearer the vertical center and
+   * well clear of the food tray.
+   */
+  private heroLift(): number {
+    return this.scale.height * 0.2
+  }
+
   private monsterPos(): XY {
-    const tableTop = this.scale.height - this.tableHeight()
-    return { x: this.scale.width / 2, y: tableTop - this.bodyR * this.growth * 0.55 }
+    const y = this.groundY() - this.bodyR * this.growth * 0.55 - this.heroLift()
+    // Never let the head ride up under the top task panel.
+    const headroom = this.px(PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) + this.bodyR * this.growth * 1.35
+    return { x: this.scale.width / 2, y: Math.max(y, headroom) }
   }
 
   private layout(): void {
     const w = this.scale.width
     const h = this.scale.height
-    const tableH = this.tableHeight()
     const palette = this.episode.palette
 
     this.bgGfx.clear()
@@ -1036,11 +1334,20 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     )
     this.bgGfx.fillRect(0, 0, w, h)
 
-    this.tableGfx.clear()
-    this.tableGfx.fillStyle(palette.tableEdge, 1)
-    this.tableGfx.fillRect(0, h - tableH - this.px(8), w, this.px(8))
-    this.tableGfx.fillStyle(palette.table, 1)
-    this.tableGfx.fillRect(0, h - tableH, w, tableH)
+    // Episode backdrop, cover-scaled (center-weighted art crops safely into
+    // any aspect ratio); the gradient stays underneath as the fallback.
+    const bgArt = `bg-${this.episode.id}`
+    if (this.hasArt(bgArt)) {
+      const frame = this.textures.getFrame(artKey(bgArt))
+      const cover = Math.max(w / frame.width, h / frame.height)
+      this.bgImage
+        .setTexture(artKey(bgArt))
+        .setPosition(w / 2, h / 2)
+        .setDisplaySize(frame.width * cover, frame.height * cover)
+        .setVisible(true)
+    } else {
+      this.bgImage.setVisible(false)
+    }
 
     const mp = this.monsterPos()
     this.monster.setPosition(mp.x, mp.y)
@@ -1062,36 +1369,35 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
     for (let i = 0; i < this.plates.length; i++) {
       const slot = this.slotPos(i)
-      this.plates[i].setPosition(slot.x, slot.y + this.px(16))
+      this.dressPlate(this.plates[i]) // episode may have changed the marker
+      this.plates[i].setPosition(slot.x, slot.y + this.px(14))
     }
     for (const food of this.foods) {
       if (food === this.dragged) continue
       this.tweens.killTweensOf(food)
       const slot = this.slotPos(food.getData('slot') as number)
       food.setPosition(slot.x, slot.y)
-      food.setScale(1)
+      food.setScale(this.foodBaseScale(food))
     }
   }
 
+  /** The task panel owns the top of the screen, detached from the friend. */
   private positionBubble(): void {
-    const mp = this.monsterPos()
-    const headTop = mp.y - this.bodyR * this.growth * 1.35
-    const y = Math.max(headTop - this.px(58), this.px(80))
-    this.bubble.setPosition(this.scale.width / 2, y)
+    this.bubble.setPosition(this.scale.width / 2, this.px(PANEL_CENTER_Y_CSS))
   }
 
   // ─── Mouth helpers ───────────────────────────────────────────────────────
 
   private mouthWorld(): XY {
     return {
-      x: this.monster.x,
+      x: this.monster.x + this.faceOffX * this.monster.scaleX,
       y: this.monster.y + this.bodyR * 0.38 * this.monster.scaleY,
     }
   }
 
   private noseWorld(): XY {
     return {
-      x: this.monster.x,
+      x: this.monster.x + this.faceOffX * this.monster.scaleX,
       y: this.monster.y - this.bodyR * 0.02 * this.monster.scaleY,
     }
   }
@@ -1113,10 +1419,65 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   }
 
   private applyMouth(): void {
+    if (this.happyEyes && this.mouthGiggle) return // beHappy owns the mouth
     const open = this.mouthState.open
-    this.mouthLips.setScale(1 + open * 0.15, 0.14 + 0.86 * open)
+    if (this.mouthSmile) {
+      // Hard swap (no alpha crossfade) between the resting smile and the open
+      // mouth: the old fade left both mouths partly visible mid-transition,
+      // which read as a double-mouth artifact. The open mouth keeps a rounded
+      // min shape (scaleY ≥ 0.4) so the instant swap never flashes a flat
+      // line; the smooth open/close motion comes from the scaleY ramp below.
+      const opening = open > 0.02
+      this.mouthSmile.setAlpha(opening ? 0 : 1)
+      this.mouthLips.setAlpha(opening ? 1 : 0)
+      this.mouthLips.setScale(
+        this.mouthBase.x * (1 + open * 0.12),
+        this.mouthBase.y * (0.4 + 0.6 * open),
+      )
+      return
+    }
+    this.mouthLips.setScale(
+      this.mouthBase.x * (1 + open * 0.15),
+      this.mouthBase.y * (0.14 + 0.86 * open),
+    )
+    if (this.artMouth) return // sprite mouth carries its own tongue
     this.mouthTongue.setAlpha(open)
     this.mouthTongue.setScale(1, 0.4 + 0.6 * open)
+  }
+
+  /** Toggle the happy `^^` closed eyes (no-op without the sprite). */
+  private setHappyEyes(on: boolean): void {
+    if (!this.happyL || !this.happyR) return
+    this.happyEyes = on
+    this.happyL.setVisible(on)
+    this.happyR.setVisible(on)
+    this.eyeWhiteL.setVisible(!on)
+    this.eyeWhiteR.setVisible(!on)
+    this.pupilL.setVisible(!on)
+    this.pupilR.setVisible(!on)
+  }
+
+  /**
+   * A burst of pure joy: happy `^^` eyes + the wide laugh mouth, reverting to
+   * the resting smile after `ms`. Guards on `.active` so a revert scheduled
+   * before a friend rebuild (celebration) never touches a destroyed sprite.
+   */
+  private beHappy(ms: number): void {
+    this.setHappyEyes(true)
+    if (this.mouthGiggle) {
+      this.mouthSmile?.setVisible(false)
+      this.mouthLips.setVisible(false)
+      this.mouthGiggle.setVisible(true)
+    }
+    this.time.delayedCall(ms, () => {
+      this.setHappyEyes(false)
+      if (this.mouthGiggle?.active) {
+        this.mouthGiggle.setVisible(false)
+        this.mouthLips.setVisible(true)
+        this.mouthSmile?.setVisible(true)
+        this.applyMouth()
+      }
+    })
   }
 
   // ─── Round flow ──────────────────────────────────────────────────────────
@@ -1154,12 +1515,22 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
     tray.forEach((foodId, i) => {
       const slot = this.slotPos(i)
-      const img = this.add.image(slot.x, -this.px(80), `ftm-food-${foodId}`).setDepth(5)
+      const texKey = this.foodTexture(foodId)
+      const img = this.add.image(slot.x, -this.px(80), texKey).setDepth(5)
       img.setData('foodId', foodId)
       img.setData('slot', i)
-      const frame = this.textures.getFrame(`ftm-food-${foodId}`)
+      const frame = this.textures.getFrame(texKey)
+      // Reskin sprites arrive at atlas resolution — normalize them to the
+      // emoji footprint; the hit circle stays ~100 css px either way (the
+      // shape lives in unscaled frame coords, hence the /base).
+      const base =
+        texKey === `ftm-food-${foodId}`
+          ? 1
+          : this.px(FOOD_CSS * 1.12) / Math.max(frame.width, frame.height)
+      img.setData('baseScale', base)
+      img.setScale(base)
       img.setInteractive(
-        new Phaser.Geom.Circle(frame.width / 2, frame.height / 2, this.px(48)),
+        new Phaser.Geom.Circle(frame.width / 2, frame.height / 2, this.px(50) / base),
         Phaser.Geom.Circle.Contains,
       )
       this.input.setDraggable(img)
@@ -1169,8 +1540,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         if (this.dragged) return
         this.tweens.add({
           targets: img,
-          scaleX: 0.9,
-          scaleY: 0.9,
+          scaleX: base * 0.9,
+          scaleY: base * 0.9,
           duration: 80,
           yoyo: true,
           ease: 'Quad.easeOut',
@@ -1204,20 +1575,27 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     for (const extra of this.bubbleExtras) extra.destroy()
     this.bubbleExtras = []
     this.pips = []
+    this.patternRing = null
 
+    // Pattern rounds ask for exactly ONE food (the sequence's continuation),
+    // yet their tiles used to look identical to a "feed all of these" combo —
+    // the reported early-win confusion. The sequence is drawn as smaller
+    // context tiles; the ringed pulsing socket is the only "want". Pattern
+    // spacing is wider so the ring never overlaps the last context tile.
+    const isPattern = request.kind === 'pattern'
     const items = bubbleItems(request)
-    const itemW = this.px(BUBBLE_ITEM_CSS + 10)
+    const itemW = this.px(BUBBLE_ITEM_CSS + (isPattern ? 18 : 10))
     const bw = items.length * itemW + this.px(52)
-    const bh = this.px(96)
-    this.bubbleBg.setDisplaySize(bw, bh)
+    this.drawPanel(bw)
 
     const tile = this.px(BUBBLE_ITEM_CSS + 22)
     items.forEach((item, i) => {
       const x = (i - (items.length - 1) / 2) * itemW
       let pic: Phaser.GameObjects.Image
       if (item.emoji !== undefined) {
-        pic = this.add.image(x, 0, `ftm-food-${this.foodIdForEmoji(item.emoji)}`)
-        pic.setDisplaySize(tile, tile)
+        pic = this.add.image(x, 0, this.foodTexture(this.foodIdForEmoji(item.emoji)))
+        const size = isPattern ? tile * 0.78 : tile
+        pic.setDisplaySize(size, size)
       } else if (item.color !== undefined) {
         pic = this.add.image(x, 0, 'ftm-splash').setTint(COLOR_HEX[item.color])
         pic.setDisplaySize(tile, tile)
@@ -1226,9 +1604,28 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         pic = this.add.image(x, 0, 'ftm-splash').setTint(0xe6dcf7)
         pic.setDisplaySize(tile * 1.1, tile * 1.1)
         this.addPips(x, item.dots)
+      } else if (isPattern) {
+        // The pattern's answer socket — THE ask of the round: one bright
+        // ringed pulsing hole at the end of the row.
+        pic = this.add.image(x, 0, 'ftm-splash').setTint(0xcabcea)
+        pic.setDisplaySize(tile * 0.9, tile * 0.9)
+        const ring = this.add.circle(x, 0, tile * 0.5, 0x000000, 0)
+        ring.setStrokeStyle(this.px(4), this.episode.palette.table, 1)
+        this.bubble.add(ring)
+        this.bubbleExtras.push(ring)
+        this.patternRing = ring
+        this.tweens.add({
+          targets: pic,
+          scaleX: pic.scaleX * 1.12,
+          scaleY: pic.scaleY * 1.12,
+          duration: 600,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.easeInOut',
+        })
       } else {
-        // Empty slot: pulsing lavender socket (pattern answer / not progress) —
-        // tinted so it reads against the white bubble.
+        // Not-round progress slot: pulsing lavender socket — tinted so it
+        // reads against the white panel.
         pic = this.add.image(x, 0, 'ftm-splash').setTint(0xcabcea).setAlpha(0.8)
         pic.setDisplaySize(tile * 0.82, tile * 0.82)
         this.tweens.add({
@@ -1335,7 +1732,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     if (!pic) return
     this.tweens.killTweensOf(pic)
     const tile = this.px(BUBBLE_ITEM_CSS + 22)
-    pic.setTexture(`ftm-food-${foodId}`)
+    pic.setTexture(this.foodTexture(foodId))
     pic.setAlpha(1)
     pic.setDisplaySize(tile, tile)
     this.tweens.add({
@@ -1354,9 +1751,14 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     if (!slot) return
     this.tweens.killTweensOf(slot)
     const tile = this.px(BUBBLE_ITEM_CSS + 22)
-    slot.setTexture(`ftm-food-${this.round.request.answerId}`)
+    slot.setTexture(this.foodTexture(this.round.request.answerId))
     slot.setAlpha(1)
     slot.setDisplaySize(tile, tile)
+    // The socket is answered — its ring bows out.
+    if (this.patternRing) {
+      this.tweens.killTweensOf(this.patternRing)
+      this.tweens.add({ targets: this.patternRing, alpha: 0, duration: 300, ease: 'Quad.easeOut' })
+    }
     // Re-read the completed sequence left-to-right — celebration doubles as
     // the lesson (the pattern is shown whole one more time).
     this.bubblePics.forEach((pic, i) => {
@@ -1399,6 +1801,34 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
   }
 
+  /** Hop one panel tile (pattern cue re-reads the row tile by tile). */
+  private hopBubblePic(index: number): void {
+    const pic = this.bubblePics[index]
+    if (!pic || !pic.active || this.transitioning) return
+    this.tweens.add({
+      targets: pic,
+      y: { from: 0, to: -this.px(12) },
+      duration: 140,
+      yoyo: true,
+      ease: 'Quad.easeOut',
+    })
+  }
+
+  /** Flash the pattern answer ring — "this one is missing". */
+  private punchPatternRing(): void {
+    const ring = this.patternRing
+    if (!ring || !ring.active || this.transitioning) return
+    this.tweens.killTweensOf(ring)
+    ring.setScale(1)
+    this.tweens.add({
+      targets: ring,
+      scaleX: { from: 1.25, to: 1 },
+      scaleY: { from: 1.25, to: 1 },
+      duration: 320,
+      ease: 'Back.easeOut',
+    })
+  }
+
   private playRequestBeeps(count: number): void {
     for (let i = 0; i < Math.min(count, PENTA.length); i++) {
       this.time.delayedCall(i * 170, () => playTone(PENTA[i], 150, 'sine', 0.1))
@@ -1409,15 +1839,21 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private playRequestCue(request: FoodRequest): void {
     switch (request.kind) {
       case 'pattern': {
-        // The sequence as a melody: one tone per role, then a rising "…?".
+        // The sequence as a melody, re-taught visually: each context tile
+        // hops with its tone, then the answer socket flashes on the rising
+        // "…?" — the row leads to the one missing food.
         const roles = [...new Set(request.sequence)]
         request.sequence.forEach((id, i) => {
           const tone = PENTA[(roles.indexOf(id) * 2) % PENTA.length]
-          this.time.delayedCall(i * 160, () => playTone(tone, 130, 'sine', 0.09))
+          this.time.delayedCall(i * 160, () => {
+            playTone(tone, 130, 'sine', 0.09)
+            this.hopBubblePic(i)
+          })
         })
-        this.time.delayedCall(request.sequence.length * 160 + 140, () =>
-          playTone(988, 170, 'sine', 0.08),
-        )
+        this.time.delayedCall(request.sequence.length * 160 + 140, () => {
+          playTone(988, 170, 'sine', 0.08)
+          this.punchPatternRing()
+        })
         return
       }
       case 'not':
@@ -1440,12 +1876,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.setMouthOpen(1, 80)
     this.tweens.killTweensOf(img)
     const mouth = this.mouthWorld()
+    const base = this.foodBaseScale(img)
     this.tweens.add({
       targets: img,
       x: mouth.x,
       y: mouth.y,
-      scaleX: 0.3,
-      scaleY: 0.3,
+      scaleX: base * 0.3,
+      scaleY: base * 0.3,
       duration: 130,
       ease: 'Quad.easeIn',
       onComplete: () => this.swallow(img),
@@ -1530,16 +1967,23 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
           ease: 'Bounce.easeOut',
           onComplete: () => this.layout(),
         })
-        this.syncDetails(true)
+        this.applyAura(true)
       })
     }
 
     const slot = this.slotPos(img.getData('slot') as number)
+    const base = this.foodBaseScale(img)
     this.arcTo(img, slot.x, slot.y, 550, () => {
       img.setInteractive()
       if (this.transitioning) this.fadeOutFood(img)
     })
-    this.tweens.add({ targets: img, scaleX: 1, scaleY: 1, duration: 400, ease: 'Quad.easeOut' })
+    this.tweens.add({
+      targets: img,
+      scaleX: base,
+      scaleY: base,
+      duration: 400,
+      ease: 'Quad.easeOut',
+    })
   }
 
   private completeRound(): void {
@@ -1557,6 +2001,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       playTone(98, 220, 'sawtooth', 0.09)
       this.time.delayedCall(170, () => playTone(78, 190, 'sawtooth', 0.07))
       this.confetti.explode(60, mp.x, mp.y - this.bodyR * this.growth)
+      this.beHappy(900) // laugh with the confetti (guards its own revert on rebuild)
     })
 
     // Round fed = level passed: one persistent star on the launcher tile.
@@ -1579,7 +2024,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     saveData(GAME_ID, journeyToData(this.journey))
 
     if (outcome === 'grew') {
-      // Visible growth pop: clearly bigger + maybe a brand-new detail.
+      // Visible growth pop: clearly bigger + a brighter aura.
       this.growth = scaleForStep(this.journey.growthStep)
       this.tweens.add({
         targets: this.monster,
@@ -1590,7 +2035,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         onComplete: () => this.layout(),
       })
       this.time.delayedCall(200, () => {
-        this.syncDetails(true)
+        this.applyAura(true)
         this.time.delayedCall(300, () =>
           [523, 659, 784].forEach((freq, i) =>
             this.time.delayedCall(i * 120, () => playTone(freq, 160, 'triangle', 0.1)),
@@ -1604,8 +2049,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       return
     }
 
-    // Fully grown: final size pop + the crown lands on the CURRENT friend
-    // (its plan is still active — detailPlan only swaps with the next one).
+    // Fully grown: final size pop + the aura blazes to full on the CURRENT
+    // friend before it walks aside to join the (glowing) lineup.
     this.growth = scaleForStep(GROW_STEPS)
     this.tweens.add({
       targets: this.monster,
@@ -1614,7 +2059,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       duration: 380,
       ease: 'Back.easeOut',
     })
-    this.time.delayedCall(250, () => this.syncDetails(true, GROW_STEPS))
+    this.time.delayedCall(250, () => this.applyAura(true, GROW_STEPS))
 
     // Then: walk to the lineup, next friend hops in (and, on the 5th, the
     // dance party + episode change) — then play continues.
@@ -1645,12 +2090,19 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   private returnToTray(img: Phaser.GameObjects.Image): void {
     const slot = this.slotPos(img.getData('slot') as number)
+    const base = this.foodBaseScale(img)
     img.disableInteractive()
     this.arcTo(img, slot.x, slot.y, 450, () => {
       img.setInteractive()
       if (this.transitioning) this.fadeOutFood(img)
     })
-    this.tweens.add({ targets: img, scaleX: 1, scaleY: 1, duration: 350, ease: 'Quad.easeOut' })
+    this.tweens.add({
+      targets: img,
+      scaleX: base,
+      scaleY: base,
+      duration: 350,
+      ease: 'Quad.easeOut',
+    })
   }
 
   /** Move along a little arc (never teleport), with a playful spin. */
@@ -1739,6 +2191,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // Never during round transitions: killTweensOf would sever the
     // walk-aside/party tween chain that carries the friend sequence.
     if (this.transitioning) return
+    this.beHappy(700)
     playTone(784, 60, 'sine', 0.07)
     this.time.delayedCall(80, () => playTone(880, 70, 'sine', 0.07))
     this.tweens.killTweensOf(this.monster)
@@ -1794,7 +2247,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   private scheduleBlink(): void {
     this.time.delayedCall(3000 + Math.random() * 3000, () => {
-      if (!this.sneezing) {
+      if (!this.sneezing && !this.happyEyes) {
         for (const eye of [this.eyeL, this.eyeR]) {
           if (this.tweens.isTweening(eye)) continue
           this.tweens.add({
@@ -1806,6 +2259,19 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
             ease: 'Quad.easeIn',
           })
         }
+      }
+      // The lineup blinks too, each slightly offset so it never looks robotic.
+      for (const { eye } of this.miniPupils) {
+        if (!eye.active || this.tweens.isTweening(eye)) continue
+        this.tweens.add({
+          targets: eye,
+          scaleY: 0.1,
+          duration: 60,
+          yoyo: true,
+          hold: 40,
+          delay: Math.random() * 500,
+          ease: 'Quad.easeIn',
+        })
       }
       this.scheduleBlink()
     })
@@ -1819,26 +2285,34 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       ? { x: this.dragged.x, y: this.dragged.y }
       : { x: pointer.worldX, y: pointer.worldY }
     const crossEyed = this.time.now < this.funnyUntil
-    const maxOff = this.bodyR * 0.09
+    // Kept small so a big pupil never spills past the eye white, even when the
+    // eye squashes mid-blink.
+    const maxOff = this.bodyR * 0.05
 
-    const eyes: Array<[Phaser.GameObjects.Container, Phaser.GameObjects.Ellipse, number]> = [
-      [this.eyeL, this.pupilL, 1],
-      [this.eyeR, this.pupilR, -1],
-    ]
-    for (const [eye, pupil, side] of eyes) {
-      let dx: number
-      let dy: number
-      if (crossEyed) {
-        dx = side * maxOff * 0.9
-        dy = maxOff * 0.5
-      } else {
-        const m = eye.getWorldTransformMatrix()
-        const angle = Math.atan2(target.y - m.ty, target.x - m.tx)
-        dx = Math.cos(angle) * maxOff
-        dy = Math.sin(angle) * maxOff
+    // Only the walker's pupils follow the food/touch (it looks at what it's
+    // being fed). Happy `^^` eyes have no pupil to steer — skip them.
+    // The lineup friends do NOT track (there is no cursor on the iPad, and
+    // constant following looks uncanny) — they idle-glance on their own timers.
+    if (!this.happyEyes) {
+      const eyes: Array<[Phaser.GameObjects.Container, Phaser.GameObjects.Container, number]> = [
+        [this.eyeL, this.pupilL, 1],
+        [this.eyeR, this.pupilR, -1],
+      ]
+      for (const [eye, pupil, side] of eyes) {
+        let dx: number
+        let dy: number
+        if (crossEyed) {
+          dx = side * maxOff * 0.9
+          dy = maxOff * 0.5
+        } else {
+          const m = eye.getWorldTransformMatrix()
+          const angle = Math.atan2(target.y - m.ty, target.x - m.tx)
+          dx = Math.cos(angle) * maxOff
+          dy = Math.sin(angle) * maxOff
+        }
+        pupil.x += (dx - pupil.x) * 0.18
+        pupil.y += (dy - pupil.y) * 0.18
       }
-      pupil.x += (dx - pupil.x) * 0.18
-      pupil.y += (dy - pupil.y) * 0.18
     }
   }
 }

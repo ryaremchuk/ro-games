@@ -219,22 +219,22 @@ test('feed: a fed round visibly grows the friend; a wrong feed deflates it', asy
   const mid = await readState(page)
   expect(mid.journey.growthStep).toBe(3)
   const scaleBefore = mid.growthScale
-  const detailsBefore = mid.details.length
   await page.screenshot({ path: 'e2e/__screenshots__/feed-friend-mid.png' })
 
-  // Wrong feed → one step smaller (and one detail may pop away).
+  // Wrong feed → one step smaller (and its growth aura dims).
   const wrong = mid.foods.find((f) => !f.correct)!
   await dragToMouth(page, wrong)
   await pollState(page, 'friend deflated', (s) => s.journey.growthStep === 2)
   await pollState(page, 'shrink animated', (s) => s.growthScale < scaleBefore)
 
-  // Complete the round → the journey grows back a step, visibly.
-  const shrunkScale = (await readState(page)).growthScale
+  // Complete the round → the journey grows back a step, visibly: bigger, and a
+  // brighter aura than the shrunk state.
+  const shrunk = await readState(page)
   await feedRound(page)
   const after = await readState(page)
   expect(after.journey.growthStep).toBe(3)
-  expect(after.growthScale).toBeGreaterThan(shrunkScale)
-  expect(after.details.length).toBeGreaterThanOrEqual(detailsBefore)
+  expect(after.growthScale).toBeGreaterThan(shrunk.growthScale)
+  expect(after.aura).toBeGreaterThan(shrunk.aura)
 })
 
 test('feed: a fully grown friend joins the lineup and a new small friend arrives', async ({
@@ -297,7 +297,7 @@ test('feed: the journey survives a reload (persistent long-term progression)', a
   expect(s.journey).toEqual({ episode: 2, friendsFed: 2, growthStep: 4 })
   expect(s.episodeId).toBe(EPISODES[2].id)
   expect(s.miniCount).toBe(2)
-  expect(s.details.length).toBeGreaterThan(0)
+  expect(s.aura).toBeGreaterThan(0)
 })
 
 for (const kind of ['dots', 'not', 'pattern', 'mix'] as const) {

@@ -44,10 +44,14 @@ node .claude/skills/art-atlas-slice/slice-atlas.mjs <atlas.png> <outDir> \
   --grid 4x4 --names crab-body,crab-claw,-,sun,...
 ```
 
-The script chroma-keys magenta to alpha (soft ramp keeps anti-aliased edges),
-despills the pink fringe, erodes 1px, trims each cell to its alpha bbox and
-writes `<outDir>/<name>.png`. Heed its warnings: "touches the cell edge" and
-"marked empty but has content" both mean grid misalignment — usually fixed by
+The script keys magenta to alpha by HUE (robust to multi-shade backgrounds),
+then de-fringes by COLOR-BLEED: it recolors the antialiased boundary ring to the
+true art color it should carry, so there is NO 1–2px purple halo — the failure
+mode that despilling only half-fixes and eroding can't undo once magenta is baked
+into opaque edge pixels. Genuinely purple/red art (eggplant, grapes) survives
+untouched. It then trims each cell to its alpha bbox and writes
+`<outDir>/<name>.png`. Heed its warnings: "touches the cell edge" and "marked
+empty but has content" both mean grid misalignment — usually fixed by
 regenerating, occasionally by cropping the source margins first.
 
 ## 4. Verify the slices (MANDATORY before integrating)

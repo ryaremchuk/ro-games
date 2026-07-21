@@ -48,8 +48,8 @@ export interface FeedTestState {
   episodeId: string
   /** Current monster container scale (visible growth). */
   growthScale: number
-  /** Growth details currently shown on the friend's body. */
-  details: string[]
+  /** Growth-aura intensity 0..1 (how "grown up" the friend glows). */
+  aura: number
   /** Fed friends standing in the lineup. */
   miniCount: number
 }
@@ -70,6 +70,18 @@ export interface FeedTestApi {
    * Returns false while a round transition is in flight.
    */
   forceJourney: (journey: Partial<JourneyState>) => boolean
+
+  // ─── `?dev` cheat overlay (FeedDevPanel) ─────────────────────────────────
+  // Incremental nudges for manual testing; each rebuilds the world + round
+  // and no-ops while a transition is in flight.
+  /** Grow/shrink the current friend by delta steps (clamped 0..GROW_STEPS-1). */
+  devHeroLevel: (delta: number) => void
+  /** Add/remove grown friends by delta (clamped 0..FRIENDS_PER_EPISODE-1). */
+  devFriends: (delta: number) => void
+  /** Step the episode by delta (never below 0; themes wrap). */
+  devEpisode: (delta: number) => void
+  /** Re-deal the current round as a fresh task, leaving the journey untouched. */
+  devRegenerate: () => void
 }
 
 declare global {

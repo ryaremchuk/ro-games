@@ -362,6 +362,28 @@ describe('feeding rules', () => {
     expect(wantsFood(combo, ['apple', 'apple'], 'banana')).toBe(true)
     expect(isRoundComplete(combo, ['apple', 'banana', 'apple'])).toBe(true)
   })
+
+  // Regression for the "fed one pear, six pictures shown, instant win"
+  // report: a 3+3 combo shows six tiles and NEVER completes early — the only
+  // six-tile request that completes on one feed is pattern (by design: the
+  // ask is the single continuation of the row, and the panel must render it
+  // as context + one answer socket, not as "feed all of these").
+  it('a six-picture 3+3 combo completes only after all six feeds', () => {
+    const combo: FoodRequest = {
+      kind: 'count',
+      entries: [
+        { foodId: 'carrot', count: 3 },
+        { foodId: 'pear', count: 3 },
+      ],
+    }
+    expect(bubbleItems(combo)).toHaveLength(6)
+    expect(requestTotal(combo)).toBe(6)
+    expect(isRoundComplete(combo, ['pear'])).toBe(false)
+    expect(isRoundComplete(combo, ['pear', 'pear', 'pear', 'carrot', 'carrot'])).toBe(false)
+    expect(isRoundComplete(combo, ['pear', 'pear', 'pear', 'carrot', 'carrot', 'carrot'])).toBe(
+      true,
+    )
+  })
 })
 
 describe('thought bubble pictures', () => {
