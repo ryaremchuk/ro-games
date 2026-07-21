@@ -1,14 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AURA_FLOOR,
   BASE_SCALE,
-  DETAIL_POOL,
   EPISODES,
-  FIRST_DETAIL_STEP,
   FRIENDS_PER_EPISODE,
   FULL_SCALE,
   GROW_STEPS,
+  auraIntensity,
   darken,
-  detailsForFriend,
   episodeFor,
   feedStep,
   friendColor,
@@ -17,7 +16,6 @@ import {
   journeyToData,
   scaleForStep,
   shrinkStep,
-  visibleDetails,
 } from './journey'
 import { ACTIVE_POOL_SIZE, COLOR_HEX, activePoolForRound, wantsFood, generateRound } from './logic'
 import type { JourneyState } from './journey'
@@ -109,35 +107,22 @@ describe('friend looks', () => {
     expect(dark).toBeLessThan(0x9b5de5)
     expect(dark).toBeGreaterThan(0)
   })
+})
 
-  it('plans one detail per step from FIRST_DETAIL_STEP, crown always last', () => {
-    for (let episode = 0; episode < 3; episode++) {
-      for (let friend = 0; friend < FRIENDS_PER_EPISODE; friend++) {
-        const plan = detailsForFriend(episode, friend)
-        expect(plan).toHaveLength(GROW_STEPS - FIRST_DETAIL_STEP + 1)
-        expect(plan[plan.length - 1]).toBe('crown')
-        const beforeCrown = plan.slice(0, -1)
-        expect(new Set(beforeCrown).size).toBe(beforeCrown.length) // no repeats
-        for (const detail of beforeCrown) expect(DETAIL_POOL).toContain(detail)
-        expect(detailsForFriend(episode, friend)).toEqual(plan) // deterministic
-      }
-    }
+describe('growth aura', () => {
+  it('ramps from a small floor (newborn) to full (grown)', () => {
+    expect(auraIntensity(0)).toBe(AURA_FLOOR)
+    expect(auraIntensity(GROW_STEPS)).toBe(1)
+    expect(AURA_FLOOR).toBeGreaterThan(0)
+    expect(AURA_FLOOR).toBeLessThan(0.3)
   })
 
-  it('friends differ from each other in their detail plans', () => {
-    const plans = new Set<string>()
-    for (let friend = 0; friend < FRIENDS_PER_EPISODE; friend++) {
-      plans.add(detailsForFriend(0, friend).join(','))
+  it('never decreases as the friend grows, and clamps outside the range', () => {
+    for (let step = 1; step <= GROW_STEPS; step++) {
+      expect(auraIntensity(step)).toBeGreaterThan(auraIntensity(step - 1))
     }
-    expect(plans.size).toBeGreaterThan(1)
-  })
-
-  it('reveals details as a prefix that tracks the growth step', () => {
-    const plan = detailsForFriend(1, 2)
-    expect(visibleDetails(plan, 0)).toEqual([])
-    expect(visibleDetails(plan, FIRST_DETAIL_STEP - 1)).toEqual([])
-    expect(visibleDetails(plan, FIRST_DETAIL_STEP)).toEqual(plan.slice(0, 1))
-    expect(visibleDetails(plan, GROW_STEPS)).toEqual(plan)
+    expect(auraIntensity(-4)).toBe(auraIntensity(0))
+    expect(auraIntensity(GROW_STEPS + 9)).toBe(1)
   })
 })
 

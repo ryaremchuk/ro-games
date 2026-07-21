@@ -13,7 +13,6 @@
  */
 
 import { FRIENDS_PER_EPISODE } from './journey'
-import type { DetailKind } from './journey'
 
 // Sprites are transparent PNGs; full-bleed backgrounds are opaque JPEGs (soft
 // sky gradients — JPEG avoids palette banding at a fraction of the size).
@@ -51,30 +50,37 @@ export interface FriendSpec {
   eyeGap: number
   /** Mouth center Y (× bodyR). */
   mouthY: number
+  /**
+   * Face-center X (× bodyR), default 0. Nonzero when the body sprite's cream
+   * face patch is off-center — e.g. the fox's tail widens the sprite to one
+   * side, pulling its geometric center away from the muzzle. The whole face
+   * (eyes, mouth, blush) shifts by this so it lands on the patch, not the
+   * sprite center. Measured from the baked blush.
+   */
+  faceX?: number
 }
 
 /**
  * Per-friend face anchors, in body-local × bodyR units. Derived by measuring
  * the cream face-patch centroid + extent on each sliced body sprite (the body
  * is drawn at 2.3× bodyR tall, centered at y = -0.1 bodyR), so the
- * engine-drawn eyes and mouth land on the blank patch of THIS animal
- * (headwear/glasses anchor off faceY too — see buildDetail). eyeGap is clamped
- * to a close-set kawaii range; the hippo has no cream patch (cyan muzzle) so
- * its values are hand-set to the muzzle.
+ * engine-drawn eyes and mouth land on the blank patch of THIS animal. eyeGap is
+ * clamped to a close-set kawaii range; the hippo has no cream patch (cyan
+ * muzzle) so its values are hand-set to the muzzle.
  *
  * Index-aligned with journey.FRIEND_COLORS (same length, same cycle), so a
  * friend's sprite and its fallback/particle color always describe the same
  * character.
  */
 export const FRIEND_ROSTER: readonly FriendSpec[] = [
-  { art: 'friend-0-bunny', faceY: -0.42, eyeGap: 0.34, mouthY: 0.14 },
+  { art: 'friend-0-bunny', faceY: -0.36, eyeGap: 0.34, mouthY: 0.14 },
   { art: 'friend-1-turtle', faceY: -0.5, eyeGap: 0.41, mouthY: -0.08 },
   { art: 'friend-2-puppy', faceY: -0.46, eyeGap: 0.4, mouthY: -0.05 },
   { art: 'friend-3-kitten', faceY: -0.42, eyeGap: 0.38, mouthY: -0.02 },
   { art: 'friend-4-dino', faceY: -0.48, eyeGap: 0.43, mouthY: 0.1 },
-  { art: 'friend-5-fox', faceY: -0.46, eyeGap: 0.44, mouthY: 0.12 },
+  { art: 'friend-5-fox', faceY: -0.46, eyeGap: 0.44, mouthY: 0.12, faceX: -0.13 },
   { art: 'friend-6-koala', faceY: -0.4, eyeGap: 0.38, mouthY: -0.02 },
-  { art: 'friend-7-hippo', faceY: -0.42, eyeGap: 0.4, mouthY: -0.04 },
+  { art: 'friend-7-hippo', faceY: -0.42, eyeGap: 0.4, mouthY: 0.14 },
   { art: 'friend-8-mouse', faceY: -0.36, eyeGap: 0.36, mouthY: 0.02 },
   { art: 'friend-9-bear', faceY: -0.48, eyeGap: 0.38, mouthY: -0.08 },
 ]
@@ -83,18 +89,3 @@ export const FRIEND_ROSTER: readonly FriendSpec[] = [
 export function friendSpec(episode: number, friendIndex: number): FriendSpec {
   return FRIEND_ROSTER[(episode * FRIENDS_PER_EPISODE + friendIndex) % FRIEND_ROSTER.length]
 }
-
-/**
- * Growth details re-skinned as wearable accessories (the procedural shapes
- * stay as the fallback). Placement is in × bodyR units on the monster
- * container; `width` drives a uniform scale.
- */
-export const DETAIL_ART: Record<DetailKind, { art: string; x: number; y: number; width: number }> =
-  {
-    horns: { art: 'acc-hat', x: 0, y: -1.02, width: 0.82 },
-    ears: { art: 'acc-glasses', x: 0, y: -0.32, width: 1.2 },
-    spots: { art: 'acc-scarf', x: 0, y: 0.52, width: 1.25 },
-    bowtie: { art: 'acc-bowtie', x: 0, y: 0.8, width: 0.55 },
-    freckles: { art: 'acc-flower', x: -0.62, y: -0.9, width: 0.5 },
-    crown: { art: 'acc-crown', x: 0, y: -1.0, width: 0.62 },
-  }

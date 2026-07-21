@@ -2,8 +2,8 @@
  * The visible long-term journey of Feed the Monster — pure logic, no Phaser.
  *
  * The child feeds a small friend; every fed round grows it one visible step
- * (size + a new body detail), a wrong feed deflates it one step (never below
- * the start — no-fail). A fully grown friend celebrates, walks aside to the
+ * (bigger + a brighter growth aura), a wrong feed deflates it one step (never
+ * below the start — no-fail). A fully grown friend celebrates, walks aside to the
  * fed-friends lineup, and a new small friend hops in. Five grown friends =
  * dance party, then the next EPISODE begins: new food pool, new palette, new
  * friend colors. The journey persists via shared/progress.ts `data`, so the
@@ -131,54 +131,24 @@ export function darken(color: number, factor = 0.86): number {
   return (r << 16) | (g << 8) | b
 }
 
-/**
- * Growing is more than size: from step 2 on, every step pops a new visible
- * body detail, and the final step is always the crown. Which details a friend
- * grows is a stable (seeded) pick, so friends look different from each other
- * but the same child always sees the same friend.
- */
-export type DetailKind = 'horns' | 'ears' | 'spots' | 'bowtie' | 'freckles' | 'crown'
-
-/** Details available before the crowning step. */
-export const DETAIL_POOL: readonly Exclude<DetailKind, 'crown'>[] = [
-  'horns',
-  'ears',
-  'spots',
-  'bowtie',
-  'freckles',
-]
-
-/** Growth step at which the first detail appears (step 1 is size-only). */
-export const FIRST_DETAIL_STEP = 2
-
-/** Deterministic tiny hash — stable friend looks without storing anything. */
-function hash(n: number): number {
-  let x = (n + 0x9e3779b9) | 0
-  x = Math.imul(x ^ (x >>> 16), 0x85ebca6b)
-  x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35)
-  return (x ^ (x >>> 16)) >>> 0
-}
+/** A brand-new (or freshly deflated) friend still glows faintly, not flat. */
+export const AURA_FLOOR = 0.12
 
 /**
- * The ordered details a friend gains at steps FIRST_DETAIL_STEP..GROW_STEPS.
- * A seeded rotation + swap of the pool, crown always last.
+ * The friend's growth AURA, AURA_FLOOR (newborn) → 1 (fully grown). This is how
+ * growth reads visually now: a soft halo, a glowing rim and orbiting sparkles
+ * all scale with this single number, so every friend shows progress the same
+ * way with zero per-friend tuning.
+ *
+ * It replaced the old worn-accessory system (hat / glasses / scarf / bowtie /
+ * flower / crown). Those hung on face-derived sockets, so each one had to sit
+ * correctly across ten different animals, at every growth scale, on the walker
+ * AND on every lineup mini — a persistent, fiddly source of layout bugs. An
+ * aura is centered on the body: nothing to anchor, nothing to collide.
  */
-export function detailsForFriend(episode: number, friendIndex: number): DetailKind[] {
-  const seed = hash(episode * FRIENDS_PER_EPISODE + friendIndex)
-  const pool = [...DETAIL_POOL]
-  // Fisher-Yates driven by the hash stream — deterministic per friend.
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = hash(seed + i) % (i + 1)
-    ;[pool[i], pool[j]] = [pool[j], pool[i]]
-  }
-  const slots = GROW_STEPS - FIRST_DETAIL_STEP // details before the crown
-  return [...pool.slice(0, slots), 'crown']
-}
-
-/** Details visible at a growth step (prefix of the friend's detail plan). */
-export function visibleDetails(plan: readonly DetailKind[], growthStep: number): DetailKind[] {
-  const shown = Math.min(Math.max(growthStep - FIRST_DETAIL_STEP + 1, 0), plan.length)
-  return plan.slice(0, shown) as DetailKind[]
+export function auraIntensity(step: number): number {
+  const clamped = Math.min(Math.max(step, 0), GROW_STEPS)
+  return AURA_FLOOR + (1 - AURA_FLOOR) * (clamped / GROW_STEPS)
 }
 
 // ─── Episodes: food pool + visual theme ──────────────────────────────────────
