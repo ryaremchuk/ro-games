@@ -35,6 +35,8 @@ import {
 import type { Episode, JourneyState } from './journey'
 import { artEntries, artKey, friendSpec } from './art'
 import type { FeedTestApi } from './testHook'
+import * as layout from './layout'
+import type { LayoutMetrics, XY } from './layout'
 
 /** Registry id — also the key the shared progress store files this under. */
 const GAME_ID = 'feed-the-monster'
@@ -65,45 +67,8 @@ const FOOD_ART_SCALE: Record<string, number> = {
   lemon: 0.8, // big round citrus — dwarfed the thinner foods at full size
 }
 
-// The task panel lives at the very top of the screen, in its own bar —
-// detached from the friend (was: a thought bubble above the head).
-const PANEL_H_CSS = 96
-const PANEL_CENTER_Y_CSS = 58
-
-// ─── Responsive vertical layout ────────────────────────────────────────────
-// The scene reads on iPad (4:3) AND phone-landscape (~2.2:1), so every vertical
-// anchor is a FRACTION of the visible height — the composition scales with the
-// screen instead of being pinned by hard px offsets that eat a huge share of a
-// short viewport (a fixed 120px bottom margin is 15% of an iPad but 31% of a
-// phone in landscape, which used to shove the whole scene up and open a ~36%
-// dead band under the tray). Fixed px appears ONLY as physical safe-area
-// minimums, never as the primary spacing.
-//
-// Tray (a fixed-size element) hugs the bottom this fraction up; the hero +
-// friends stand a further fraction above the tray, so on every device the tray
-// sits at ~81% and the monster at ~48% with matching breathing room.
-const TRAY_BOTTOM_FRAC = 0.19
-const HERO_GAP_FRAC = 0.26
-// The tray never rides closer to the bottom than the home-indicator / notch
-// strip plus a food-sprite half-height of clearance (drags that start on the
-// very bottom edge trigger the iOS minimize gesture). CSS px, dpr-scaled below.
-const TRAY_MIN_CLEARANCE_CSS = 60
-
-// ─── Horizontal tray spread ────────────────────────────────────────────────
-// The food row spreads its TRAY_SIZE plates across (1 − 2·SIDE) of the width so
-// it uses the screen instead of huddling in the middle 44% with big empty
-// gutters. Each plate is sized to its slot minus a small GAP, so plates never
-// overlap into one mat and stay individually visible; a max width keeps them
-// from dwarfing the food on very wide displays. Food keeps its own comfortable
-// size (a touch target for small hands) — only the plates + spacing reflow.
-const TRAY_SIDE_FRAC = 0.045
-const TRAY_GAP_FRAC = 0.16
-const PLATE_MAX_W_CSS = 112
-
-interface XY {
-  x: number
-  y: number
-}
+// Responsive tray/hero/panel geometry now lives in ./layout (pure, unit-tested);
+// the scene builds a LayoutMetrics snapshot (see `metrics()`) and delegates.
 
 /** Deterministic 0..1 jitter so blob shapes are stable per seed. */
 function jitter(i: number, seed: number): number {
@@ -923,26 +888,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    * hero (and the tray) proportionally on every screen.
    */
   private miniSlot(index: number): XY {
-    // dx/dy pile offsets (bodyR units): all friends huddle on one level, each
-    // shifted out far enough to partially overlap its neighbour (index 3 sits
-    // just right of index 1, index 4 mirrors on the left) — a snug cluster.
-    const pile = [
-      { dx: 0.0, dy: 0.0 },
-      { dx: 0.4, dy: 0.03 },
-      { dx: -0.36, dy: 0.05 },
-      { dx: 0.72, dy: 0.02 },
-      { dx: -0.72, dy: 0.04 },
-    ]
-    const p = pile[index % pile.length]
-    // Extra friends beyond the five slots stack a further tier up (defensive;
-    // an episode only ever fills the five slots above).
-    const tier = Math.floor(index / pile.length)
-    const baseX = Math.max(this.scale.width * 0.1, this.bodyR)
-    const baseY = this.heroBaseline() - this.bodyR * 0.28
-    return {
-      x: baseX + p.dx * this.bodyR,
-      y: baseY + (p.dy - tier * 0.6) * this.bodyR,
-    }
+    return layout.miniSlot(this.metrics(), index)
   }
 
   /** A simplified grown friend for the lineup: body + eyes, gently bobbing. */
@@ -1222,7 +1168,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   /** Skin one tray slot: the episode's marker sprite, or the plate fallback.
    * Sized to the current slot (plateWidth) so the row reflows responsively. */
   private dressPlate(plate: Phaser.GameObjects.Image): void {
-    const w = this.plateWidth()
+    const w = layout.plateWidth(this.metrics())
     const marker = `marker-${this.episode.id}`
     if (this.hasArt(marker)) {
       if (plate.texture.key !== artKey(marker)) plate.setTexture(artKey(marker))
@@ -1250,7 +1196,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    * episode palette so the panel changes with the world.
    */
   private drawPanel(width: number): void {
-    const bh = this.px(PANEL_H_CSS)
+    const bh = this.px(layout.PANEL_H_CSS)
     const radius = this.px(26)
     this.panelGfx.clear()
     this.panelGfx.fillStyle(0xffffff, 0.96)
@@ -1410,65 +1356,24 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    * gesture, so the tray must clear it; full-bleed canvases don't inherit the
    * inset the way padded DOM does, so we fold it into the layout explicitly.
    */
-  private safeBottom(): number {
-    return this.safeInsetBottom * this.dpr
-  }
-
-  /**
-   * Gap between the food row and the screen bottom. Proportional (a share of
-   * the height) so it scales with the screen — never a fixed px slab that eats
-   * a third of a short landscape phone — but floored by the physical safe-area
-   * strip plus a food half-height so the tray always clears the home indicator.
-   */
-  private bottomMargin(): number {
-    return Math.max(
-      this.scale.height * TRAY_BOTTOM_FRAC,
-      this.safeBottom() + this.px(TRAY_MIN_CLEARANCE_CSS),
-    )
-  }
-
-  private trayY(): number {
-    return this.scale.height - this.bottomMargin()
-  }
-
-  /**
-   * The invisible line the hero + friends stand on. Anchored a fixed FRACTION
-   * of the height ABOVE the tray (not built up from the bottom with px offsets),
-   * so the whole cluster tracks the tray proportionally: the phone becomes a
-   * scaled copy of the iPad instead of collapsing into the top of the screen.
-   */
-  private heroBaseline(): number {
-    return this.trayY() - this.scale.height * HERO_GAP_FRAC
-  }
-
-  /** Width of one tray slot (plate + gap), spreading the row across the width. */
-  private traySlotWidth(): number {
-    return (this.scale.width * (1 - 2 * TRAY_SIDE_FRAC)) / TRAY_SIZE
-  }
-
-  /** Plate marker width: its slot minus a small gap, capped so it can't dwarf
-   * the food (nor overlap its neighbour) on very wide screens. */
-  private plateWidth(): number {
-    return Math.min(this.traySlotWidth() * (1 - TRAY_GAP_FRAC), this.px(PLATE_MAX_W_CSS))
-  }
-
-  private slotPos(index: number): XY {
-    // Spread the row evenly across the usable width (TRAY_SIDE_FRAC gutter on
-    // each side), one plate per slot — so plates fill the screen with small
-    // gaps instead of huddling, overlapped, in the middle third.
-    const slot = this.traySlotWidth()
-    const first = this.scale.width * TRAY_SIDE_FRAC + slot / 2
+  /** Live snapshot the pure ./layout geometry reads from. */
+  private metrics(): LayoutMetrics {
     return {
-      x: first + index * slot,
-      y: this.trayY(),
+      w: this.scale.width,
+      h: this.scale.height,
+      dpr: this.dpr,
+      bodyR: this.bodyR,
+      growth: this.growth,
+      safeInsetBottom: this.safeInsetBottom,
     }
   }
 
+  private slotPos(index: number): XY {
+    return layout.slotPos(this.metrics(), index)
+  }
+
   private monsterPos(): XY {
-    const y = this.heroBaseline() - this.bodyR * this.growth * 0.55
-    // Never let the head ride up under the top task panel.
-    const headroom = this.px(PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) + this.bodyR * this.growth * 1.35
-    return { x: this.scale.width / 2, y: Math.max(y, headroom) }
+    return layout.monsterPos(this.metrics())
   }
 
   private layout(): void {
@@ -1535,7 +1440,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   /** The task panel owns the top of the screen, detached from the friend. */
   private positionBubble(): void {
-    this.bubble.setPosition(this.scale.width / 2, this.px(PANEL_CENTER_Y_CSS))
+    this.bubble.setPosition(this.scale.width / 2, this.px(layout.PANEL_CENTER_Y_CSS))
   }
 
   // ─── Mouth helpers ───────────────────────────────────────────────────────
@@ -1561,7 +1466,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    * this exact zone, so "mouth looks open" always means "will feed".
    */
   private snapRadius(): number {
-    return Math.max(this.bodyR * 0.9 * this.growth, this.px(100))
+    return layout.snapRadius(this.metrics())
   }
 
   private setMouthOpen(target: number, duration: number): void {
