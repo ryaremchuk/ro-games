@@ -28,21 +28,21 @@ import {
   shrinkStep,
 } from './journey'
 import type { Episode, JourneyState } from './journey'
-import { artEntries, artKey, friendSpec } from './art'
+import { artEntries, artKey } from './art'
 import type { FeedTestApi } from './testHook'
 import * as layout from './layout'
 import type { LayoutMetrics, XY } from './layout'
 import * as textures from './textures'
 import { RequestBubble } from './requestBubble'
 import { MonsterRig } from './monsterRig'
+import { JourneyStage } from './journeyStage'
 
 /** Registry id — also the key the shared progress store files this under. */
 const GAME_ID = 'feed-the-monster'
 
-// ART SPEC palette (episode palettes override the scenery at runtime). INK is
-// shared with the lineup minis (spawnMini); the walker's face ink + PINK blush
-// moved with MonsterRig (see monsterRig.ts).
-const INK = 0x3d3a4b
+// ART SPEC palette (episode palettes override the scenery at runtime). The
+// shared INK ink moved with its owners: the walker's face + blush to MonsterRig
+// (monsterRig.ts), the lineup minis to JourneyStage (journeyStage.ts).
 const CONFETTI_TINTS = [0xff6b6b, 0xffd93d, 0x6bcb77, 0x4d96ff, 0xff8fab, 0x9b5de5]
 
 // Pentatonic-ish happy tones (C5 D5 E5 G5 A5) + C6 for big moments.
@@ -89,7 +89,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   journey: JourneyState = { episode: 0, friendsFed: 0, growthStep: 0 }
   /** @internal Exposed for RequestBubble (panel border tint + splash tint reads). */
   episode!: Episode
-  private minis: Phaser.GameObjects.Container[] = []
 
   private bgGfx!: Phaser.GameObjects.Graphics
   private bgImage!: Phaser.GameObjects.Image
@@ -98,16 +97,17 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    * The feedable friend (body, growth aura, face, all its animations/reactions
    * + the per-frame pupil tracking). Owns its own display objects; reads live
    * scene state through the passed `this`. See ./monsterRig.
+   * @internal Exposed for JourneyStage (build/container/applyAura/lighten).
    */
-  private readonly monsterRig = new MonsterRig(this)
+  readonly monsterRig = new MonsterRig(this)
   /**
-   * Lineup minis' pupils (node + its eye container) for pointer tracking.
-   * @internal Exposed for MonsterRig (its scheduleBlink blinks the lineup too).
+   * The long-term journey stage (grown-friends lineup + every between-round
+   * celebration sequence). Owns its own display objects (the minis + their
+   * idle-glance pupils); reads live scene state through the passed `this`.
+   * @internal Exposed for MonsterRig (its scheduleBlink reads stage.miniPupils).
+   * See ./journeyStage.
    */
-  miniPupils: Array<{
-    node: Phaser.GameObjects.Container
-    eye: Phaser.GameObjects.Container
-  }> = []
+  readonly stage = new JourneyStage(this)
 
   /**
    * The task-request bubble (top panel + tiles/pips/sockets/bans/ring/✓ + the
@@ -121,8 +121,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   /** @internal Exposed for MonsterRig (its update tracks the dragged food). */
   dragged: Phaser.GameObjects.Image | null = null
 
-  private confetti!: Phaser.GameObjects.Particles.ParticleEmitter
-  private stars!: Phaser.GameObjects.Particles.ParticleEmitter
+  /** @internal Exposed for JourneyStage (friendGrownSequence + celebrateLineup). */
+  confetti!: Phaser.GameObjects.Particles.ParticleEmitter
+  /** @internal Exposed for JourneyStage (friendGrownSequence + celebrateLineup). */
+  stars!: Phaser.GameObjects.Particles.ParticleEmitter
   private sparkles!: Phaser.GameObjects.Particles.ParticleEmitter
   /** @internal Exposed for MonsterRig (the sneeze puff burst). */
   puffs!: Phaser.GameObjects.Particles.ParticleEmitter
@@ -195,7 +197,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
     // Restore the fed-friends lineup, no fanfare (build already lit the
     // current friend's aura to its growth step).
-    for (let i = 0; i < this.journey.friendsFed; i++) this.spawnMini(i)
+    for (let i = 0; i < this.journey.friendsFed; i++) this.stage.spawnMini(i)
 
     this.layout()
     this.monsterRig.scheduleBlink()
@@ -258,7 +260,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         episodeId: this.episode.id,
         growthScale: this.monsterRig.growthScale,
         aura: auraIntensity(this.journey.growthStep),
-        miniCount: this.minis.length,
+        miniCount: this.stage.miniCount,
       }),
       forceKind: (kind) => {
         if (this.transitioning || !this.round) return false
@@ -307,12 +309,12 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       color: this.friendBodyColor(),
       foodCss: FOOD_CSS,
     })
-    for (const mini of this.minis) {
+    for (const mini of this.stage.minis) {
       this.tweens.killTweensOf(mini)
       mini.destroy()
     }
-    this.minis = []
-    for (let i = 0; i < this.journey.friendsFed; i++) this.spawnMini(i)
+    this.stage.minis = []
+    for (let i = 0; i < this.journey.friendsFed; i++) this.stage.spawnMini(i)
     this.growth = scaleForStep(this.journey.growthStep)
     this.monsterRig.build()
     this.layout()
@@ -416,269 +418,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    * they overlap and stack (a heap, not a spread-out lineup). Offsets are in
    * bodyR units, anchored to the shared heroBaseline so the pile tracks the
    * hero (and the tray) proportionally on every screen.
+   * @internal Exposed for JourneyStage (spawnMini + friendGrownSequence).
    */
-  private miniSlot(index: number): XY {
+  miniSlot(index: number): XY {
     return layout.miniSlot(this.metrics(), index)
-  }
-
-  /** A simplified grown friend for the lineup: body + eyes, gently bobbing. */
-  private spawnMini(index: number, episode = this.journey.episode): Phaser.GameObjects.Container {
-    const color = friendColor(episode, index)
-    const r = this.bodyR
-    const slot = this.miniSlot(index)
-    const mini = this.add.container(slot.x, slot.y).setDepth(2).setScale(0.3)
-
-    const shadow = this.add.ellipse(0, r * 1.02, r * 1.5, r * 0.26, 0x000000, 0.1)
-    const spec = friendSpec(episode, index)
-    const body = this.hasArt(spec.art)
-      ? this.add
-          .image(0, -r * 0.1, artKey(spec.art))
-          .setScale((r * 2.3) / this.textures.getFrame(artKey(spec.art)).height)
-      : this.add.image(0, -r * 0.1, textures.monsterTexture(this, color, this.bodyR))
-    // Match the walker's face anchors so the lineup mini reads as the same
-    // animal (eyes on its own patch, mouth below). Each eye is a container with
-    // a pupil node so the mini can idle-glance on its own (scheduleMiniGlance)
-    // — alive, but never cursor-tracking (no iPad cursor).
-    const fx = (spec.faceX ?? 0) * r // shift the face onto an off-center patch
-    const glanceNodes: Phaser.GameObjects.Container[] = []
-    const eye = (side: -1 | 1): Phaser.GameObjects.Container => {
-      const ec = this.add.container(fx + side * r * spec.eyeGap, r * spec.faceY)
-      const white = this.add.ellipse(0, 0, r * 0.34, r * 0.34, 0xffffff)
-      const node = this.add.container(0, 0)
-      const dark = this.add.ellipse(0, 0, r * 0.2, r * 0.2, INK)
-      const glint = this.add.circle(-r * 0.05, -r * 0.06, r * 0.05, 0xffffff)
-      node.add([dark, glint])
-      ec.add([white, node])
-      this.miniPupils.push({ node, eye: ec })
-      glanceNodes.push(node)
-      return ec
-    }
-    const smile = this.hasArt('face-mouth-smile')
-      ? this.add
-          .image(fx, r * spec.mouthY - r * 0.13, artKey('face-mouth-smile'))
-          .setDisplaySize(r * 0.55, r * 0.15)
-      : this.add.ellipse(fx, r * spec.mouthY - r * 0.13, r * 0.42, r * 0.09, INK)
-    // A soft, full-strength halo marks the lineup friend as fully grown — the
-    // same growth aura the walker earned, standing in for the old crown. Behind
-    // the body, tinted a lightened body hue (art.ts socket rig is gone).
-    const halo = this.add
-      .image(0, -r * 0.1, 'ftm-halo')
-      .setTint(this.monsterRig.lighten(color, 0.55))
-    halo.setDisplaySize(r * 3.2, r * 3.2).setAlpha(0.5)
-    mini.add([shadow, halo, body, eye(-1), eye(1), smile])
-
-    // Idle life so the lineup feels alive, staggered per slot.
-    this.tweens.add({
-      targets: mini,
-      y: slot.y - this.px(6),
-      duration: 1600 + index * 180,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    })
-    this.scheduleMiniGlance(glanceNodes)
-
-    this.minis.push(mini)
-    return mini
-  }
-
-  /**
-   * A lineup friend idly looks around on its own — both eyes drift together to
-   * a gentle random direction (or straight ahead), then re-schedule after a
-   * random pause. Independent per mini and untethered from any pointer, so the
-   * lineup feels curious and alive on a touch device with no cursor. The chain
-   * self-terminates once the mini's pupils are destroyed (rebuild/episode).
-   */
-  private scheduleMiniGlance(nodes: Phaser.GameObjects.Container[]): void {
-    const alive = nodes.filter((n) => n.active)
-    if (alive.length === 0) return
-    const reach = this.bodyR * 0.06
-    const ahead = Math.random() < 0.35
-    const angle = Math.random() * Math.PI * 2
-    const dx = ahead ? 0 : Math.cos(angle) * reach
-    const dy = ahead ? 0 : Math.sin(angle) * reach * 0.7 // less vertical travel
-    for (const node of alive) {
-      this.tweens.add({ targets: node, x: dx, y: dy, duration: 420, ease: 'Sine.easeInOut' })
-    }
-    this.time.delayedCall(900 + Math.random() * 1900, () => this.scheduleMiniGlance(nodes))
-  }
-
-  /**
-   * The grown friend celebrates and walks aside to join the lineup; then the
-   * whole lineup dances to welcome the newcomer before the next friend arrives.
-   * On the fifth friend the dance is grander and hands off to the next episode.
-   * `onResume` restarts play once the new (or next-episode) friend is on stage.
-   */
-  private friendGrownSequence(danceParty: boolean, onResume: () => void): void {
-    const mp = this.monsterPos()
-    // Star shower + a proud jump.
-    this.stars.explode(16, mp.x, mp.y - this.bodyR * this.growth)
-    ;[523, 659, 784, 1047].forEach((freq, i) =>
-      this.time.delayedCall(i * 120, () => playTone(freq, 160, 'triangle', 0.1)),
-    )
-    this.tweens.add({
-      targets: this.monsterRig.container,
-      y: mp.y - this.px(50),
-      duration: 240,
-      yoyo: true,
-      ease: 'Quad.easeOut',
-    })
-
-    // Walk aside to the lineup slot, shrinking into a mini…
-    const grownIndex = danceParty ? FRIENDS_PER_EPISODE - 1 : this.journey.friendsFed - 1
-    const episodeAtGrow = this.journey.episode - (danceParty ? 1 : 0)
-    const slot = this.miniSlot(grownIndex)
-    this.time.delayedCall(900, () => {
-      this.tweens.add({
-        targets: this.monsterRig.container,
-        x: slot.x,
-        y: slot.y,
-        scaleX: 0.3,
-        scaleY: 0.3,
-        duration: 700,
-        ease: 'Sine.easeInOut',
-        onComplete: () => {
-          // …swap the walker for a lineup mini…
-          this.monsterRig.container.destroy()
-          const mini = this.spawnMini(grownIndex, episodeAtGrow)
-          mini.setScale(0)
-          this.tweens.add({
-            targets: mini,
-            scaleX: 0.3,
-            scaleY: 0.3,
-            duration: 260,
-            ease: 'Back.easeOut',
-          })
-          // …then the whole lineup dances to greet the new friend. Only after
-          // the dance does the next friend hop in (or, on the fifth, the world
-          // turns over to the next episode).
-          const danceMs = this.celebrateLineup(danceParty)
-          this.time.delayedCall(danceMs + 300, () => {
-            if (danceParty) this.episodeTransition(onResume)
-            else this.nextFriendEnters(onResume)
-          })
-        },
-      })
-    })
-  }
-
-  /** A brand-new small friend hops in from the side, then play resumes. */
-  private nextFriendEnters(onResume: () => void): void {
-    this.growth = scaleForStep(this.journey.growthStep)
-    this.monsterRig.build()
-
-    const mp = this.monsterPos()
-    this.monsterRig.container.setPosition(this.scale.width + this.bodyR, mp.y)
-    this.tweens.add({
-      targets: this.monsterRig.container,
-      x: mp.x,
-      duration: 600,
-      ease: 'Back.easeOut',
-      onComplete: () => {
-        this.layout()
-        onResume()
-      },
-    })
-    playTone(659, 90, 'sine', 0.08)
-    this.time.delayedCall(110, () => playTone(880, 110, 'sine', 0.08))
-  }
-
-  /**
-   * The fed friends in the lineup dance — a staggered bounce-and-wobble wave
-   * with confetti, stars and a little melody. Played every time a friend joins
-   * (light) and again, grander, when the fifth completes the episode. Returns
-   * the wave's duration in ms so the caller can time what comes next.
-   */
-  private celebrateLineup(grand: boolean): number {
-    const cx = this.scale.width / 2
-    const repeat = grand ? 3 : 1
-    const waves = grand ? [0, 1] : [0]
-    waves.forEach((wave) => {
-      this.time.delayedCall(wave * 900, () => {
-        this.confetti.explode(grand ? 50 : 26, cx * 0.5, this.px(90))
-        this.confetti.explode(grand ? 50 : 26, cx * 1.5, this.px(90))
-        this.stars.explode(grand ? 12 : 8, cx, this.px(140))
-      })
-    })
-    // A little party melody — a longer flourish for the episode finale.
-    const melody = grand ? [523, 659, 784, 659, 880, 784, 1047] : [523, 659, 784, 1047]
-    melody.forEach((freq, i) =>
-      this.time.delayedCall(i * 180, () => playTone(freq, 150, 'triangle', 0.1)),
-    )
-    // Everyone bounces + wobbles in a staggered wave.
-    this.minis.forEach((mini, i) => {
-      this.tweens.add({
-        targets: mini,
-        y: mini.y - this.px(46),
-        delay: i * 130,
-        duration: 260,
-        yoyo: true,
-        repeat,
-        ease: 'Quad.easeOut',
-      })
-      this.tweens.add({
-        targets: mini,
-        angle: { from: -8, to: 8 },
-        delay: i * 130,
-        duration: 260,
-        yoyo: true,
-        repeat,
-        ease: 'Sine.easeInOut',
-        onComplete: () => mini.setAngle(0),
-      })
-    })
-
-    const lastDelay = Math.max(this.minis.length - 1, 0) * 130
-    return lastDelay + 260 * 2 * (repeat + 1)
-  }
-
-  /** Soft white fade → new palette, food pool, fresh lineup, first friend. */
-  private episodeTransition(onResume: () => void): void {
-    const veil = this.add
-      .rectangle(0, 0, this.scale.width, this.scale.height, 0xffffff)
-      .setOrigin(0)
-      .setDepth(90)
-      .setAlpha(0)
-    this.tweens.add({
-      targets: veil,
-      alpha: 1,
-      duration: 550,
-      ease: 'Sine.easeIn',
-      onComplete: () => {
-        // Behind the veil: swap the world.
-        this.episode = episodeFor(this.journey)
-        textures.buildSceneTextures(this, {
-          dpr: this.dpr,
-          bodyR: this.bodyR,
-          episode: this.episode,
-          color: this.friendBodyColor(),
-          foodCss: FOOD_CSS,
-        })
-        for (const mini of this.minis) {
-          this.tweens.killTweensOf(mini)
-          mini.destroy()
-        }
-        this.minis = []
-        this.miniPupils = []
-        this.growth = scaleForStep(this.journey.growthStep)
-        this.monsterRig.build()
-        this.layout()
-        ;[659, 784, 988].forEach((freq, i) =>
-          this.time.delayedCall(200 + i * 150, () => playTone(freq, 140, 'sine', 0.08)),
-        )
-        this.tweens.add({
-          targets: veil,
-          alpha: 0,
-          delay: 150,
-          duration: 600,
-          ease: 'Sine.easeOut',
-          onComplete: () => {
-            veil.destroy()
-            onResume()
-          },
-        })
-      },
-    })
   }
 
   private buildPlates(): void {
@@ -873,7 +616,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     return layout.monsterPos(this.metrics())
   }
 
-  private layout(): void {
+  /** @internal Exposed for JourneyStage (nextFriendEnters + episodeTransition). */
+  layout(): void {
     const w = this.scale.width
     const h = this.scale.height
     const palette = this.episode.palette
@@ -907,7 +651,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.monsterRig.container.setPosition(mp.x, mp.y)
     this.bubbleUi.reposition()
 
-    this.minis.forEach((mini, i) => {
+    this.stage.minis.forEach((mini, i) => {
       this.tweens.killTweensOf(mini)
       const slot = this.miniSlot(i)
       mini.setPosition(slot.x, slot.y)
@@ -1231,7 +975,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // episode change) — play resumes once that friend is on stage and feedable.
     const resume = () => this.startRound(this.roundNumber + 1)
     this.time.delayedCall(650, () =>
-      this.friendGrownSequence(outcome === 'episode-complete', resume),
+      this.stage.friendGrownSequence(outcome === 'episode-complete', resume),
     )
   }
 

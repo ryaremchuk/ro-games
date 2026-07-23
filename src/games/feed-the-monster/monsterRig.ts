@@ -10,8 +10,9 @@
  * delegates; the rig holds its own display objects and reads live scene state
  * (bodyR / growth / journey / dragged / funnyUntil / sneezing) plus the shared
  * particle emitters and layout/color helpers back through the passed scene
- * reference. The lineup minis are NOT the rig's — they stay on the scene (their
- * pupils deliberately do not cursor-track); only the current walker lives here.
+ * reference. The lineup minis are NOT the rig's — they live on the journey
+ * stage (their pupils deliberately do not cursor-track); only the current
+ * walker lives here.
  */
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
@@ -21,10 +22,10 @@ import * as textures from './textures'
 import type { XY } from './layout'
 import type FeedTheMonsterScene from './FeedTheMonsterScene'
 
-// ART SPEC palette. Mirrors the scene's ink (blush lives on the scene; INK is
-// shared by the walker's pupils/mouth here and the lineup minis on the scene,
-// so both keep the exact same literal — see requestBubble.ts for the same
-// duplicate-to-avoid-a-value-import pattern). PINK is the blush/tongue hue.
+// ART SPEC palette. Mirrors the scene's ink; INK is shared by the walker's
+// pupils/mouth here and the lineup minis on the journey stage, so both keep the
+// exact same literal — see requestBubble.ts / journeyStage.ts for the same
+// duplicate-to-avoid-a-value-import pattern. PINK is the blush/tongue hue.
 const PINK = 0xff8fab
 const INK = 0x3d3a4b
 
@@ -552,7 +553,7 @@ export class MonsterRig {
         }
       }
       // The lineup blinks too, each slightly offset so it never looks robotic.
-      for (const { eye } of this.scene.miniPupils) {
+      for (const { eye } of this.scene.stage.miniPupils) {
         if (!eye.active || this.scene.tweens.isTweening(eye)) continue
         this.scene.tweens.add({
           targets: eye,
