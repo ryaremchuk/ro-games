@@ -34,51 +34,10 @@ CI (`.github/workflows/ci.yml`) runs `format:check`, `lint`, `typecheck`, `test`
 `build` on every push/PR, plus Danger and Lighthouse on PRs. Run those locally
 before pushing.
 
-## Architecture
+## How we work
 
-Two deliberately decoupled layers:
-
-1. **Shell / launcher** (`src/main.tsx`, `src/App.tsx`, `src/launcher/`): a
-   `HashRouter` SPA. `HomePage` is a picture-only grid of tiles, one per game.
-   Routes are generated from the game registry, not hand-written.
-2. **Games** (`src/games/<id>/`): each game is self-contained and shares nothing
-   with other games. Every game renders inside `GameFrame`
-   (`src/shared/GameFrame.tsx`), which supplies the persistent home button and
-   unlocks iOS audio on first touch.
-
-**Game registry — `src/games/registry.tsx` is the single source of truth.** Each
-entry (`{ id, title, path, color, emoji, component: lazy(() => import(...)) }`)
-auto-generates both a launcher tile and a route. Components are `lazy()`, so each
-game is its own code-split chunk. To add a game: create `src/games/<id>/` with a
-default-exported component, then add one registry entry. Danger fails any PR that
-adds a `src/games/<name>/` folder without touching `registry.tsx`.
-
-**Rendering engine — do NOT run game loops through React state** (per-frame
-`setState` causes jank and defeats the "smooth animations" goal):
-
-- Simple tap/draw games → Canvas 2D directly. See
-  `src/games/drawing/DrawingGame.tsx` (pointer events, quadratic-curve stroke
-  smoothing, `devicePixelRatio` scaling for crisp hi-DPI lines).
-- Games with movement / sprites / physics / particles → **Phaser 4** via
-  `src/shared/PhaserGame.tsx` (mounts and destroys a `Phaser.Game` in a div).
-  Phaser is only pulled into the chunk of a game that imports `PhaserGame`, so
-  the launcher and Canvas-only games stay small.
-
-**Audio — `src/shared/audio.ts`** synthesizes tones with the Web Audio API (no
-audio asset files). iOS keeps audio suspended until a user gesture; `GameFrame`
-calls `unlockAudio()` on the first `pointerdown`. Games call `playTone(...)`.
-
-**Progress — `src/shared/progress.ts`** persists per-game adaptive skill
-meters and reward stars in `localStorage`. Uniform rule in every game:
-passing a level (the game's own unit — solved round, bopped critter, cleared
-board) ticks the badge +1 and banks one star via `addStars()`. Games with an
-adaptive meter save it every round and start sessions below the saved value
-via `sessionStart()` (warm-up + break decay), climbing back faster below the
-saved peak. Three decoupled currencies: skill is invisible and adaptive (two
-axes — motor/cognitive — where the skills differ), levels are a
-session-scoped reward rhythm, stars are forever. Celebrations are pure
-animations on per-game `CELEBRATION_EVERY_*` beats. See `docs/DECISIONS.md`
-("Progress: two-axis adaptive skill").
+- **Layouts are proportional**: size and position everything as a fraction of the viewport, never hardcoded px (fixed px only for physical safe-area minimums) — must read equally well on iPad (4:3) and iPhone-landscape (~2.2:1).
+- **No workarounds**: fix root causes with best-practice solutions and verify them (tests + measured on target devices) before calling it done — never patch symptoms.
 
 ## Conventions & constraints
 
@@ -96,6 +55,9 @@ animations on per-game `CELEBRATION_EVERY_*` beats. See `docs/DECISIONS.md`
 
 ## More docs
 
-- `docs/ARCHITECTURE.md` — deeper structure and the add-a-game recipe.
+- `docs/ARCHITECTURE.md` — the full architecture: the shell/games layering, the
+  registry as single source of truth, per-game rendering engines (Canvas 2D vs
+  Phaser 4), the shared frame (audio, level & progress stores), the directory
+  map, the add-a-game recipe, and PWA/hosting/CI-CD.
 - `docs/DECISIONS.md` — why the key choices were made (Phaser from day 0,
   HashRouter, oxlint over ESLint, no-zoom kiosk, PWA on Pages, …).

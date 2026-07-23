@@ -27,6 +27,23 @@ export function viewportSize(): { width: number; height: number } {
 }
 
 /**
+ * The `env(safe-area-inset-*)` value in CSS px, measured off a throwaway probe
+ * element (the only way to read `env()` from JS). Returns 0 when unsupported or
+ * when there is no inset — e.g. desktop, or a device with no notch/home bar.
+ * Full-bleed canvases (Scale.NONE + full-screen `#root`) don't get the inset
+ * for free the way padded DOM layouts do, so a game that must stay clear of the
+ * home-indicator / notch has to fold this into its own layout math.
+ */
+export function safeAreaInset(side: 'top' | 'bottom' | 'left' | 'right'): number {
+  const el = document.createElement('div')
+  el.style.cssText = `position:fixed;visibility:hidden;height:env(safe-area-inset-${side},0px)`
+  document.body.appendChild(el)
+  const px = el.getBoundingClientRect().height
+  el.remove()
+  return Number.isFinite(px) ? px : 0
+}
+
+/**
  * Subscribe to every event that can change the visible viewport on iOS.
  * `visualViewport` fires resize in standalone-PWA cases where `window` does
  * not (e.g. the viewport settling shortly after launch). Returns unsubscribe.

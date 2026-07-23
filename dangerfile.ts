@@ -9,7 +9,7 @@ const touched = [...created, ...modified]
 
 // We squash-merge, so the PR title becomes the commit subject.
 const conventional =
-  /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?: .+/
+  /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|release)(\(.+\))?!?: .+/
 if (!conventional.test(pr.title)) {
   fail(
     `PR title must follow Conventional Commits, e.g. \`feat: add memory game\`. Got: "${pr.title}"`,

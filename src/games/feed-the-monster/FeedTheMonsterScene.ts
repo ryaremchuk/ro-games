@@ -2,7 +2,7 @@ import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
 import { addStars, loadProgress, saveData, saveSkill, sessionStart } from '../../shared/progress'
-import { onViewportResize, viewportSize } from '../../shared/viewport'
+import { onViewportResize, safeAreaInset, viewportSize } from '../../shared/viewport'
 import {
   ALL_FOODS,
   COLOR_HEX,
@@ -70,6 +70,36 @@ const FOOD_ART_SCALE: Record<string, number> = {
 const PANEL_H_CSS = 96
 const PANEL_CENTER_Y_CSS = 58
 
+// ─── Responsive vertical layout ────────────────────────────────────────────
+// The scene reads on iPad (4:3) AND phone-landscape (~2.2:1), so every vertical
+// anchor is a FRACTION of the visible height — the composition scales with the
+// screen instead of being pinned by hard px offsets that eat a huge share of a
+// short viewport (a fixed 120px bottom margin is 15% of an iPad but 31% of a
+// phone in landscape, which used to shove the whole scene up and open a ~36%
+// dead band under the tray). Fixed px appears ONLY as physical safe-area
+// minimums, never as the primary spacing.
+//
+// Tray (a fixed-size element) hugs the bottom this fraction up; the hero +
+// friends stand a further fraction above the tray, so on every device the tray
+// sits at ~81% and the monster at ~48% with matching breathing room.
+const TRAY_BOTTOM_FRAC = 0.19
+const HERO_GAP_FRAC = 0.26
+// The tray never rides closer to the bottom than the home-indicator / notch
+// strip plus a food-sprite half-height of clearance (drags that start on the
+// very bottom edge trigger the iOS minimize gesture). CSS px, dpr-scaled below.
+const TRAY_MIN_CLEARANCE_CSS = 60
+
+// ─── Horizontal tray spread ────────────────────────────────────────────────
+// The food row spreads its TRAY_SIZE plates across (1 − 2·SIDE) of the width so
+// it uses the screen instead of huddling in the middle 44% with big empty
+// gutters. Each plate is sized to its slot minus a small GAP, so plates never
+// overlap into one mat and stay individually visible; a max width keeps them
+// from dwarfing the food on very wide displays. Food keeps its own comfortable
+// size (a touch target for small hands) — only the plates + spacing reflow.
+const TRAY_SIDE_FRAC = 0.045
+const TRAY_GAP_FRAC = 0.16
+const PLATE_MAX_W_CSS = 112
+
 interface XY {
   x: number
   y: number
@@ -85,6 +115,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private dpr = 1
   private bodyR = 0
   private growth = 1
+  /** Cached iOS safe-area inset (CSS px), refreshed on create + every resize. */
+  private safeInsetBottom = 0
 
   private roundNumber = 0
   private round: Round | null = null
@@ -215,6 +247,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   create(): void {
     this.dpr = Math.min(window.devicePixelRatio || 1, 3)
+    this.safeInsetBottom = safeAreaInset('bottom')
     this.bodyR = Math.min(Math.min(this.scale.width, this.scale.height) * 0.17, this.px(150))
 
     // Resume the saved skill meter a couple of steps down (warm-up ramp);
@@ -409,6 +442,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const w = vp.width * this.dpr
     const h = vp.height * this.dpr
     if (w === this.scale.width && h === this.scale.height) return
+    // Re-read the safe-area inset: an orientation change flips which edges the
+    // notch/home-indicator occupy, so a landscape↔portrait swap changes it.
+    this.safeInsetBottom = safeAreaInset('bottom')
     this.scale.resize(w, h)
     this.layout()
   }
@@ -880,8 +916,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   /**
    * Fed friends huddle together as a cozy pile in the bottom-left corner —
    * they overlap and stack (a heap, not a spread-out lineup). Offsets are in
-   * bodyR units; the pile is lifted with the hero (heroLift) so the whole
-   * scene sits higher, nearer the screen center.
+   * bodyR units, anchored to the shared heroBaseline so the pile tracks the
+   * hero (and the tray) proportionally on every screen.
    */
   private miniSlot(index: number): XY {
     // dx/dy pile offsets (bodyR units): all friends huddle on one level, each
@@ -899,7 +935,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // an episode only ever fills the five slots above).
     const tier = Math.floor(index / pile.length)
     const baseX = Math.max(this.scale.width * 0.1, this.bodyR)
-    const baseY = this.groundY() - this.bodyR * 0.28 - this.heroLift()
+    const baseY = this.heroBaseline() - this.bodyR * 0.28
     return {
       x: baseX + p.dx * this.bodyR,
       y: baseY + (p.dy - tier * 0.6) * this.bodyR,
@@ -986,8 +1022,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.time.delayedCall(900 + Math.random() * 1900, () => this.scheduleMiniGlance(nodes))
   }
 
-  /** The grown friend celebrates, walks aside, and the next one hops in. */
-  private friendGrownSequence(danceParty: boolean): void {
+  /**
+   * The grown friend celebrates and walks aside to join the lineup; then the
+   * whole lineup dances to welcome the newcomer before the next friend arrives.
+   * On the fifth friend the dance is grander and hands off to the next episode.
+   * `onResume` restarts play once the new (or next-episode) friend is on stage.
+   */
+  private friendGrownSequence(danceParty: boolean, onResume: () => void): void {
     const mp = this.monsterPos()
     // Star shower + a proud jump.
     this.stars.explode(16, mp.x, mp.y - this.bodyR * this.growth)
@@ -1016,7 +1057,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         duration: 700,
         ease: 'Sine.easeInOut',
         onComplete: () => {
-          // …swap the walker for a lineup mini and bring in the next friend.
+          // …swap the walker for a lineup mini…
           this.monster.destroy()
           const mini = this.spawnMini(grownIndex, episodeAtGrow)
           mini.setScale(0)
@@ -1027,15 +1068,21 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
             duration: 260,
             ease: 'Back.easeOut',
           })
-          if (danceParty) this.dancePartySequence()
-          else this.nextFriendEnters()
+          // …then the whole lineup dances to greet the new friend. Only after
+          // the dance does the next friend hop in (or, on the fifth, the world
+          // turns over to the next episode).
+          const danceMs = this.celebrateLineup(danceParty)
+          this.time.delayedCall(danceMs + 300, () => {
+            if (danceParty) this.episodeTransition(onResume)
+            else this.nextFriendEnters(onResume)
+          })
         },
       })
     })
   }
 
-  /** A brand-new small friend hops in from the side. */
-  private nextFriendEnters(): void {
+  /** A brand-new small friend hops in from the side, then play resumes. */
+  private nextFriendEnters(onResume: () => void): void {
     this.growth = scaleForStep(this.journey.growthStep)
     this.buildMonster()
 
@@ -1046,26 +1093,38 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       x: mp.x,
       duration: 600,
       ease: 'Back.easeOut',
-      onComplete: () => this.layout(),
+      onComplete: () => {
+        this.layout()
+        onResume()
+      },
     })
     playTone(659, 90, 'sine', 0.08)
     this.time.delayedCall(110, () => playTone(880, 110, 'sine', 0.08))
   }
 
-  /** All five grown friends dance, then the next episode fades in. */
-  private dancePartySequence(): void {
+  /**
+   * The fed friends in the lineup dance — a staggered bounce-and-wobble wave
+   * with confetti, stars and a little melody. Played every time a friend joins
+   * (light) and again, grander, when the fifth completes the episode. Returns
+   * the wave's duration in ms so the caller can time what comes next.
+   */
+  private celebrateLineup(grand: boolean): number {
     const cx = this.scale.width / 2
-    ;[0, 1].forEach((wave) => {
+    const repeat = grand ? 3 : 1
+    const waves = grand ? [0, 1] : [0]
+    waves.forEach((wave) => {
       this.time.delayedCall(wave * 900, () => {
-        this.confetti.explode(50, cx * 0.5, this.px(90))
-        this.confetti.explode(50, cx * 1.5, this.px(90))
-        this.stars.explode(12, cx, this.px(140))
+        this.confetti.explode(grand ? 50 : 26, cx * 0.5, this.px(90))
+        this.confetti.explode(grand ? 50 : 26, cx * 1.5, this.px(90))
+        this.stars.explode(grand ? 12 : 8, cx, this.px(140))
       })
     })
-    // Party melody + everyone bounces in a wave, twice.
-    ;[523, 659, 784, 659, 880, 784, 1047].forEach((freq, i) =>
+    // A little party melody — a longer flourish for the episode finale.
+    const melody = grand ? [523, 659, 784, 659, 880, 784, 1047] : [523, 659, 784, 1047]
+    melody.forEach((freq, i) =>
       this.time.delayedCall(i * 180, () => playTone(freq, 150, 'triangle', 0.1)),
     )
+    // Everyone bounces + wobbles in a staggered wave.
     this.minis.forEach((mini, i) => {
       this.tweens.add({
         targets: mini,
@@ -1073,7 +1132,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         delay: i * 130,
         duration: 260,
         yoyo: true,
-        repeat: 3,
+        repeat,
         ease: 'Quad.easeOut',
       })
       this.tweens.add({
@@ -1082,17 +1141,18 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         delay: i * 130,
         duration: 260,
         yoyo: true,
-        repeat: 3,
+        repeat,
         ease: 'Sine.easeInOut',
         onComplete: () => mini.setAngle(0),
       })
     })
 
-    this.time.delayedCall(2900, () => this.episodeTransition())
+    const lastDelay = Math.max(this.minis.length - 1, 0) * 130
+    return lastDelay + 260 * 2 * (repeat + 1)
   }
 
   /** Soft white fade → new palette, food pool, fresh lineup, first friend. */
-  private episodeTransition(): void {
+  private episodeTransition(onResume: () => void): void {
     const veil = this.add
       .rectangle(0, 0, this.scale.width, this.scale.height, 0xffffff)
       .setOrigin(0)
@@ -1125,7 +1185,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
           delay: 150,
           duration: 600,
           ease: 'Sine.easeOut',
-          onComplete: () => veil.destroy(),
+          onComplete: () => {
+            veil.destroy()
+            onResume()
+          },
         })
       },
     })
@@ -1153,15 +1216,17 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     }
   }
 
-  /** Skin one tray slot: the episode's marker sprite, or the plate fallback. */
+  /** Skin one tray slot: the episode's marker sprite, or the plate fallback.
+   * Sized to the current slot (plateWidth) so the row reflows responsively. */
   private dressPlate(plate: Phaser.GameObjects.Image): void {
+    const w = this.plateWidth()
     const marker = `marker-${this.episode.id}`
     if (this.hasArt(marker)) {
       if (plate.texture.key !== artKey(marker)) plate.setTexture(artKey(marker))
-      plate.setDisplaySize(this.px(104), this.px(52))
+      plate.setDisplaySize(w, w * 0.5) // marker art is a 2:1 doily oval
     } else {
       if (plate.texture.key !== 'ftm-plate') plate.setTexture('ftm-plate')
-      plate.setScale(1, 0.55)
+      plate.setDisplaySize(w, w * 0.55) // procedural plate keeps its flatter oval
     }
     plate.setData('baseSX', plate.scaleX)
     plate.setData('baseSY', plate.scaleY)
@@ -1337,55 +1402,67 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   // ─── Layout (RESIZE-safe for portrait + landscape) ───────────────────────
 
   /**
-   * Bottom margin under the food row. Raised well clear of the screen's
-   * bottom edge — on the iPad, drags that start near the edge trigger the
-   * iOS home-indicator gesture and minimize the game.
+   * The iOS home-indicator / notch inset at the bottom edge, in backing px.
+   * Drags that begin on the very bottom strip trigger the system minimize
+   * gesture, so the tray must clear it; full-bleed canvases don't inherit the
+   * inset the way padded DOM does, so we fold it into the layout explicitly.
    */
-  private trayMargin(): number {
-    return Math.max(this.scale.height * 0.14, this.px(120))
-  }
-
-  /** The food row + plate placeholders sit lifted this far up (5% of height). */
-  private trayLift(): number {
-    return this.scale.height * 0.05
-  }
-
-  private trayY(): number {
-    return this.scale.height - this.trayMargin() - this.trayLift()
+  private safeBottom(): number {
+    return this.safeInsetBottom * this.dpr
   }
 
   /**
-   * The invisible line the friends stand on (there is no table anymore —
-   * backgrounds are full-bleed scenery, layout owns all positioning). Anchored
-   * to the screen bottom (not trayY) so lifting the tray doesn't drag the
-   * hero + friends up with it.
+   * Gap between the food row and the screen bottom. Proportional (a share of
+   * the height) so it scales with the screen — never a fixed px slab that eats
+   * a third of a short landscape phone — but floored by the physical safe-area
+   * strip plus a food half-height so the tray always clears the home indicator.
    */
-  private groundY(): number {
-    return this.scale.height - this.trayMargin() - this.px(88)
+  private bottomMargin(): number {
+    return Math.max(
+      this.scale.height * TRAY_BOTTOM_FRAC,
+      this.safeBottom() + this.px(TRAY_MIN_CLEARANCE_CSS),
+    )
+  }
+
+  private trayY(): number {
+    return this.scale.height - this.bottomMargin()
+  }
+
+  /**
+   * The invisible line the hero + friends stand on. Anchored a fixed FRACTION
+   * of the height ABOVE the tray (not built up from the bottom with px offsets),
+   * so the whole cluster tracks the tray proportionally: the phone becomes a
+   * scaled copy of the iPad instead of collapsing into the top of the screen.
+   */
+  private heroBaseline(): number {
+    return this.trayY() - this.scale.height * HERO_GAP_FRAC
+  }
+
+  /** Width of one tray slot (plate + gap), spreading the row across the width. */
+  private traySlotWidth(): number {
+    return (this.scale.width * (1 - 2 * TRAY_SIDE_FRAC)) / TRAY_SIZE
+  }
+
+  /** Plate marker width: its slot minus a small gap, capped so it can't dwarf
+   * the food (nor overlap its neighbour) on very wide screens. */
+  private plateWidth(): number {
+    return Math.min(this.traySlotWidth() * (1 - TRAY_GAP_FRAC), this.px(PLATE_MAX_W_CSS))
   }
 
   private slotPos(index: number): XY {
-    // Cluster the tray toward the center: half the old full-width spacing
-    // (was width/TRAY_SIZE), so the row is snug and easy for small hands to
-    // reach across instead of stretched over the whole screen.
-    const spacing = this.scale.width / (TRAY_SIZE * 2)
+    // Spread the row evenly across the usable width (TRAY_SIDE_FRAC gutter on
+    // each side), one plate per slot — so plates fill the screen with small
+    // gaps instead of huddling, overlapped, in the middle third.
+    const slot = this.traySlotWidth()
+    const first = this.scale.width * TRAY_SIDE_FRAC + slot / 2
     return {
-      x: this.scale.width / 2 + (index - (TRAY_SIZE - 1) / 2) * spacing,
+      x: first + index * slot,
       y: this.trayY(),
     }
   }
 
-  /**
-   * How far up the hero + friends are lifted off the ground line (~20% of the
-   * screen height) so the scene sits higher, nearer the vertical center and
-   * well clear of the food tray.
-   */
-  private heroLift(): number {
-    return this.scale.height * 0.2
-  }
-
   private monsterPos(): XY {
-    const y = this.groundY() - this.bodyR * this.growth * 0.55 - this.heroLift()
+    const y = this.heroBaseline() - this.bodyR * this.growth * 0.55
     // Never let the head ride up under the top task panel.
     const headroom = this.px(PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) + this.bodyR * this.growth * 1.35
     return { x: this.scale.width / 2, y: Math.max(y, headroom) }
@@ -2233,14 +2310,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
     this.time.delayedCall(250, () => this.applyAura(true, GROW_STEPS))
 
-    // Then: walk to the lineup, next friend hops in (and, on the 5th, the
-    // dance party + episode change) — then play continues.
-    this.time.delayedCall(650, () => this.friendGrownSequence(outcome === 'episode-complete'))
-    const advanceAfter = outcome === 'episode-complete' ? 7400 : 3400
-    this.time.delayedCall(advanceAfter, () => {
-      this.layout()
-      this.startRound(this.roundNumber + 1)
-    })
+    // Then: walk to the lineup, the whole lineup dances to welcome the new
+    // friend, and the next friend hops in (on the 5th, the grander dance +
+    // episode change) — play resumes once that friend is on stage and feedable.
+    const resume = () => this.startRound(this.roundNumber + 1)
+    this.time.delayedCall(650, () =>
+      this.friendGrownSequence(outcome === 'episode-complete', resume),
+    )
   }
 
   private fadeOutFood(food: Phaser.GameObjects.Image): void {
