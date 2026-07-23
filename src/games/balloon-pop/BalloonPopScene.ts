@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { reportLevel } from '../../shared/level'
+import { initLevel, reportLevel } from '../../shared/level'
 import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
@@ -200,6 +200,9 @@ export default class BalloonPopScene extends Phaser.Scene {
     // Resume the saved skill meters a couple of steps down (warm-up ramp);
     // the peak lets updateSkill climb back at double speed.
     const saved = loadProgress(GAME_ID)
+    // Resume the visible level badge from the saved star trophy (every solved
+    // round banked one star), so the count climbs across sessions.
+    initLevel(GAME_ID)
     const startOptions = { max: SKILL_MAX, lastPlayedAt: saved.lastPlayedAt }
     this.skill = {
       motor: sessionStart(saved.skill.motor ?? SKILL_START, startOptions),

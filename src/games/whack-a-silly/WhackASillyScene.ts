@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { reportLevel } from '../../shared/level'
+import { initLevel, reportLevel } from '../../shared/level'
 import { addStars, loadProgress, saveData, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
@@ -215,6 +215,9 @@ export default class WhackASillyScene extends Phaser.Scene {
     // Resume the saved motor meter a couple of steps down (warm-up ramp);
     // the peak lets registerCatch climb back at double speed.
     const saved = loadProgress(GAME_ID)
+    // Resume the visible level badge from the saved star trophy (every bopped
+    // critter banked one star), so the count climbs across sessions.
+    initLevel(GAME_ID)
     const startSkill = sessionStart(saved.skill.motor ?? WHACK_SKILL_START, {
       max: WHACK_SKILL_MAX,
       lastPlayedAt: saved.lastPlayedAt,

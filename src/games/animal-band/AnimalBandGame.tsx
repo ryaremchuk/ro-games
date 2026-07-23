@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { playTone } from '../../shared/audio'
-import { reportLevel } from '../../shared/level'
+import { initLevel, reportLevel } from '../../shared/level'
 import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
 import {
   MAX_LENGTH,
@@ -191,7 +191,9 @@ export default function AnimalBandGame() {
 
   // Standardized HUD badge: +1 per successful echo (a reward counter, like
   // every game). Sequence length is the adaptive difficulty and stays
-  // invisible — it is persisted, not displayed.
+  // invisible — it is persisted, not displayed. The badge resumes from the
+  // saved star trophy (initLevel), so its count climbs across sessions.
+  useEffect(() => initLevel(GAME_ID), [])
   useEffect(() => reportLevel(band.roundsCompleted + 1), [band.roundsCompleted])
 
   const animals = bandForRounds(band.roundsCompleted)

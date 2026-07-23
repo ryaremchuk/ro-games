@@ -97,13 +97,21 @@ check just fails quietly and the cached version keeps playing.
 Decided when persistence landed (July 2026), after weighing three options for
 "where does a session start": always-from-zero (bored a returning child with
 re-learned basics), exact-resume (cold-started a fluctuating 3-4yo skill at
-its ceiling), and the chosen hybrid:
+its ceiling), and the chosen hybrid. The governing split: **the child's
+VISIBLE progress resumes exactly and only ever grows; the INVISIBLE difficulty
+resumes a little BELOW where it left off (warm-up).** Two different resume
+speeds because they serve opposite ends — reward should never regress, skill
+should re-teach gently.
 
-- **Skill meters persist, sessions start below them.** Saved to
+- **Skill meters persist, sessions start below them (always).** Saved to
   `localStorage` after every round (`src/shared/progress.ts` — toddlers don't
-  do graceful shutdowns), restored minus `WARMUP_DROP`, minus one step per
-  week away, and climbed back at doubled up-steps while below the saved peak.
-  The warm-up doubles as re-teaching, and it lasts rounds, not half a session.
+  do graceful shutdowns), then deliberately restored a notch LOWER than the
+  saved value: minus `WARMUP_DROP`, minus one more step per week away
+  (`sessionStart()`), and climbed back at doubled up-steps while below the
+  saved peak. So difficulty on re-entry is always slightly easier than the
+  child's last ceiling — the warm-up doubles as re-teaching and lasts rounds,
+  not half a session. This is invisible to the child by design; only the badge
+  below shows.
 - **Two axes where the skills differ.** Balloon Pop splits MOTOR (speed,
   concurrency; error = the match escaped) from COGNITIVE (targets,
   distractors, task types; error = wrong tap), because one meter forced a
@@ -112,16 +120,24 @@ its ceiling), and the chosen hybrid:
   round — speed must not pile onto struggle. Games with one real skill (Odd
   One Out's category ladder) persist a single axis; the store is
   axis-name-agnostic.
-- **Stars, not levels, are the persistent trophy.** One uniform rule across
-  every game: passing a level (each game's own unit — a solved round, a
-  bopped critter, a cleared board, a freed piggy level) ticks the badge +1 AND banks
-  one forever-star on the launcher tile. Levels stay session-scoped (badge
-  resets each visit, only ever moves forward); stars never reset and big
-  counts are deliberate. Celebrations (rainbow, sparkles, confetti) are pure
-  animations on their own per-game beats (`CELEBRATION_EVERY_*` constants) —
-  they gate nothing, and games without one don't get one. Rewarding effort
-  rather than skill keeps the economy fair: a child at the skill ceiling
-  earns stars at the same rate as one still climbing.
+- **Stars are the persistent trophy — and the level badge resumes from them.**
+  One uniform rule across every game: passing a level (each game's own unit —
+  a solved round, a bopped critter, a cleared board, a freed piggy level) ticks
+  the badge +1 AND banks one forever-star on the launcher tile. The badge used
+  to reset to 1 each visit; now `shared/level.initLevel(gameId)` seeds it from
+  the saved star total at startup, so the number the child sees keeps climbing
+  across sessions instead of restarting (1 star → play 10 levels → 11 → close
+  the app → come back → still 11, and up from there). This works precisely
+  because "stars earned" and "levels passed" are the same count — one star per
+  level in every game — so the star trophy IS the badge's baseline. The
+  baseline is **snapshotted at startup**, not read live, so a star banked
+  mid-session grows the trophy without double-counting the badge. Stars never
+  reset and big counts are deliberate. Celebrations (rainbow, sparkles,
+  confetti) are pure animations on their own per-game beats
+  (`CELEBRATION_EVERY_*` constants) — they gate nothing, and games without one
+  don't get one. Rewarding effort rather than skill keeps the economy fair: a
+  child at the skill ceiling earns stars at the same rate as one still
+  climbing.
 
 ## Feed the Monster: care-based journey (friends, episodes) beside the meter
 
