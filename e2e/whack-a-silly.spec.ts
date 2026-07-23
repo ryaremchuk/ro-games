@@ -38,6 +38,26 @@ const keepAwake = async (page: Page): Promise<void> => {
 const firstDownHole = (s: WhackTestState): number => s.holes.findIndex((h) => h.state === 'down')
 
 /**
+ * One tick of a CLEAN run: tap every go-critter that's up (so nothing escapes —
+ * escapes ease the spatial track), and when the board is idle force exactly one
+ * new critter. Strictly one-at-a-time keeps go-escapes ≈ 0, so the spatial meter
+ * climbs and the board grows. Sleepers are left alone (sparing ≠ escape).
+ */
+async function driveCleanBop(page: Page): Promise<void> {
+  const s = await readState(page)
+  for (const h of s.holes) {
+    if ((h.state === 'up' || h.state === 'rising') && !h.sleepy) {
+      await page.mouse.click(h.xCss, h.yCss - 88)
+    }
+  }
+  const anyBusy = s.holes.some((h) => h.state !== 'down')
+  if (!anyBusy) {
+    const hole = firstDownHole(s)
+    if (hole >= 0) await forceSpawn(page, hole).catch(() => {})
+  }
+}
+
+/**
  * Tap the critter's head (the hit target sits ~88 css above the hole center)
  * until it reacts — i.e. leaves 'up'/'rising'. Retrying absorbs the first-click
  * input warm-up and any sub-pixel jitter, and works for both a go critter (bop)
@@ -162,3 +182,111 @@ test('whack: sparing a sleeper (leaving it to nap) counts as the win', async ({ 
     .toBe(1)
   expect((await readState(page)).bops, 'sparing is not a bop').toBe(0)
 })
+
+const setBoard = (page: Page, holeCount: number): Promise<number> =>
+  page.evaluate((n) => window.__whackASilly!.setBoard(n as number), holeCount)
+
+test('whack: an episode boundary re-rolls the board (transition machinery)', async ({ page }) => {
+  test.setTimeout(70_000)
+  await page.goto('./#/whack-a-silly')
+  await waitForReady(page)
+
+  const start = await readState(page)
+  expect(start.episode, 'fresh session starts on episode 0').toBe(0)
+  expect(start.holeCount, 'easiest board is four holes').toBe(4)
+  expect(start.holes).toHaveLength(4)
+
+  // Bop until the episode flips (the spatial track re-rolls the board).
+  await expect
+    .poll(
+      async () => {
+        if ((await readState(page)).episode > 0) return true
+        await driveCleanBop(page)
+        return (await readState(page)).episode > 0
+      },
+      { timeout: 55_000, intervals: [150] },
+    )
+    .toBe(true)
+
+  // Wait for the WHOLE transition (dance → sink → reveal) to finish before
+  // reading the settled board — mid-transition the old holeCount transiently
+  // matches the old hole list, so we must key off `transitioning`, not lengths.
+  await expect
+    .poll(
+      async () => {
+        const s = await readState(page)
+        return !s.transitioning && s.holes.length === s.holeCount
+      },
+      { timeout: 15_000, intervals: [150] },
+    )
+    .toBe(true)
+
+  const after = await readState(page)
+  expect(after.holeCount).toBeGreaterThanOrEqual(4)
+  expect(after.holeCount).toBeLessThanOrEqual(9)
+  expect(after.holes).toHaveLength(after.holeCount)
+  await page.screenshot({ path: 'e2e/__screenshots__/whack-a-silly-episode2.png' })
+
+  // Every fresh hole must actually come alive — a hole left stuck 'up' by the
+  // dance (stale state) would count as occupied and never spawn. Confirm each
+  // index is seen 'down' (ready) at least once within a short window.
+  const seenDown = new Set<number>()
+  await expect
+    .poll(
+      async () => {
+        const s = await readState(page)
+        s.holes.forEach((h, i) => {
+          if (h.state === 'down') seenDown.add(i)
+        })
+        return seenDown.size
+      },
+      { timeout: 15_000, intervals: [120] },
+    )
+    .toBe(after.holeCount)
+})
+
+// The board must fit — and stay tappable — at both the easiest (4) and densest
+// (9) sizes, on both target aspects. setBoard() pins the count deterministically.
+for (const vp of [
+  { name: 'iPad landscape 4:3', width: 1024, height: 768 },
+  { name: 'iPhone landscape ~2.2:1', width: 896, height: 414 },
+]) {
+  for (const count of [4, 9]) {
+    test(`whack: ${count} holes fit on-screen and stay reachable (${vp.name})`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height })
+      await page.goto('./#/whack-a-silly')
+      await waitForReady(page)
+
+      expect(await setBoard(page, count)).toBe(count)
+      await expect
+        .poll(async () => (await readState(page)).holeCount, { timeout: 8_000 })
+        .toBe(count)
+
+      const s = await readState(page)
+      expect(s.holes).toHaveLength(count)
+
+      // Every hole center on-screen, head-tap point (~88css up) below the top,
+      // mound clear of the bottom edge.
+      for (const h of s.holes) {
+        expect(h.xCss, 'left edge').toBeGreaterThan(20)
+        expect(h.xCss, 'right edge').toBeLessThan(vp.width - 20)
+        expect(h.yCss - 88, 'head-tap below top edge').toBeGreaterThan(0)
+        expect(h.yCss, 'clear of bottom edge').toBeLessThan(vp.height - 8)
+      }
+
+      // No two openings collide — a floor on the effective touch separation.
+      for (let i = 0; i < s.holes.length; i++) {
+        for (let j = i + 1; j < s.holes.length; j++) {
+          const dx = s.holes[i].xCss - s.holes[j].xCss
+          const dy = s.holes[i].yCss - s.holes[j].yCss
+          expect(Math.hypot(dx, dy), 'holes not stacked').toBeGreaterThan(55)
+        }
+      }
+      await page.screenshot({
+        path: `e2e/__screenshots__/whack-a-silly-${count}holes-${vp.width}x${vp.height}.png`,
+      })
+    })
+  }
+}

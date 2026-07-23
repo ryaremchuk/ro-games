@@ -32,6 +32,16 @@ export interface WhackTestState {
   skill: number
   /** How many holes are currently occupied (waking / rising / up / leaving). */
   activeCritters: number
+  /** 0-based episode counter — the board / spatial track (episode.ts). */
+  episode: number
+  /** Holes on this episode's board (4..9) — the length of `holes` below. */
+  holeCount: number
+  /** Adaptive spatial meter 0..MAX_SPATIAL (drives holeCount). */
+  spatial: number
+  /** True while an episode-boundary transition (dance → re-layout) is playing —
+   *  the board is mid-reshuffle, so holeCount/holes are not yet settled. */
+  transitioning: boolean
+  /** One entry per ACTIVE hole (this episode's board only). */
   holes: WhackHoleState[]
 }
 
@@ -44,6 +54,12 @@ export interface WhackTestApi {
    * a sleeper. Returns false if the hole is not currently free (down).
    */
   forceSpawn: (hole: number, opts?: { sleepy?: boolean; golden?: boolean }) => boolean
+  /**
+   * Rebuild the board at an exact hole count (clamped 4..9) right now, no
+   * transition — so a spec can measure the layout at a given size deterministically
+   * instead of driving the adaptive spatial track there. Returns the count used.
+   */
+  setBoard: (holeCount: number) => number
 }
 
 declare global {

@@ -47,9 +47,10 @@ export function critterById(id: string): Critter {
   return critter
 }
 
-/** 3×3 garden grid. */
-export const GRID_SIZE = 3
-export const HOLE_COUNT = GRID_SIZE * GRID_SIZE
+// The board is no longer a fixed grid: the count and positions of holes are a
+// per-EPISODE variable (4..9), owned by the spatial track in episode.ts. Spawn
+// planning takes the live hole count from the SpawnContext, so this module never
+// assumes a shape. See episode.ts (MIN_HOLES / MAX_HOLES / generateBoard).
 
 // ─── Timing rules (from the brief) ───────────────────────────────────────────
 
@@ -216,7 +217,7 @@ export function phaseFor(state: RampState): Phase {
 // ─── Spawn planning ──────────────────────────────────────────────────────────
 
 export interface CritterSpawn {
-  /** Hole index 0..HOLE_COUNT-1. */
+  /** Hole index 0..holeCount-1 (holeCount is the episode's live board size). */
   hole: number
   critterId: string
   /** Sleeping critter = NO-GO: the child is celebrated for NOT waking it. */
@@ -232,6 +233,8 @@ export interface SpawnContext {
   ramp: RampState
   /** Adaptive motor meter — drives up-time, gap and concurrency. */
   skill: number
+  /** The episode's live board size — holes are indexed 0..holeCount-1. */
+  holeCount: number
   /** Holes currently occupied (any non-down state). */
   occupiedHoles: readonly number[]
   /** Species currently on stage — simultaneous critters are never twins. */
@@ -254,10 +257,11 @@ function pickOne<T>(rng: Rng, items: readonly T[]): T {
   return items[Math.floor(rng() * items.length)]
 }
 
-/** Pick a hole avoiding the blocked set, or null if none are free. */
-function pickHole(rng: Rng, blocked: ReadonlySet<number>): number | null {
+/** Pick a hole in [0, holeCount) avoiding the blocked set, or null if none are
+ *  free. */
+function pickHole(rng: Rng, blocked: ReadonlySet<number>, holeCount: number): number | null {
   const open: number[] = []
-  for (let i = 0; i < HOLE_COUNT; i++) {
+  for (let i = 0; i < holeCount; i++) {
     if (!blocked.has(i)) open.push(i)
   }
   if (open.length === 0) return null
@@ -283,13 +287,15 @@ function rollCritter(phase: Phase, hole: number, ctx: SpawnContext, rng: Rng): C
 export function planSpawn(ctx: SpawnContext, rng: Rng = Math.random): SpawnPlan {
   const phase = phaseFor(ctx.ramp)
   const blocked = new Set(ctx.occupiedHoles)
-  if (ctx.lastHole !== null) blocked.add(ctx.lastHole)
+  // Avoiding the last hole only makes sense when there's somewhere else to go —
+  // on a tiny board (4 holes, most occupied) it would over-constrain.
+  if (ctx.lastHole !== null && ctx.holeCount > 1) blocked.add(ctx.lastHole)
 
   // If everything is somehow blocked, relax constraints rather than stall.
   const hole =
-    pickHole(rng, blocked) ??
-    pickHole(rng, new Set(ctx.occupiedHoles)) ??
-    Math.floor(rng() * HOLE_COUNT)
+    pickHole(rng, blocked, ctx.holeCount) ??
+    pickHole(rng, new Set(ctx.occupiedHoles), ctx.holeCount) ??
+    Math.floor(rng() * ctx.holeCount)
 
   return {
     spawn: rollCritter(phase, hole, ctx, rng),

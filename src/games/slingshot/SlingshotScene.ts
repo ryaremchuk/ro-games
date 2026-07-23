@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { clearLevel, reportLevel } from '../../shared/level'
+import { clearLevel, initLevel, reportLevel } from '../../shared/level'
 import { addStars } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
@@ -236,6 +236,11 @@ export default class SlingshotScene extends Phaser.Scene {
       this.level = this.draft.level
       this.wireEditorInput()
       this.installEditorApi()
+    } else {
+      // Resume the visible level badge from the saved star trophy (every level
+      // cleared banked one star), so the count climbs across sessions. Skipped
+      // in the editor, which never shows the child-facing badge.
+      initLevel('slingshot')
     }
 
     this.buildLevel(this.level)

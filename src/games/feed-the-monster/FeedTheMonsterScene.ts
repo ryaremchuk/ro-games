@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { reportLevel } from '../../shared/level'
+import { initLevel, reportLevel } from '../../shared/level'
 import { addStars, loadProgress, saveData, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, safeAreaInset, viewportSize } from '../../shared/viewport'
 import {
@@ -253,6 +253,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // Resume the saved skill meter a couple of steps down (warm-up ramp);
     // the peak makes below-peak climbs twice as fast (see logic.updateSkill).
     const saved = loadProgress(GAME_ID)
+    // Resume the visible level badge from the saved star trophy (every level
+    // passed banked one star), so the count climbs across sessions.
+    initLevel(GAME_ID)
     this.skillPeak = saved.skill.cognitive ?? SKILL_START
     this.skill = sessionStart(this.skillPeak, { max: SKILL_MAX, lastPlayedAt: saved.lastPlayedAt })
 

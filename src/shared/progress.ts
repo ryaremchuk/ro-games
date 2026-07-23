@@ -1,7 +1,8 @@
 /**
  * Persistent per-game progress: skill meters and stars, stored in
- * localStorage so they survive app restarts (the games themselves stay
- * session-scoped — levels and celebrations reset every visit by design).
+ * localStorage so they survive app restarts. The child's VISIBLE progress
+ * (the level badge, seeded from stars) and long-term journeys resume across
+ * sessions; only the invisible difficulty warms up fresh each visit.
  *
  * Two decoupled currencies:
  * - SKILL — named adaptive meters (games define the axes, e.g. motor +
@@ -9,9 +10,11 @@
  *   saved value (warm-up) and further below after a long break (decay), so a
  *   returning child re-enters through a friendly ramp instead of a cold
  *   start at their ceiling. See sessionStart().
- * - STARS — a forever-accumulating reward counter (+1 per celebration beat
- *   inside a game). Shown on the launcher tile; the one number that only
- *   ever grows, whatever the adaptive meters do.
+ * - STARS — a forever-accumulating reward counter (+1 per level passed, which
+ *   every game aligns with one celebration beat). Shown on the launcher tile
+ *   AND used to seed the in-game level badge (shared/level.initLevel), so the
+ *   count the child sees keeps climbing across sessions — the one number that
+ *   only ever grows, whatever the adaptive meters do.
  * - DATA — game-defined numeric state with no meter semantics (e.g. the
  *   feed-the-monster journey: episode / friends fed / growth step), saved so
  *   visible long-term progression survives restarts.
