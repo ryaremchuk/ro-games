@@ -6,7 +6,6 @@ import { onViewportResize, safeAreaInset, viewportSize } from '../../shared/view
 import {
   SKILL_MAX,
   SKILL_START,
-  TRAY_SIZE,
   generateRound,
   isRoundComplete,
   levelForRound,
@@ -36,6 +35,7 @@ import * as textures from './textures'
 import { RequestBubble } from './requestBubble'
 import { MonsterRig } from './monsterRig'
 import { JourneyStage } from './journeyStage'
+import { Tray } from './tray'
 
 /** Registry id — also the key the shared progress store files this under. */
 const GAME_ID = 'feed-the-monster'
@@ -116,10 +116,14 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    */
   private readonly bubbleUi = new RequestBubble(this)
 
-  private plates: Phaser.GameObjects.Image[] = []
-  private foods: Phaser.GameObjects.Image[] = []
-  /** @internal Exposed for MonsterRig (its update tracks the dragged food). */
-  dragged: Phaser.GameObjects.Image | null = null
+  /**
+   * The food tray (plates + draggable foods, their build/layout/animation and
+   * the drag mechanics). Owns its own display objects; reads live scene state
+   * through the passed `this` and hands a food dropped over the mouth back to
+   * `feed`. See ./tray.
+   * @internal Exposed for MonsterRig (its update tracks `tray.dragged`).
+   */
+  readonly tray = new Tray(this)
 
   /** @internal Exposed for JourneyStage (friendGrownSequence + celebrateLineup). */
   confetti!: Phaser.GameObjects.Particles.ParticleEmitter
@@ -190,7 +194,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // the gradient beneath stays as the fallback and edge filler.
     this.bgImage = this.add.image(0, 0, '__DEFAULT').setDepth(0).setVisible(false)
     this.monsterRig.build()
-    this.buildPlates()
+    this.tray.buildPlates()
     this.bubbleUi.build()
     this.buildEmitters()
     this.wireInput()
@@ -243,7 +247,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         requestTotal: this.round ? requestTotal(this.round.request) : 0,
         spitBacks: this.spitBacks,
         transitioning: this.transitioning,
-        foods: this.foods.map((f) => ({
+        foods: this.tray.foods.map((f) => ({
           foodId: f.getData('foodId') as string,
           correct: this.round
             ? wantsFood(this.round.request, this.eaten, f.getData('foodId') as string)
@@ -361,7 +365,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.eaten = []
     this.spitBacks = 0
     this.roundStartAt = this.time.now
-    this.buildTray(round.tray)
+    this.tray.buildTray(round.tray)
     this.bubbleUi.showRequest(round.request)
   }
 
@@ -394,23 +398,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     return friendColor(this.journey.episode, this.journey.friendsFed)
   }
 
-  /**
-   * Texture for a food: reskin sprite when shipped, emoji strike otherwise.
-   * @internal Exposed for RequestBubble (tile/slot fills).
-   */
-  foodTexture(foodId: string): string {
-    return this.hasArt(`food-${foodId}`) ? artKey(`food-${foodId}`) : `ftm-food-${foodId}`
-  }
-
-  /**
-   * A tray food's resting scale (1 for emoji textures; reskin sprites are
-   * normalized down from atlas resolution). All food scale tweens are
-   * multiples of this.
-   */
-  private foodBaseScale(img: Phaser.GameObjects.Image): number {
-    return (img.getData('baseScale') as number | undefined) ?? 1
-  }
-
   // ─── Fed-friends lineup + friend/episode transitions ───────────────────────
 
   /**
@@ -422,44 +409,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    */
   miniSlot(index: number): XY {
     return layout.miniSlot(this.metrics(), index)
-  }
-
-  private buildPlates(): void {
-    for (let i = 0; i < TRAY_SIZE; i++) {
-      const plate = this.add.image(0, 0, 'ftm-plate').setDepth(4)
-      this.dressPlate(plate)
-      plate.setInteractive()
-      plate.on('pointerdown', () => {
-        playTone(659, 45, 'sine', 0.05)
-        const baseX = plate.getData('baseSX') as number
-        const baseY = plate.getData('baseSY') as number
-        this.tweens.killTweensOf(plate)
-        this.tweens.add({
-          targets: plate,
-          scaleX: { from: baseX * 0.92, to: baseX },
-          scaleY: { from: baseY * 0.9, to: baseY },
-          duration: 220,
-          ease: 'Back.easeOut',
-        })
-      })
-      this.plates.push(plate)
-    }
-  }
-
-  /** Skin one tray slot: the episode's marker sprite, or the plate fallback.
-   * Sized to the current slot (plateWidth) so the row reflows responsively. */
-  private dressPlate(plate: Phaser.GameObjects.Image): void {
-    const w = layout.plateWidth(this.metrics())
-    const marker = `marker-${this.episode.id}`
-    if (this.hasArt(marker)) {
-      if (plate.texture.key !== artKey(marker)) plate.setTexture(artKey(marker))
-      plate.setDisplaySize(w, w * 0.5) // marker art is a 2:1 doily oval
-    } else {
-      if (plate.texture.key !== 'ftm-plate') plate.setTexture('ftm-plate')
-      plate.setDisplaySize(w, w * 0.55) // procedural plate keeps its flatter oval
-    }
-    plate.setData('baseSX', plate.scaleX)
-    plate.setData('baseSY', plate.scaleY)
   }
 
   private buildEmitters(): void {
@@ -519,62 +468,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   }
 
   private wireInput(): void {
-    this.input.dragDistanceThreshold = this.px(8)
-
-    this.input.on(
-      'dragstart',
-      (_pointer: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject) => {
-        const img = obj as Phaser.GameObjects.Image
-        if (!this.foods.includes(img)) return
-        this.tweens.killTweensOf(img)
-        this.dragged = img
-        img.setDepth(20)
-        img.setScale(this.foodBaseScale(img) * 1.15)
-        playTone(523, 50, 'sine', 0.06)
-      },
-    )
-
-    this.input.on(
-      'drag',
-      (
-        _pointer: Phaser.Input.Pointer,
-        obj: Phaser.GameObjects.GameObject,
-        dragX: number,
-        dragY: number,
-      ) => {
-        const img = obj as Phaser.GameObjects.Image
-        if (img !== this.dragged) return
-        img.x = dragX
-        img.y = dragY
-        // Magnetic snap assist + the mouth opens as food approaches.
-        const mouth = this.monsterRig.mouthWorld()
-        const dist = Phaser.Math.Distance.Between(img.x, img.y, mouth.x, mouth.y)
-        if (dist < this.snapRadius()) {
-          img.x += (mouth.x - img.x) * 0.3
-          img.y += (mouth.y - img.y) * 0.3
-          if (this.monsterRig.mouthOpen < 0.9) this.monsterRig.setMouthOpen(1, 120)
-        } else if (this.monsterRig.mouthOpen > 0.1) {
-          this.monsterRig.setMouthOpen(0, 160)
-        }
-      },
-    )
-
-    this.input.on(
-      'dragend',
-      (_pointer: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject) => {
-        const img = obj as Phaser.GameObjects.Image
-        if (img !== this.dragged) return
-        this.dragged = null
-        const mouth = this.monsterRig.mouthWorld()
-        const dist = Phaser.Math.Distance.Between(img.x, img.y, mouth.x, mouth.y)
-        if (dist < this.snapRadius() && !this.transitioning) {
-          this.feed(img)
-        } else {
-          this.monsterRig.setMouthOpen(0, 160)
-          this.returnToTray(img)
-        }
-      },
-    )
+    // The food-drag mechanics (draggable foods + the drop→feed decision) live
+    // on the tray; the scene wires only the non-food background taps.
+    this.tray.wireDrag()
 
     // Taps on empty background sparkle + boop — everything responds.
     this.input.on(
@@ -595,8 +491,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    * gesture, so the tray must clear it; full-bleed canvases don't inherit the
    * inset the way padded DOM does, so we fold it into the layout explicitly.
    */
-  /** Live snapshot the pure ./layout geometry reads from. */
-  private metrics(): LayoutMetrics {
+  /**
+   * Live snapshot the pure ./layout geometry reads from.
+   * @internal Exposed for Tray (its slot/plate/snap geometry reads from it).
+   */
+  metrics(): LayoutMetrics {
     return {
       w: this.scale.width,
       h: this.scale.height,
@@ -665,30 +564,18 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       })
     })
 
-    for (let i = 0; i < this.plates.length; i++) {
+    for (let i = 0; i < this.tray.plates.length; i++) {
       const slot = this.slotPos(i)
-      this.dressPlate(this.plates[i]) // episode may have changed the marker
-      this.plates[i].setPosition(slot.x, slot.y + this.px(14))
+      this.tray.dressPlate(this.tray.plates[i]) // episode may have changed the marker
+      this.tray.plates[i].setPosition(slot.x, slot.y + this.px(14))
     }
-    for (const food of this.foods) {
-      if (food === this.dragged) continue
+    for (const food of this.tray.foods) {
+      if (food === this.tray.dragged) continue
       this.tweens.killTweensOf(food)
       const slot = this.slotPos(food.getData('slot') as number)
       food.setPosition(slot.x, slot.y)
-      food.setScale(this.foodBaseScale(food))
+      food.setScale(this.tray.foodBaseScale(food))
     }
-  }
-
-  // ─── Mouth helpers ───────────────────────────────────────────────────────
-
-  /**
-   * Generous drop zone, centered on the visible mouth (mouthWorld). Slightly
-   * roomier than a tight mouth radius so a 3–4yo who releases a touch above the
-   * open mouth still lands the food — the open-mouth cue and the feed test share
-   * this exact zone, so "mouth looks open" always means "will feed".
-   */
-  private snapRadius(): number {
-    return layout.snapRadius(this.metrics())
   }
 
   // ─── Round flow ──────────────────────────────────────────────────────────
@@ -711,81 +598,24 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.recentKinds.push(round.taskKind)
     if (this.recentKinds.length > 6) this.recentKinds.shift()
     this.roundStartAt = this.time.now
-    this.buildTray(round.tray)
+    this.tray.buildTray(round.tray)
     this.bubbleUi.showRequest(round.request)
     this.time.delayedCall(450, () => this.bubbleUi.playRequestCue(round.request))
   }
 
-  private buildTray(tray: string[]): void {
-    for (const food of this.foods) {
-      this.tweens.killTweensOf(food)
-      food.destroy()
-    }
-    this.foods = []
-    this.dragged = null
-
-    tray.forEach((foodId, i) => {
-      const slot = this.slotPos(i)
-      const texKey = this.foodTexture(foodId)
-      const img = this.add.image(slot.x, -this.px(80), texKey).setDepth(5)
-      img.setData('foodId', foodId)
-      img.setData('slot', i)
-      const frame = this.textures.getFrame(texKey)
-      // Reskin sprites arrive at atlas resolution — normalize them to the
-      // emoji footprint; the hit circle stays ~100 css px either way (the
-      // shape lives in unscaled frame coords, hence the /base).
-      const base =
-        (texKey === `ftm-food-${foodId}`
-          ? 1
-          : this.px(FOOD_CSS * 1.12) / Math.max(frame.width, frame.height)) *
-        textures.foodScale(foodId)
-      img.setData('baseScale', base)
-      img.setScale(base)
-      img.setInteractive(
-        new Phaser.Geom.Circle(frame.width / 2, frame.height / 2, this.px(50) / base),
-        Phaser.Geom.Circle.Contains,
-      )
-      this.input.setDraggable(img)
-
-      // Touch-down ack < 100ms; a plain tap (no drag) wiggles + boops.
-      img.on('pointerdown', () => {
-        if (this.dragged) return
-        this.tweens.add({
-          targets: img,
-          scaleX: base * 0.9,
-          scaleY: base * 0.9,
-          duration: 80,
-          yoyo: true,
-          ease: 'Quad.easeOut',
-        })
-      })
-      img.on('pointerup', (pointer: Phaser.Input.Pointer) => {
-        if (pointer.getDistance() < this.px(8)) {
-          playTone(659, 45, 'sine', 0.05)
-          this.wiggle(img)
-        }
-      })
-
-      // Drop-in: staggered bounce onto the tray.
-      this.tweens.add({
-        targets: img,
-        y: slot.y,
-        delay: i * 90,
-        duration: 600,
-        ease: 'Bounce.easeOut',
-      })
-      this.foods.push(img)
-    })
-  }
-
   // ─── Feeding ─────────────────────────────────────────────────────────────
 
-  private feed(img: Phaser.GameObjects.Image): void {
+  /**
+   * A food dropped over the mouth is eaten: it flies into the mouth, then
+   * swallow() decides right/wrong. Kept on the scene (the round state machine).
+   * @internal Exposed for Tray (its dragend hands off a valid drop here).
+   */
+  feed(img: Phaser.GameObjects.Image): void {
     img.disableInteractive()
     this.monsterRig.setMouthOpen(1, 80)
     this.tweens.killTweensOf(img)
     const mouth = this.monsterRig.mouthWorld()
-    const base = this.foodBaseScale(img)
+    const base = this.tray.foodBaseScale(img)
     this.tweens.add({
       targets: img,
       x: mouth.x,
@@ -815,7 +645,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     if (!this.round) return
     const foodId = img.getData('foodId') as string
     this.eaten.push(foodId)
-    this.foods = this.foods.filter((f) => f !== img)
+    this.tray.foods = this.tray.foods.filter((f) => f !== img)
     img.destroy()
 
     // Chomp: mouth snaps shut + squash & stretch (volume conserved).
@@ -881,10 +711,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     }
 
     const slot = this.slotPos(img.getData('slot') as number)
-    const base = this.foodBaseScale(img)
-    this.arcTo(img, slot.x, slot.y, 550, () => {
+    const base = this.tray.foodBaseScale(img)
+    this.tray.arcTo(img, slot.x, slot.y, 550, () => {
       img.setInteractive()
-      if (this.transitioning) this.fadeOutFood(img)
+      if (this.transitioning) this.tray.fadeOutFood(img)
     })
     this.tweens.add({
       targets: img,
@@ -899,9 +729,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.transitioning = true
 
     // Leftover distractors tumble away.
-    this.foods.forEach((food, i) => {
-      if (food === this.dragged || this.tweens.isTweening(food)) return
-      this.time.delayedCall(150 + i * 40, () => this.fadeOutFood(food))
+    this.tray.foods.forEach((food, i) => {
+      if (food === this.tray.dragged || this.tweens.isTweening(food)) return
+      this.time.delayedCall(150 + i * 40, () => this.tray.fadeOutFood(food))
     })
 
     // Burp + confetti.
@@ -977,92 +807,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.time.delayedCall(650, () =>
       this.stage.friendGrownSequence(outcome === 'episode-complete', resume),
     )
-  }
-
-  private fadeOutFood(food: Phaser.GameObjects.Image): void {
-    if (!food.active) return
-    food.disableInteractive()
-    this.tweens.killTweensOf(food)
-    this.tweens.add({
-      targets: food,
-      y: food.y + this.px(50),
-      alpha: 0,
-      duration: 280,
-      ease: 'Quad.easeIn',
-      onComplete: () => {
-        this.foods = this.foods.filter((f) => f !== food)
-        food.destroy()
-      },
-    })
-  }
-
-  private returnToTray(img: Phaser.GameObjects.Image): void {
-    const slot = this.slotPos(img.getData('slot') as number)
-    const base = this.foodBaseScale(img)
-    img.disableInteractive()
-    this.arcTo(img, slot.x, slot.y, 450, () => {
-      img.setInteractive()
-      if (this.transitioning) this.fadeOutFood(img)
-    })
-    this.tweens.add({
-      targets: img,
-      scaleX: base,
-      scaleY: base,
-      duration: 350,
-      ease: 'Quad.easeOut',
-    })
-  }
-
-  /** Move along a little arc (never teleport), with a playful spin. */
-  private arcTo(
-    img: Phaser.GameObjects.Image,
-    toX: number,
-    toY: number,
-    duration: number,
-    onComplete: () => void,
-  ): void {
-    this.tweens.killTweensOf(img)
-    img.setDepth(20)
-    const fromX = img.x
-    const fromY = img.y
-    const peak = Math.min(fromY, toY) - this.px(110)
-    const state = { t: 0 }
-    this.tweens.add({
-      targets: state,
-      t: 1,
-      duration,
-      ease: 'Sine.easeInOut',
-      onUpdate: () => {
-        const t = state.t
-        const u = 1 - t
-        img.x = fromX + (toX - fromX) * t
-        img.y = u * u * fromY + 2 * u * t * peak + t * t * toY
-        img.rotation = t * Math.PI * 2
-      },
-      onComplete: () => {
-        if (!img.active) return
-        img.setRotation(0)
-        img.setDepth(5)
-        img.setPosition(toX, toY)
-        onComplete()
-      },
-    })
-  }
-
-  // ─── Reactions ───────────────────────────────────────────────────────────
-
-  private wiggle(obj: Phaser.GameObjects.Image): void {
-    if (obj === this.dragged || this.tweens.isTweening(obj)) return
-    const baseX = obj.x
-    this.tweens.add({
-      targets: obj,
-      x: baseX + this.px(6),
-      duration: 60,
-      yoyo: true,
-      repeat: 3,
-      ease: 'Sine.easeInOut',
-      onComplete: () => obj.setX(baseX),
-    })
   }
 
   // ─── Per-frame: pupils track the food / last touch ───────────────────────

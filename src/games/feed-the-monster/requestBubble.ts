@@ -9,7 +9,7 @@
  * Factored out of the scene so the bubble's build/draw/animate logic lives in
  * one widget. The scene constructs one (`new RequestBubble(this)`) and
  * delegates; the bubble holds its own display objects and reads live scene
- * state (round / episode / eaten / transitioning / dpr) plus `foodTexture`
+ * state (round / episode / eaten / transitioning / dpr) plus `tray.foodTexture`
  * back through the passed scene reference.
  */
 import Phaser from 'phaser'
@@ -144,7 +144,7 @@ export class RequestBubble {
       let context = false
       if (item.emoji !== undefined) {
         const fid = this.foodIdForEmoji(item.emoji)
-        pic = this.scene.add.image(x, 0, this.scene.foodTexture(fid))
+        pic = this.scene.add.image(x, 0, this.scene.tray.foodTexture(fid))
         const size = (isPattern ? tile * 0.78 : tile) * textures.foodScale(fid)
         pic.setDisplaySize(size, size)
         // Pattern's shown sequence = given context (reads as done, not a want).
@@ -347,7 +347,7 @@ export class RequestBubble {
     this.scene.tweens.killTweensOf(pic)
     const tile = this.px(BUBBLE_ITEM_CSS + 22)
     this.removeQ(pic)
-    pic.setTexture(this.scene.foodTexture(foodId))
+    pic.setTexture(this.scene.tray.foodTexture(foodId))
     pic.clearTint()
     pic.setAlpha(1)
     const size = tile * textures.foodScale(foodId)
@@ -370,7 +370,7 @@ export class RequestBubble {
     this.scene.tweens.killTweensOf(slot)
     const tile = this.px(BUBBLE_ITEM_CSS + 22)
     this.removeQ(slot)
-    slot.setTexture(this.scene.foodTexture(this.scene.round.request.answerId))
+    slot.setTexture(this.scene.tray.foodTexture(this.scene.round.request.answerId))
     slot.clearTint()
     slot.setAlpha(1)
     const size = tile * textures.foodScale(this.scene.round.request.answerId)

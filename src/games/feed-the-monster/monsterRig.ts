@@ -573,8 +573,8 @@ export class MonsterRig {
 
   update(): void {
     const pointer = this.scene.input.activePointer
-    const target: XY = this.scene.dragged
-      ? { x: this.scene.dragged.x, y: this.scene.dragged.y }
+    const target: XY = this.scene.tray.dragged
+      ? { x: this.scene.tray.dragged.x, y: this.scene.tray.dragged.y }
       : { x: pointer.worldX, y: pointer.worldY }
     const crossEyed = this.scene.time.now < this.scene.funnyUntil
     // Kept small so a big pupil never spills past the eye white, even when the
