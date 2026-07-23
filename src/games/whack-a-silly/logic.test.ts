@@ -8,7 +8,6 @@ import {
   ESCAPES_TO_EASE,
   GAP_FLOOR_MS,
   GAP_START_MS,
-  HOLE_COUNT,
   PHASE2_BOPS,
   PHASE2_TIME_MS,
   PHASE3_BOPS,
@@ -47,6 +46,10 @@ function mulberry32(seed: number): Rng {
 
 const SEEDS = Array.from({ length: 10 }, (_, i) => i + 1)
 
+/** Default board size the ctx helper assumes (the old fixed grid, for the
+ *  legacy hole-selection tests that predate variable boards). */
+const HOLES = 9
+
 /** Representative states pinned inside each phase. */
 const P1: RampState = { elapsedMs: 10_000, bops: 3 }
 const P2: RampState = { elapsedMs: 60_000, bops: 15 }
@@ -58,6 +61,7 @@ function ctx(ramp: RampState, overrides: Partial<SpawnContext> = {}): SpawnConte
   return {
     ramp,
     skill: 0,
+    holeCount: HOLES,
     occupiedHoles: [],
     activeCritterIds: [],
     sleeperActive: false,
@@ -311,7 +315,7 @@ describe('hole selection', () => {
           const plan = planSpawn(ctx(state, { lastHole }), rng)
           expect(plan.spawn.hole).not.toBe(lastHole)
           expect(plan.spawn.hole).toBeGreaterThanOrEqual(0)
-          expect(plan.spawn.hole).toBeLessThan(HOLE_COUNT)
+          expect(plan.spawn.hole).toBeLessThan(HOLES)
           lastHole = plan.spawn.hole
         }
       }
@@ -334,6 +338,19 @@ describe('hole selection', () => {
     for (let i = 0; i < 200; i++) {
       const plan = planSpawn(ctx(P4, { occupiedHoles: occupied, lastHole: 7 }), rng)
       expect(plan.spawn.hole).toBe(8)
+    }
+  })
+
+  it('never picks a hole beyond the episode board size (small board)', () => {
+    for (const holeCount of [4, 5, 6]) {
+      const rng = mulberry32(holeCount * 7)
+      let lastHole: number | null = null
+      for (let i = 0; i < 300; i++) {
+        const plan = planSpawn(ctx(P4, { holeCount, lastHole }), rng)
+        expect(plan.spawn.hole).toBeGreaterThanOrEqual(0)
+        expect(plan.spawn.hole).toBeLessThan(holeCount)
+        lastHole = plan.spawn.hole
+      }
     }
   })
 })

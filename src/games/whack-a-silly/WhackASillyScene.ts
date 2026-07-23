@@ -1,12 +1,10 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { reportLevel } from '../../shared/level'
-import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
+import { addStars, loadProgress, saveData, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
   CRITTERS,
-  GRID_SIZE,
-  HOLE_COUNT,
   WHACK_SKILL_MAX,
   WHACK_SKILL_START,
   bopVariantFor,
@@ -22,6 +20,17 @@ import {
   upTimeForSkill,
 } from './logic'
 import type { CritterSpawn, RampState, WhackSkill } from './logic'
+import {
+  MAX_HOLES,
+  MAX_SPATIAL,
+  MIN_HOLES,
+  SPATIAL_START,
+  advanceSpatial,
+  episodeLength,
+  generateBoard,
+  holeCountFor,
+} from './episode'
+import type { Spot } from './episode'
 import { buildCritterRig } from './critterRig'
 import type { CritterRig } from './critterRig'
 import type { WhackTestApi } from './testHook'
@@ -76,13 +85,40 @@ const DOWN_LOCAL = 132 // fully sunk inside the hole (also setVisible(false))
 const UP_LOCAL = 0 // sitting on the rim
 const PEEK_LOCAL = 26 // half-out, sideways peek
 
+// Depth bands. Holes no longer sit on rows, so each active hole earns a Y-sorted
+// depth block (nearer = lower on screen = drawn over farther ones). MAX_HOLES
+// blocks of 5 slots fit under DEPTH_FX; celebration FX, the butterfly and all
+// particle emitters ride above every hole.
+const HOLE_DEPTH_BASE = 10
+const HOLE_DEPTH_STEP = 8 // ≥5 (slots per hole) so adjacent blocks never interleave
+const DEPTH_FX = 84 // floating hearts / notes / Zzz / rings
+const DEPTH_BUTTERFLY = 88
+const DEPTH_PARTICLES = 100
+
+// Free-layout region: the band of the grass that hole CENTERS map into. Matches
+// (slightly exceeds) the extent the old 3×3 grid used, so the fixed mound size
+// still fits nine holes; the top band leaves critters room to rise into the sky.
+const REGION_TOP_FRAC = 0.14 // top hole centers, as a fraction into the grass band
+const REGION_BOTTOM_FRAC = 0.9 // bottom hole centers (grid used 0.84)
+// Footprint two holes must clear on one axis to not visually overlap. Width is
+// the mound plate (× moundScale); height is a fraction of the grass band — the
+// mounds deliberately stack a little (like a hillside), exactly as the shipping
+// grid does, so this is grass-relative, not the plate's full pixel height.
+const FOOTPRINT_W_CSS = 220 // back-plate width
+const FOOTPRINT_H_GRASS_FRAC = 0.3 // vertical stack spacing, fraction of grass band (the grid's proven step)
+const FOOTPRINT_GAP = 1.06 // a hair of air between neighbours
+/** Cap on normalized min-distance so a ≥3×3 lattice (=9 holes) always fits
+ *  (edge-aligned lattice fits floor(1/minDist)+1 per axis → ≥3 at 0.49). */
+const MIN_DIST_CAP = 0.49
+
 const { W: MOUND_W, holeRx: HOLE_RX } = MOUND_GEOM
 /** World Y offset (css) from the hole center to the back-plate image center. */
 const MOUND_OFFSET_Y = MOUND_GEOM.H / 2 - MOUND_GEOM.holeCy
 
 interface Hole {
   index: number
-  row: number
+  /** In this episode's board? Inactive holes are hidden + non-interactive. */
+  active: boolean
   /** World position of the hole opening's center. */
   x: number
   y: number
@@ -122,6 +158,24 @@ export default class WhackASillyScene extends Phaser.Scene {
   private whackSkill: WhackSkill = initialWhackSkill()
   private peakSkill = WHACK_SKILL_START
 
+  // ─── Board / spatial track (episode.ts) — the SECOND difficulty axis ────────
+  /** Adaptive spatial meter 0..MAX_SPATIAL → hole count (persisted skill.spatial). */
+  private spatial = SPATIAL_START
+  /** 0-based episode counter (persisted data.episode). */
+  private episode = 0
+  /** Holes on this episode's board (holeCountFor(spatial)). */
+  private holeCount = 0
+  /** This episode runs this many bops before the board re-rolls. */
+  private episodeLen = 0
+  /** Bops scored so far this episode (→ boundary at episodeLen). */
+  private bopsThisEpisode = 0
+  /** Go-critter escapes this episode — the spatial-track miss signal. */
+  private escapesThisEpisode = 0
+  /** Normalized (0..1) hole spots for the active holes; resize remaps, never re-rolls. */
+  private board: Spot[] = []
+  /** True while an episode-boundary transition (dance → re-layout) plays. */
+  private transitioning = false
+
   private bgGfx!: Phaser.GameObjects.Graphics
   private holes: Hole[] = []
   private sun!: Phaser.GameObjects.Image
@@ -146,11 +200,6 @@ export default class WhackASillyScene extends Phaser.Scene {
     return css * this.dpr
   }
 
-  /** Per-row depth band so front rows always draw over back rows (no masks). */
-  private band(row: number): number {
-    return 10 + row * 5
-  }
-
   /** Load the full-body critter sprites before create() builds the holes. */
   preload(): void {
     for (const critter of CRITTERS) {
@@ -173,6 +222,19 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.whackSkill = initialWhackSkill(startSkill)
     this.peakSkill = Math.max(saved.skill.motor ?? WHACK_SKILL_START, startSkill)
 
+    // Board / spatial track: resume the saved spatial meter one step down
+    // (gentle warm-up — one fewer hole for the first episode, recovered fast by
+    // the aggressive step formula), and resume the persisted episode counter.
+    const startSpatial = sessionStart(saved.skill.spatial ?? SPATIAL_START, {
+      max: MAX_SPATIAL,
+      warmupDrop: 1,
+      lastPlayedAt: saved.lastPlayedAt,
+    })
+    this.spatial = startSpatial
+    this.episode = Math.max(0, Math.floor(saved.data.episode ?? 0))
+    this.holeCount = holeCountFor(this.spatial)
+    this.episodeLen = episodeLength()
+
     this.makeTextures()
 
     this.bgGfx = this.add.graphics().setDepth(0)
@@ -180,6 +242,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.buildHoles()
     this.buildEmitters()
     this.wireBackgroundTaps()
+    this.regenerateBoard()
     this.layout()
     reportLevel(levelForBops(this.bops))
 
@@ -224,7 +287,13 @@ export default class WhackASillyScene extends Phaser.Scene {
         spared: this.spared,
         skill: this.whackSkill.skill,
         activeCritters: this.activeCritters,
-        holes: this.holes.map((h) => ({
+        // Board / spatial track (episode.ts).
+        episode: this.episode,
+        holeCount: this.holeCount,
+        spatial: this.spatial,
+        transitioning: this.transitioning,
+        // Only this episode's board — one entry per active hole.
+        holes: this.activeHoles().map((h) => ({
           state: h.state,
           critterVisible: h.rig.inner.visible,
           sleepy: h.spawn?.sleepy ?? false,
@@ -235,7 +304,9 @@ export default class WhackASillyScene extends Phaser.Scene {
       }),
       forceSpawn: (hole, opts) => {
         const h = this.holes[hole]
-        if (!h || h.state !== 'down') return false
+        // Only active (in-board) holes that are currently free, and never during
+        // an episode transition (the board is mid-reshuffle).
+        if (!h || !h.active || this.transitioning || h.state !== 'down') return false
         // Cancel the pending random wave so the forced critter is deterministic.
         this.spawnTimer?.remove(false)
         this.spawnTimer = null
@@ -248,6 +319,20 @@ export default class WhackASillyScene extends Phaser.Scene {
         }
         this.popCritter(h, spawn, upTimeForSkill(this.whackSkill.skill))
         return true
+      },
+      setBoard: (holeCount) => {
+        const n = Math.min(MAX_HOLES, Math.max(MIN_HOLES, Math.floor(holeCount)))
+        this.spawnTimer?.remove(false)
+        this.spawnTimer = null
+        this.resetAllCritters()
+        this.holeCount = n
+        this.regenerateBoard()
+        this.layout()
+        this.bopsThisEpisode = 0
+        this.escapesThisEpisode = 0
+        this.lastHole = null
+        this.scheduleNext(400)
+        return n
       },
     }
     this.testApi = api
@@ -267,6 +352,12 @@ export default class WhackASillyScene extends Phaser.Scene {
     const h = vp.height * this.dpr
     if (w === this.scale.width && h === this.scale.height) return
     this.scale.resize(w, h)
+    // Mid-transition, the transition owns the critters + resume — just re-map the
+    // board to the new size (it stays normalized, so the arrangement is kept).
+    if (this.transitioning) {
+      this.layout()
+      return
+    }
     this.resetAllCritters()
     this.layout()
     this.scheduleNext(600)
@@ -415,7 +506,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     }
 
     // Butterfly drifts around the sky; tapping it makes it dart away.
-    this.butterfly = this.add.image(0, 0, 'was-butterfly').setDepth(30)
+    this.butterfly = this.add.image(0, 0, 'was-butterfly').setDepth(DEPTH_BUTTERFLY)
     this.butterfly.setInteractive(
       new Phaser.Geom.Circle(
         this.textures.getFrame('was-butterfly').width / 2,
@@ -434,9 +525,11 @@ export default class WhackASillyScene extends Phaser.Scene {
 
   private buildHoles(): void {
     const px = (css: number) => this.px(css)
-    for (let i = 0; i < HOLE_COUNT; i++) {
-      const row = Math.floor(i / GRID_SIZE)
-      const band = this.band(row)
+    // Build the full pool once (MAX_HOLES); each episode activates the first
+    // `holeCount` and parks the rest. Placeholder depth here — applyDepth()
+    // re-bands the active holes by Y in layout().
+    for (let i = 0; i < MAX_HOLES; i++) {
+      const band = HOLE_DEPTH_BASE + i * HOLE_DEPTH_STEP
 
       // Back plate (dark interior) — behind the critter.
       const moundBack = this.add.image(0, 0, 'was-mound-back').setDepth(band)
@@ -470,7 +563,7 @@ export default class WhackASillyScene extends Phaser.Scene {
 
       const hole: Hole = {
         index: i,
-        row,
+        active: false,
         x: 0,
         y: 0,
         moundBack,
@@ -489,6 +582,11 @@ export default class WhackASillyScene extends Phaser.Scene {
       rig.head.on('pointerdown', () => this.onCritterTap(hole))
       this.holes.push(hole)
     }
+  }
+
+  /** The active holes (this episode's board), the pool's first `holeCount`. */
+  private activeHoles(): Hole[] {
+    return this.holes.filter((h) => h.active)
   }
 
   private buildEmitters(): void {
@@ -539,7 +637,7 @@ export default class WhackASillyScene extends Phaser.Scene {
       emitting: false,
     })
     for (const emitter of [this.confetti, this.stars, this.sparkles, this.poofs, this.dirt]) {
-      emitter.setDepth(50)
+      emitter.setDepth(DEPTH_PARTICLES)
     }
   }
 
@@ -557,6 +655,53 @@ export default class WhackASillyScene extends Phaser.Scene {
 
   // ─── Layout (RESIZE-safe for portrait + landscape) ───────────────────────
 
+  /** The fixed mound scale (the old 3×3 size), never below the ~110css touch
+   *  floor — constant across episodes so the child's touch target never moves. */
+  private computeMoundScale(): void {
+    const w = this.scale.width
+    const grassH = this.scale.height * 0.6
+    const target = Math.min(w * 0.28, grassH * 0.44, this.px(250))
+    this.moundScale = Math.max(target / this.px(MOUND_W), 110 / (HOLE_RX * 2))
+  }
+
+  /** Safe region (world px) hole centers map into, + the per-axis normalized
+   *  min-distance the footprints demand. Derived from the current scale, so it
+   *  tracks resizes; the board itself stays normalized and just re-maps. */
+  private layoutMetrics(): {
+    x0: number
+    y0: number
+    rw: number
+    rh: number
+    minDistX: number
+    minDistY: number
+  } {
+    const w = this.scale.width
+    const h = this.scale.height
+    const skyH = h * 0.4
+    const grassH = h - skyH
+    const s = this.moundScale
+
+    const sidePad = this.px(MOUND_W / 2) * s // keep the mound on-screen
+    const x0 = sidePad
+    const rw = Math.max(1, w - 2 * sidePad)
+    const y0 = skyH + grassH * REGION_TOP_FRAC
+    const rh = Math.max(1, grassH * (REGION_BOTTOM_FRAC - REGION_TOP_FRAC))
+
+    const footW = this.px(FOOTPRINT_W_CSS) * s * FOOTPRINT_GAP
+    const footH = grassH * FOOTPRINT_H_GRASS_FRAC * FOOTPRINT_GAP
+    const minDistX = Math.min(MIN_DIST_CAP, footW / rw)
+    const minDistY = Math.min(MIN_DIST_CAP, footH / rh)
+    return { x0, y0, rw, rh, minDistX, minDistY }
+  }
+
+  /** Re-roll this episode's board: `holeCount` non-overlapping normalized spots
+   *  for the fixed mound size. Called on episode change (and once at create). */
+  private regenerateBoard(): void {
+    this.computeMoundScale()
+    const { minDistX, minDistY } = this.layoutMetrics()
+    this.board = generateBoard(this.holeCount, { minDistX, minDistY })
+  }
+
   private layout(): void {
     const w = this.scale.width
     const h = this.scale.height
@@ -565,27 +710,21 @@ export default class WhackASillyScene extends Phaser.Scene {
 
     this.drawBackground(w, skyH, grassH)
 
-    // Mound scale: fit 3 columns/rows with generous spacing, but never let the
-    // hole opening shrink below ~110 css px (touch-target floor).
-    const target = Math.min(w * 0.28, grassH * 0.44, this.px(250))
-    this.moundScale = Math.max(target / this.px(MOUND_W), 110 / (HOLE_RX * 2))
-    const s = this.moundScale
+    this.computeMoundScale()
+    const { x0, y0, rw, rh } = this.layoutMetrics()
 
-    const cols = [0.2, 0.5, 0.8]
-    const rows = [0.24, 0.54, 0.84]
-    for (const hole of this.holes) {
-      const cx = w * cols[hole.index % GRID_SIZE]
-      const cy = skyH + grassH * rows[Math.floor(hole.index / GRID_SIZE)]
-      hole.x = cx
-      hole.y = cy
-
-      hole.moundBack.setPosition(cx, cy + this.px(MOUND_OFFSET_Y) * s).setScale(s)
-      hole.lip.setPosition(cx, cy).setScale(s)
-      hole.rig.outer.setPosition(cx, cy).setScale(s)
-      hole.shadow.setPosition(cx, cy + this.px(6) * s).setScale(s)
-      this.drawSkirt(hole, skyH, h)
+    // Activate the first `holeCount` holes at the board's spots; park the rest.
+    this.holes.forEach((hole, i) => {
+      hole.active = i < this.holeCount && i < this.board.length
+      if (!hole.active) {
+        this.hideHole(hole)
+        return
+      }
+      const spot = this.board[i]
+      this.positionHole(hole, x0 + spot.x * rw, y0 + spot.y * rh, skyH, h)
       if (hole.state === 'down') this.parkDown(hole)
-    }
+    })
+    this.applyDepth()
 
     // Top-right: the GameFrame home button lives top-left.
     this.sun.setPosition(w - this.px(64), this.px(64))
@@ -619,6 +758,45 @@ export default class WhackASillyScene extends Phaser.Scene {
       Phaser.Math.Clamp(this.butterfly.x, this.px(30), w - this.px(30)),
       Phaser.Math.Clamp(this.butterfly.y, this.px(30), skyH),
     )
+  }
+
+  /** Place one hole's mound/rig/skirt/lip at a world center. */
+  private positionHole(hole: Hole, cx: number, cy: number, skyH: number, h: number): void {
+    const s = this.moundScale
+    hole.x = cx
+    hole.y = cy
+    hole.moundBack.setPosition(cx, cy + this.px(MOUND_OFFSET_Y) * s).setScale(s)
+    hole.lip.setPosition(cx, cy).setScale(s)
+    hole.rig.outer.setPosition(cx, cy).setScale(s)
+    hole.shadow.setPosition(cx, cy + this.px(6) * s).setScale(s)
+    hole.moundBack.setVisible(true).setAlpha(1)
+    hole.lip.setVisible(true).setAlpha(1)
+    hole.skirt.setVisible(true).setAlpha(1)
+    this.drawSkirt(hole, skyH, h)
+  }
+
+  /** Hide a hole not in this episode's board (parked + non-interactive). */
+  private hideHole(hole: Hole): void {
+    hole.moundBack.setVisible(false)
+    hole.lip.setVisible(false)
+    hole.skirt.setVisible(false)
+    hole.shadow.setVisible(false)
+    hole.rig.head.disableInteractive()
+    this.parkDown(hole)
+  }
+
+  /** Re-band the active holes by Y so nearer (lower) holes draw over farther
+   *  ones — replaces the old fixed per-row bands now that placement is free. */
+  private applyDepth(): void {
+    const ordered = this.activeHoles().sort((a, b) => a.y - b.y)
+    ordered.forEach((hole, order) => {
+      const band = HOLE_DEPTH_BASE + order * HOLE_DEPTH_STEP
+      hole.moundBack.setDepth(band)
+      hole.shadow.setDepth(band + 1)
+      hole.rig.outer.setDepth(band + 2)
+      hole.skirt.setDepth(band + 3)
+      hole.lip.setDepth(band + 4)
+    })
   }
 
   /** Sky + sun glow + horizon hills + grass + horizon shading (all depth 0). */
@@ -695,11 +873,14 @@ export default class WhackASillyScene extends Phaser.Scene {
   }
 
   private spawnWave(): void {
-    const occupied = this.holes.filter((h) => h.state !== 'down')
+    if (this.transitioning) return
+    // Active holes are this episode's board — the pool's first `holeCount`.
+    const occupied = this.activeHoles().filter((h) => h.state !== 'down')
     const plan = planSpawn(
       {
         ramp: this.rampState(),
         skill: this.whackSkill.skill,
+        holeCount: this.holeCount,
         occupiedHoles: occupied.map((h) => h.index),
         activeCritterIds: occupied.flatMap((h) => (h.spawn ? [h.spawn.critterId] : [])),
         sleeperActive: occupied.some((h) => h.spawn?.sleepy),
@@ -841,7 +1022,7 @@ export default class WhackASillyScene extends Phaser.Scene {
       hole,
       this.add
         .image(hole.x + this.px(26) * s, hole.y - this.px(66) * s, 'was-zzz')
-        .setDepth(40)
+        .setDepth(DEPTH_FX)
         .setScale(0.45 * s)
         .setAlpha(0.9),
     )
@@ -857,9 +1038,11 @@ export default class WhackASillyScene extends Phaser.Scene {
     })
   }
 
-  /** A critter is done (bopped, spared, or expired) — top the garden up. */
+  /** A critter is done (bopped, spared, or expired) — top the garden up (unless
+   *  an episode transition is mid-flight; it will resume spawning itself). */
   private onCritterGone(): void {
     this.activeCritters = Math.max(this.activeCritters - 1, 0)
+    if (this.transitioning) return
     if (this.activeCritters < concurrentFor(this.whackSkill.skill)) {
       this.scheduleNext(gapForSkill(this.whackSkill.skill))
     }
@@ -954,6 +1137,8 @@ export default class WhackASillyScene extends Phaser.Scene {
   // ─── Reactions ───────────────────────────────────────────────────────────
 
   private onCritterTap(hole: Hole): void {
+    // Ignore taps on the dancing critters during an episode transition.
+    if (this.transitioning) return
     if (hole.state !== 'rising' && hole.state !== 'up') return
     // Tapping a sleeper is NOT a bop — it just wakes it grumpily (no score, no
     // punishment). Only go critters count.
@@ -1000,6 +1185,11 @@ export default class WhackASillyScene extends Phaser.Scene {
     if (golden) this.goldenCelebration(hole)
     else if (isConfettiBop(this.bops)) this.miniCelebration(hole)
     this.onCritterGone()
+
+    // Board / spatial track: a bop is a star; every episodeLen stars re-roll the
+    // board (new hole count + fresh non-grid arrangement).
+    this.bopsThisEpisode++
+    if (this.bopsThisEpisode >= this.episodeLen) this.beginEpisodeTransition()
   }
 
   /** Route to one of the three bop celebrations (guarded on the hole state). */
@@ -1094,7 +1284,7 @@ export default class WhackASillyScene extends Phaser.Scene {
           hole,
           this.add
             .image(hole.x + Phaser.Math.Between(-22, 22) * s, hole.y - this.px(20) * s, key)
-            .setDepth(40)
+            .setDepth(DEPTH_FX)
             .setScale(0.5),
         )
         this.tweens.add({
@@ -1123,7 +1313,7 @@ export default class WhackASillyScene extends Phaser.Scene {
           hole,
           this.add
             .image(hole.x, hole.y - this.px(18) * s, 'was-ring')
-            .setDepth(40)
+            .setDepth(DEPTH_FX)
             .setScale(0.3 * s)
             .setAlpha(0.9)
             .setTint(tints[i]),
@@ -1201,9 +1391,11 @@ export default class WhackASillyScene extends Phaser.Scene {
         onComplete: () => this.descend(hole, 200),
       })
     } else {
-      // A go critter got away — the motor-axis miss signal (never punished
-      // visibly; repeat escapes just slow the garden back down).
+      // A go critter got away — the miss signal for BOTH tracks: it slows the
+      // motor garden back down (registerEscape) and, tallied per episode, eases
+      // the spatial board (fewer holes next episode). Never punished visibly.
       this.applySkill(registerEscape(this.whackSkill))
+      this.escapesThisEpisode++
       this.descend(hole, 220)
     }
     this.onCritterGone()
@@ -1226,6 +1418,154 @@ export default class WhackASillyScene extends Phaser.Scene {
     FANFARE.forEach((freq, i) =>
       this.time.delayedCall(i * 110, () => playTone(freq, 160, 'triangle', 0.1)),
     )
+  }
+
+  // ─── Episode transition (the board / spatial track's visible beat) ─────────
+
+  /**
+   * Episode boundary reached (episodeLen bops). The SPATIAL meter advances from
+   * this episode's escapes, then the board re-rolls: a short all-holes dance →
+   * critters duck → old mounds sink → the new (bigger/fewer) arrangement pops
+   * in. Spawning is paused for the whole beat, then resumes on the fresh board.
+   */
+  private beginEpisodeTransition(): void {
+    if (this.transitioning) return
+    this.transitioning = true
+    this.spawnTimer?.remove(false)
+    this.spawnTimer = null
+
+    // Two parallel tracks meet here: the escapes counted this episode ease/climb
+    // the spatial meter (→ next episode's hole count); persist both meters + the
+    // episode counter so the progression is genuinely long-term.
+    this.spatial = advanceSpatial(this.spatial, this.escapesThisEpisode)
+    this.episode++
+    saveSkill(GAME_ID, { spatial: this.spatial })
+    saveData(GAME_ID, { episode: this.episode })
+
+    // Let the triggering bop's celebration read, then dance.
+    this.time.delayedCall(650, () => this.episodeDance())
+  }
+
+  /** Every hole pops a happy critter for a synchronized little dance. */
+  private episodeDance(): void {
+    this.resetAllCritters() // clean slate — kill any in-flight critters/timers
+    ARPEGGIO.forEach((f, i) =>
+      this.time.delayedCall(i * 100, () => playTone(f, 180, 'triangle', 0.07)),
+    )
+    for (const hole of this.activeHoles()) this.danceCritter(hole)
+    this.time.delayedCall(950, () => this.duckThenReshape())
+  }
+
+  /** One dancing critter: springs up, then a cheerful head-wiggle (no scoring). */
+  private danceCritter(hole: Hole): void {
+    const critter = CRITTERS[hole.index % CRITTERS.length]
+    hole.spawn = {
+      hole: hole.index,
+      critterId: critter.id,
+      sleepy: false,
+      golden: false,
+      peek: false,
+    }
+    hole.state = 'up'
+    hole.rig.head.disableInteractive() // taps ignored (transitioning) — belt + braces
+    hole.rig.applySpawn(hole.spawn)
+    const inner = hole.rig.inner
+    inner.setPosition(0, this.px(DOWN_LOCAL)).setScale(1).setAlpha(1).setAngle(0).setVisible(true)
+    this.tweens.add({
+      targets: inner,
+      y: this.px(UP_LOCAL),
+      duration: 260,
+      ease: 'Back.easeOut',
+      onComplete: () => {
+        this.tweens.add({
+          targets: inner,
+          angle: { from: -11, to: 11 },
+          duration: 170,
+          yoyo: true,
+          repeat: 2,
+          ease: 'Sine.easeInOut',
+          onComplete: () => inner.setAngle(0),
+        })
+      },
+    })
+  }
+
+  /** Dancers duck back in, then the old mounds sink away. */
+  private duckThenReshape(): void {
+    for (const hole of this.activeHoles()) {
+      this.tweens.killTweensOf(hole.rig.inner)
+      this.tweens.add({
+        targets: hole.rig.inner,
+        y: this.px(DOWN_LOCAL),
+        duration: 240,
+        ease: 'Quad.easeIn',
+      })
+    }
+    this.time.delayedCall(300, () => this.sinkMoundsThenReshape())
+  }
+
+  /** Old mounds poof + shrink away, then the new board is built + revealed. */
+  private sinkMoundsThenReshape(): void {
+    const s = this.moundScale
+    for (const hole of this.activeHoles()) {
+      this.parkDown(hole)
+      this.poofs.explode(6, hole.x, hole.y)
+      this.tweens.add({
+        targets: [hole.moundBack, hole.lip],
+        scaleX: s * 0.3,
+        scaleY: s * 0.3,
+        alpha: 0,
+        duration: 240,
+        ease: 'Back.easeIn',
+      })
+      this.tweens.add({ targets: hole.skirt, alpha: 0, duration: 220 })
+    }
+    playTone(196, 220, 'sine', 0.05)
+    this.time.delayedCall(280, () => {
+      // Clear the dancers' stale up/spawn state before re-laying the board, or
+      // the fresh holes would count as occupied and never get critters.
+      this.resetAllCritters()
+      this.holeCount = holeCountFor(this.spatial)
+      this.episodeLen = episodeLength()
+      this.regenerateBoard()
+      this.layout() // positions active holes at full; revealBoard re-hides + pops
+      this.revealBoard()
+    })
+  }
+
+  /** New arrangement grows in with a lively per-hole stagger, then play resumes. */
+  private revealBoard(): void {
+    const s = this.moundScale
+    const active = this.activeHoles()
+    active.forEach((hole, i) => {
+      // Hidden + small first (applied before the next render — no full-size flash).
+      hole.moundBack.setAlpha(0).setScale(s * 0.3)
+      hole.lip.setAlpha(0).setScale(s * 0.3)
+      hole.skirt.setAlpha(0)
+      const timer = this.time.delayedCall(i * 80, () => {
+        this.dropFxTimer(hole, timer)
+        playTone(523 * Math.pow(2, i / 12), 90, 'sine', 0.05)
+        this.poofs.explode(5, hole.x, hole.y)
+        this.tweens.add({
+          targets: [hole.moundBack, hole.lip],
+          scaleX: s,
+          scaleY: s,
+          alpha: 1,
+          duration: 300,
+          ease: 'Back.easeOut',
+        })
+        this.tweens.add({ targets: hole.skirt, alpha: 1, duration: 280 })
+      })
+      hole.fxTimers.push(timer)
+    })
+    const total = active.length * 80 + 340
+    this.time.delayedCall(total, () => {
+      this.transitioning = false
+      this.bopsThisEpisode = 0
+      this.escapesThisEpisode = 0
+      this.lastHole = null
+      this.scheduleNext(500)
+    })
   }
 
   // ─── Butterfly ───────────────────────────────────────────────────────────
