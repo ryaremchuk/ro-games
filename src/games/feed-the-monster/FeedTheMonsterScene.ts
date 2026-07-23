@@ -4,14 +4,10 @@ import { initLevel, reportLevel } from '../../shared/level'
 import { addStars, loadProgress, saveData, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, safeAreaInset, viewportSize } from '../../shared/viewport'
 import {
-  ALL_FOODS,
-  COLOR_HEX,
   SKILL_MAX,
   SKILL_START,
   TRAY_SIZE,
-  bubbleItems,
   generateRound,
-  grayedBubbleItems,
   isRoundComplete,
   levelForRound,
   requestTotal,
@@ -38,6 +34,7 @@ import type { FeedTestApi } from './testHook'
 import * as layout from './layout'
 import type { LayoutMetrics, XY } from './layout'
 import * as textures from './textures'
+import { RequestBubble } from './requestBubble'
 
 /** Registry id — also the key the shared progress store files this under. */
 const GAME_ID = 'feed-the-monster'
@@ -51,31 +48,27 @@ const CONFETTI_TINTS = [0xff6b6b, 0xffd93d, 0x6bcb77, 0x4d96ff, 0xff8fab, 0x9b5d
 const PENTA = [523, 587, 659, 784, 880]
 
 const FOOD_CSS = 64 // emoji strike stays crisp at ≤80 css px
-const BUBBLE_ITEM_CSS = 44
-
-// A "want" tile sits ghosted until it is fed, then solidifies + gets a ✓.
-const GHOST_ALPHA = 0.5
-// Neutral tints for the tiles that are NOT asking for a colour — kept warm-grey
-// (never a food colour) so a 3-4yo never reads them as "feed something purple".
-const SLOT_GREY = 0xd6d3ce // pattern answer socket — a "?" hole
-const DOTS_BACKING = 0xebe7e0 // subitizing frame behind the ink pips
 
 // Responsive tray/hero/panel geometry now lives in ./layout (pure, unit-tested);
 // the scene builds a LayoutMetrics snapshot (see `metrics()`) and delegates.
 // Procedural texture generation lives in ./textures (see `buildSceneTextures`).
 
 export default class FeedTheMonsterScene extends Phaser.Scene {
-  private dpr = 1
+  /** @internal Exposed for RequestBubble's px + reads; not part of the shell API. */
+  dpr = 1
   private bodyR = 0
   private growth = 1
   /** Cached iOS safe-area inset (CSS px), refreshed on create + every resize. */
   private safeInsetBottom = 0
 
   private roundNumber = 0
-  private round: Round | null = null
-  private eaten: string[] = []
+  /** @internal Exposed for RequestBubble (drawPanel/fillPatternSlot/updateBubbleGray). */
+  round: Round | null = null
+  /** @internal Exposed for RequestBubble (lightPips/fillNotSlot/updateBubbleGray). */
+  eaten: string[] = []
   private previousRequest?: FoodRequest
-  private transitioning = false
+  /** @internal Exposed for RequestBubble (drawPanel/hopBubblePic/punchPatternRing). */
+  transitioning = false
   private sneezing = false
   private funnyUntil = 0
 
@@ -88,7 +81,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   // The visible long-term journey: growing friends, episodes (journey.ts).
   private journey: JourneyState = { episode: 0, friendsFed: 0, growthStep: 0 }
-  private episode!: Episode
+  /** @internal Exposed for RequestBubble (panel border tint + splash tint reads). */
+  episode!: Episode
   private minis: Phaser.GameObjects.Container[] = []
 
   private bgGfx!: Phaser.GameObjects.Graphics
@@ -153,16 +147,12 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     eye: Phaser.GameObjects.Container
   }> = []
 
-  private bubble!: Phaser.GameObjects.Container
-  private panelGfx!: Phaser.GameObjects.Graphics
-  private panelHit: Phaser.GameObjects.Rectangle | null = null
-  private bubblePics: Phaser.GameObjects.Image[] = []
-  /** Extra bubble decorations (dot pips, ban overlay) cleared per request. */
-  private bubbleExtras: Phaser.GameObjects.GameObject[] = []
-  /** Dot pips of a dots round, lit one-by-one as the child feeds. */
-  private pips: Phaser.GameObjects.Arc[] = []
-  /** Accent ring around the pattern's answer socket (cleared per request). */
-  private patternRing: Phaser.GameObjects.Arc | null = null
+  /**
+   * The task-request bubble (top panel + tiles/pips/sockets/bans/ring/✓ + the
+   * audio cue). Owns its own display objects; reads live scene state through
+   * the passed `this`. See ./requestBubble.
+   */
+  private readonly bubbleUi = new RequestBubble(this)
 
   private plates: Phaser.GameObjects.Image[] = []
   private foods: Phaser.GameObjects.Image[] = []
@@ -232,7 +222,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.bgImage = this.add.image(0, 0, '__DEFAULT').setDepth(0).setVisible(false)
     this.buildMonster()
     this.buildPlates()
-    this.buildBubble()
+    this.bubbleUi.build()
     this.buildEmitters()
     this.wireInput()
 
@@ -288,7 +278,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
           yCss: f.y / this.dpr,
         })),
         mouth: { xCss: this.mouthWorld().x / this.dpr, yCss: this.mouthWorld().y / this.dpr },
-        bubbleTiles: this.bubblePics.length,
+        bubbleTiles: this.bubbleUi.tileCount,
         journey: { ...this.journey },
         episodeId: this.episode.id,
         growthScale: this.monster.scaleX,
@@ -395,7 +385,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.spitBacks = 0
     this.roundStartAt = this.time.now
     this.buildTray(round.tray)
-    this.showRequest(round.request)
+    this.bubbleUi.showRequest(round.request)
   }
 
   /** Is `?<name>` present in the URL (top-level search or the hash query)? */
@@ -424,8 +414,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     return friendColor(this.journey.episode, this.journey.friendsFed)
   }
 
-  /** Texture for a food: reskin sprite when shipped, emoji strike otherwise. */
-  private foodTexture(foodId: string): string {
+  /**
+   * Texture for a food: reskin sprite when shipped, emoji strike otherwise.
+   * @internal Exposed for RequestBubble (tile/slot fills).
+   */
+  foodTexture(foodId: string): string {
     return this.hasArt(`food-${foodId}`) ? artKey(`food-${foodId}`) : `ftm-food-${foodId}`
   }
 
@@ -992,48 +985,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     plate.setData('baseSY', plate.scaleY)
   }
 
-  private buildBubble(): void {
-    this.bubble = this.add.container(0, 0).setDepth(6)
-    this.panelGfx = this.add.graphics()
-    this.bubble.add(this.panelGfx)
-    this.drawPanel(this.px(220))
-    this.bubble.setScale(0)
-  }
-
-  /**
-   * (Re)draw the task panel plate at the given width and rebuild its tap
-   * target (tapping the panel repeats the request cue). Drawing per request
-   * keeps rounded corners crisp at any width; the border is tinted by the
-   * episode palette so the panel changes with the world.
-   */
-  private drawPanel(width: number): void {
-    const bh = this.px(layout.PANEL_H_CSS)
-    const radius = this.px(26)
-    this.panelGfx.clear()
-    this.panelGfx.fillStyle(0xffffff, 0.96)
-    this.panelGfx.fillRoundedRect(-width / 2, -bh / 2, width, bh, radius)
-    this.panelGfx.lineStyle(this.px(5), this.episode.palette.table, 1)
-    this.panelGfx.strokeRoundedRect(-width / 2, -bh / 2, width, bh, radius)
-
-    this.panelHit?.destroy()
-    this.panelHit = this.add.rectangle(0, 0, width, bh, 0xffffff, 0)
-    this.bubble.addAt(this.panelHit, 1) // above the plate, below the tiles
-    this.panelHit.setInteractive()
-    this.panelHit.on('pointerdown', () => {
-      // Not during transitions: a mid-celebration replay would hop tiles
-      // that the completion bow is already animating.
-      if (this.round && !this.transitioning) this.playRequestCue(this.round.request)
-      this.tweens.killTweensOf(this.bubble)
-      this.tweens.add({
-        targets: this.bubble,
-        scaleX: { from: 0.94, to: 1 },
-        scaleY: { from: 0.94, to: 1 },
-        duration: 240,
-        ease: 'Back.easeOut',
-      })
-    })
-  }
-
   private buildEmitters(): void {
     this.confetti = this.add.particles(0, 0, 'ftm-confetti', {
       speed: { min: this.px(200), max: this.px(400) },
@@ -1219,7 +1170,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
     const mp = this.monsterPos()
     this.monster.setPosition(mp.x, mp.y)
-    this.positionBubble()
+    this.bubbleUi.reposition()
 
     this.minis.forEach((mini, i) => {
       this.tweens.killTweensOf(mini)
@@ -1247,11 +1198,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       food.setPosition(slot.x, slot.y)
       food.setScale(this.foodBaseScale(food))
     }
-  }
-
-  /** The task panel owns the top of the screen, detached from the friend. */
-  private positionBubble(): void {
-    this.bubble.setPosition(this.scale.width / 2, this.px(layout.PANEL_CENTER_Y_CSS))
   }
 
   // ─── Mouth helpers ───────────────────────────────────────────────────────
@@ -1374,8 +1320,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     if (this.recentKinds.length > 6) this.recentKinds.shift()
     this.roundStartAt = this.time.now
     this.buildTray(round.tray)
-    this.showRequest(round.request)
-    this.time.delayedCall(450, () => this.playRequestCue(round.request))
+    this.bubbleUi.showRequest(round.request)
+    this.time.delayedCall(450, () => this.bubbleUi.playRequestCue(round.request))
   }
 
   private buildTray(tray: string[]): void {
@@ -1440,404 +1386,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
   }
 
-  private showRequest(request: FoodRequest): void {
-    for (const pic of this.bubblePics) {
-      this.tweens.killTweensOf(pic)
-      pic.destroy()
-    }
-    this.bubblePics = []
-    for (const extra of this.bubbleExtras) extra.destroy()
-    this.bubbleExtras = []
-    this.pips = []
-    this.patternRing = null
-
-    // Pattern rounds ask for exactly ONE food (the sequence's continuation),
-    // yet their tiles used to look identical to a "feed all of these" combo —
-    // the reported early-win confusion. The sequence is drawn as smaller
-    // context tiles; the ringed pulsing socket is the only "want". Pattern
-    // spacing is wider so the ring never overlaps the last context tile.
-    const isPattern = request.kind === 'pattern'
-    // Only these kinds run the ghost→solid+✓ "want" flow (updateBubbleGray).
-    // dots progress is carried by lit pips, not/pattern by socket fills — their
-    // tiles must NOT ghost (e.g. the dots round's food label stays solid).
-    const ghostKind = request.kind === 'count' || request.kind === 'color' || request.kind === 'mix'
-    const items = bubbleItems(request)
-    const itemW = this.px(BUBBLE_ITEM_CSS + (isPattern ? 18 : 10))
-    const bw = items.length * itemW + this.px(52)
-    this.drawPanel(bw)
-
-    const tile = this.px(BUBBLE_ITEM_CSS + 22)
-    items.forEach((item, i) => {
-      const x = (i - (items.length - 1) / 2) * itemW
-      let pic: Phaser.GameObjects.Image
-      // A "want" tile ghosts until it is fed; a "?" marks a you-pick slot; a
-      // pattern context tile is drawn already-done (✓ stamped below).
-      let ghost = false
-      let qSize = 0
-      let context = false
-      if (item.emoji !== undefined) {
-        const fid = this.foodIdForEmoji(item.emoji)
-        pic = this.add.image(x, 0, this.foodTexture(fid))
-        const size = (isPattern ? tile * 0.78 : tile) * textures.foodScale(fid)
-        pic.setDisplaySize(size, size)
-        // Pattern's shown sequence = given context (reads as done, not a want).
-        // A banned food (not-round) stays solid under its ✗. Everything else is
-        // a want that ghosts until fed.
-        if (isPattern) context = true
-        else if (ghostKind && !item.banned) ghost = true
-      } else if (item.color !== undefined) {
-        pic = this.add.image(x, 0, 'ftm-splash').setTint(COLOR_HEX[item.color])
-        pic.setDisplaySize(tile, tile)
-        // A banned colour stays solid under its ✗. A colour request is a
-        // you-pick slot: keep the hue readable (full tint, semi-transparent)
-        // and mark it "any food of this colour" with a ?.
-        if (ghostKind && !item.banned) {
-          ghost = true
-          qSize = tile * 0.5
-        }
-      } else if (item.dots !== undefined) {
-        // Subitizing tile: NEUTRAL backing (never a food colour) + ink pips.
-        // Progress is the pips lighting up — no ghost, no ✓.
-        pic = this.add.image(x, 0, 'ftm-splash').setTint(DOTS_BACKING)
-        pic.setDisplaySize(tile * 1.1, tile * 1.1)
-        this.addPips(x, item.dots)
-      } else if (isPattern) {
-        // The pattern's answer socket — THE ask of the round: a neutral grey
-        // "?" hole (never a food colour) with a pulsing ring.
-        pic = this.add.image(x, 0, 'ftm-splash').setTint(SLOT_GREY)
-        pic.setDisplaySize(tile * 0.9, tile * 0.9)
-        const ring = this.add.circle(x, 0, tile * 0.5, 0x000000, 0)
-        ring.setStrokeStyle(this.px(4), this.episode.palette.table, 1)
-        this.bubble.add(ring)
-        this.bubbleExtras.push(ring)
-        this.patternRing = ring
-        qSize = tile * 0.5
-        this.pulse(pic)
-      } else {
-        // Not-round progress socket — "a food goes here, you pick": the same
-        // neutral grey "?" hole as the pattern answer, pulsing until filled.
-        // Deliberately makes NO colour claim — the crossed-out tile is the only
-        // constraint, so there's no misleading "any colour" wheel (which also
-        // showed the banned colour inside a "not that colour" task).
-        pic = this.add.image(x, 0, 'ftm-splash').setTint(SLOT_GREY).setAlpha(0.9)
-        pic.setDisplaySize(tile * 0.82, tile * 0.82)
-        qSize = tile * 0.45
-        this.pulse(pic)
-      }
-      if (ghost) pic.setAlpha(GHOST_ALPHA)
-      if (item.banned) {
-        const ban = this.add.image(x, 0, 'ftm-ban')
-        ban.setDisplaySize(tile * 1.15, tile * 1.15)
-        this.bubble.add(ban)
-        this.bubbleExtras.push(ban)
-      }
-      this.bubble.add(pic)
-      this.bubblePics.push(pic)
-      if (qSize > 0) this.addQ(pic, qSize)
-      if (context) this.stampCheck(pic)
-    })
-    // Overlays (bans, ?, ✓, pips, rings) must render above their tile.
-    for (const extra of this.bubbleExtras) this.bubble.bringToTop(extra)
-
-    this.tweens.killTweensOf(this.bubble)
-    this.bubble.setScale(0)
-    this.tweens.add({
-      targets: this.bubble,
-      scaleX: 1,
-      scaleY: 1,
-      duration: 320,
-      ease: 'Back.easeOut',
-    })
-  }
-
-  /** Domino-style pip offsets (in pip-spacing units) for 1..6. */
-  private static readonly PIP_LAYOUTS: ReadonlyArray<ReadonlyArray<[number, number]>> = [
-    [[0, 0]],
-    [
-      [-1, -1],
-      [1, 1],
-    ],
-    [
-      [-1, -1],
-      [0, 0],
-      [1, 1],
-    ],
-    [
-      [-1, -1],
-      [1, -1],
-      [-1, 1],
-      [1, 1],
-    ],
-    [
-      [-1, -1],
-      [1, -1],
-      [0, 0],
-      [-1, 1],
-      [1, 1],
-    ],
-    [
-      [-1, -1],
-      [1, -1],
-      [-1, 0],
-      [1, 0],
-      [-1, 1],
-      [1, 1],
-    ],
-  ]
-
-  private addPips(tileX: number, count: number): void {
-    const layout =
-      FeedTheMonsterScene.PIP_LAYOUTS[Math.min(count, FeedTheMonsterScene.PIP_LAYOUTS.length) - 1]
-    // Offsets stay well inside the irregular splash blob (radius ~tile/2).
-    const unit = this.px(11)
-    for (const [ox, oy] of layout) {
-      const pip = this.add.circle(tileX + ox * unit, oy * unit, this.px(8), INK)
-      this.bubble.add(pip)
-      this.bubbleExtras.push(pip)
-      this.pips.push(pip)
-    }
-  }
-
-  /** Light one pip per eaten food — the count lesson replays as feedback. */
-  private lightPips(): void {
-    this.eaten.forEach((_, i) => {
-      const pip = this.pips[i]
-      if (!pip || pip.getData('lit')) return
-      pip.setData('lit', true)
-      pip.setFillStyle(0xffb703)
-      this.tweens.add({
-        targets: pip,
-        scaleX: { from: 1.8, to: 1.2 },
-        scaleY: { from: 1.8, to: 1.2 },
-        duration: 260,
-        ease: 'Back.easeOut',
-      })
-    })
-  }
-
-  /** Steady breathing pulse — the "act here" cue on you-pick sockets. */
-  private pulse(pic: Phaser.GameObjects.Image): void {
-    this.tweens.add({
-      targets: pic,
-      scaleX: pic.scaleX * 1.12,
-      scaleY: pic.scaleY * 1.12,
-      duration: 600,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    })
-  }
-
-  /** Overlay a "?" on a you-pick slot ("a food goes here — you choose"). */
-  private addQ(pic: Phaser.GameObjects.Image, size: number): void {
-    const q = this.add.image(pic.x, pic.y, 'ftm-q')
-    q.setDisplaySize(size, size)
-    this.bubble.add(q)
-    this.bubbleExtras.push(q)
-    pic.setData('q', q)
-  }
-
-  /** Retire a slot's "?" once the child has supplied the food. */
-  private removeQ(pic: Phaser.GameObjects.Image): void {
-    const q = pic.getData('q') as Phaser.GameObjects.Image | undefined
-    if (!q) return
-    pic.setData('q', undefined)
-    this.tweens.add({
-      targets: q,
-      alpha: 0,
-      scaleX: q.scaleX * 0.2,
-      scaleY: q.scaleY * 0.2,
-      duration: 160,
-      ease: 'Quad.easeIn',
-      onComplete: () => q.destroy(),
-    })
-  }
-
-  /** Stamp the green "✓ got it" badge on a collected (or given) tile. */
-  private stampCheck(pic: Phaser.GameObjects.Image): void {
-    if (pic.getData('checked')) return
-    pic.setData('checked', true)
-    // A soft ✓ disc stamped over the centre of the tile — anchored to the food
-    // whatever its shape, translucent so the picture still reads underneath.
-    const badge = this.add.image(pic.x, pic.y, 'ftm-check')
-    const s = pic.displayWidth * 0.46
-    badge.setDisplaySize(s, s).setAlpha(0.85)
-    this.bubble.add(badge)
-    this.bubbleExtras.push(badge)
-    pic.setData('check', badge)
-    this.tweens.add({
-      targets: badge,
-      scaleX: { from: 0, to: badge.scaleX },
-      scaleY: { from: 0, to: badge.scaleY },
-      duration: 220,
-      ease: 'Back.easeOut',
-    })
-  }
-
-  /** A correct "not" feed stamps the fed food into the next empty slot. */
-  private fillNotSlot(foodId: string): void {
-    const pic = this.bubblePics[this.eaten.length]
-    if (!pic) return
-    this.tweens.killTweensOf(pic)
-    const tile = this.px(BUBBLE_ITEM_CSS + 22)
-    this.removeQ(pic)
-    pic.setTexture(this.foodTexture(foodId))
-    pic.clearTint()
-    pic.setAlpha(1)
-    const size = tile * textures.foodScale(foodId)
-    pic.setDisplaySize(size, size)
-    this.tweens.add({
-      targets: pic,
-      scaleX: { from: pic.scaleX * 1.4, to: pic.scaleX },
-      scaleY: { from: pic.scaleY * 1.4, to: pic.scaleY },
-      duration: 240,
-      ease: 'Back.easeOut',
-    })
-    this.stampCheck(pic)
-  }
-
-  /** The pattern answer lands in the slot and the whole row takes a bow. */
-  private fillPatternSlot(): void {
-    if (!this.round || this.round.request.kind !== 'pattern') return
-    const slot = this.bubblePics[this.bubblePics.length - 1]
-    if (!slot) return
-    this.tweens.killTweensOf(slot)
-    const tile = this.px(BUBBLE_ITEM_CSS + 22)
-    this.removeQ(slot)
-    slot.setTexture(this.foodTexture(this.round.request.answerId))
-    slot.clearTint()
-    slot.setAlpha(1)
-    const size = tile * textures.foodScale(this.round.request.answerId)
-    slot.setDisplaySize(size, size)
-    this.stampCheck(slot)
-    // The socket is answered — its ring bows out.
-    if (this.patternRing) {
-      this.tweens.killTweensOf(this.patternRing)
-      this.tweens.add({ targets: this.patternRing, alpha: 0, duration: 300, ease: 'Quad.easeOut' })
-    }
-    // Re-read the completed sequence left-to-right — celebration doubles as
-    // the lesson (the pattern is shown whole one more time). The ✓ badges ride
-    // along with their tiles.
-    this.bubblePics.forEach((pic, i) => {
-      const targets: Phaser.GameObjects.GameObject[] = [pic]
-      const check = pic.getData('check') as Phaser.GameObjects.Image | undefined
-      if (check) targets.push(check)
-      this.tweens.add({
-        targets,
-        y: `-=${this.px(12)}`,
-        delay: i * 90,
-        duration: 150,
-        yoyo: true,
-        ease: 'Quad.easeOut',
-      })
-      this.time.delayedCall(i * 90, () => playTone(PENTA[i % PENTA.length], 120, 'sine', 0.08))
-    })
-  }
-
-  private foodIdForEmoji(emoji: string): string {
-    const food = ALL_FOODS.find((f) => f.emoji === emoji)
-    return food ? food.id : ALL_FOODS[0].id
-  }
-
-  /**
-   * Mark the just-satisfied want tiles as collected: solidify the ghosted tile
-   * with a pop, retire its "?", and stamp the ✓. not/pattern carry progress via
-   * slot fills; dots via lit pips — those never run through here.
-   */
-  private updateBubbleGray(): void {
-    if (!this.round) return
-    const kind = this.round.request.kind
-    if (kind === 'not' || kind === 'pattern' || kind === 'dots') return
-    const done = grayedBubbleItems(this.round.request, this.eaten)
-    done.forEach((isDone, i) => {
-      const pic = this.bubblePics[i]
-      if (!pic || !isDone || pic.getData('done')) return
-      pic.setData('done', true)
-      this.removeQ(pic)
-      this.tweens.killTweensOf(pic)
-      this.tweens.add({
-        targets: pic,
-        alpha: 1,
-        scaleX: { from: pic.scaleX * 1.18, to: pic.scaleX },
-        scaleY: { from: pic.scaleY * 1.18, to: pic.scaleY },
-        duration: 240,
-        ease: 'Back.easeOut',
-      })
-      this.stampCheck(pic)
-    })
-  }
-
-  /** Hop one panel tile (pattern cue re-reads the row tile by tile). */
-  private hopBubblePic(index: number): void {
-    const pic = this.bubblePics[index]
-    if (!pic || !pic.active || this.transitioning) return
-    const targets: Phaser.GameObjects.GameObject[] = [pic]
-    const check = pic.getData('check') as Phaser.GameObjects.Image | undefined
-    if (check) targets.push(check)
-    this.tweens.add({
-      targets,
-      y: `-=${this.px(12)}`,
-      duration: 140,
-      yoyo: true,
-      ease: 'Quad.easeOut',
-    })
-  }
-
-  /** Flash the pattern answer ring — "this one is missing". */
-  private punchPatternRing(): void {
-    const ring = this.patternRing
-    if (!ring || !ring.active || this.transitioning) return
-    this.tweens.killTweensOf(ring)
-    ring.setScale(1)
-    this.tweens.add({
-      targets: ring,
-      scaleX: { from: 1.25, to: 1 },
-      scaleY: { from: 1.25, to: 1 },
-      duration: 320,
-      ease: 'Back.easeOut',
-    })
-  }
-
-  private playRequestBeeps(count: number): void {
-    for (let i = 0; i < Math.min(count, PENTA.length); i++) {
-      this.time.delayedCall(i * 170, () => playTone(PENTA[i], 150, 'sine', 0.1))
-    }
-  }
-
-  /** Audio rendering of the request — each task kind gets its own cue. */
-  private playRequestCue(request: FoodRequest): void {
-    switch (request.kind) {
-      case 'pattern': {
-        // The sequence as a melody, re-taught visually: each context tile
-        // hops with its tone, then the answer socket flashes on the rising
-        // "…?" — the row leads to the one missing food.
-        const roles = [...new Set(request.sequence)]
-        request.sequence.forEach((id, i) => {
-          const tone = PENTA[(roles.indexOf(id) * 2) % PENTA.length]
-          this.time.delayedCall(i * 160, () => {
-            playTone(tone, 130, 'sine', 0.09)
-            this.hopBubblePic(i)
-          })
-        })
-        this.time.delayedCall(request.sequence.length * 160 + 140, () => {
-          playTone(988, 170, 'sine', 0.08)
-          this.punchPatternRing()
-        })
-        return
-      }
-      case 'not':
-        // "Uh-uh" — two low warning taps, then one beep per wanted food.
-        playTone(220, 120, 'sine', 0.08)
-        this.time.delayedCall(150, () => playTone(196, 140, 'sine', 0.08))
-        for (let i = 0; i < Math.min(request.count, PENTA.length); i++) {
-          this.time.delayedCall(430 + i * 170, () => playTone(PENTA[i], 150, 'sine', 0.1))
-        }
-        return
-      default:
-        this.playRequestBeeps(requestTotal(request))
-    }
-  }
-
   // ─── Feeding ─────────────────────────────────────────────────────────────
 
   private feed(img: Phaser.GameObjects.Image): void {
@@ -1897,12 +1445,12 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.time.delayedCall(150, () => playTone(PENTA[step], 170, 'sine', 0.12))
 
     const kind = this.round.request.kind
-    if (kind === 'not') this.fillNotSlot(foodId)
-    else if (kind === 'dots') this.lightPips()
-    else this.updateBubbleGray()
+    if (kind === 'not') this.bubbleUi.fillNotSlot(foodId)
+    else if (kind === 'dots') this.bubbleUi.lightPips()
+    else this.bubbleUi.updateBubbleGray()
 
     if (isRoundComplete(this.round.request, this.eaten)) {
-      if (kind === 'pattern') this.fillPatternSlot()
+      if (kind === 'pattern') this.bubbleUi.fillPatternSlot()
       this.completeRound()
     }
   }
