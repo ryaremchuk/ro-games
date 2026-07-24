@@ -38,6 +38,7 @@ before pushing.
 
 - **Layouts are proportional**: size and position everything as a fraction of the viewport, never hardcoded px (fixed px only for physical safe-area minimums) — must read equally well on iPad (4:3) and iPhone-landscape (~2.2:1).
 - **No workarounds**: fix root causes with best-practice solutions and verify them (tests + measured on target devices) before calling it done — never patch symptoms.
+- **Weigh gameplay impact**: when discussing any new feature, call out in one line how it affects the play experience (pacing, difficulty curve, variety, frustration) against the adaptive-challenge north star.
 
 ## Conventions & constraints
 

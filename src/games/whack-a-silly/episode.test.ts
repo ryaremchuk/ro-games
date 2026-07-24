@@ -9,6 +9,7 @@ import {
   SPATIAL_START,
   advanceSpatial,
   clampSpatial,
+  episodeHoleCount,
   episodeLength,
   generateBoard,
   holeCountFor,
@@ -46,25 +47,27 @@ describe('hole-count range', () => {
   })
 })
 
-describe('spatial adaptive step (the "fast" formula)', () => {
-  it('a clean episode adds several holes, a rough one eases a couple back', () => {
-    expect(spatialDelta(0)).toBe(3)
-    expect(spatialDelta(1)).toBe(2)
-    expect(spatialDelta(2)).toBe(1)
+describe('spatial adaptive step (gentle climb)', () => {
+  it('climbs at most one hole per clean episode, eases faster when struggling', () => {
+    expect(spatialDelta(0)).toBe(1)
+    expect(spatialDelta(1)).toBe(1)
+    expect(spatialDelta(2)).toBe(0)
     expect(spatialDelta(3)).toBe(0)
     expect(spatialDelta(4)).toBe(-1)
     expect(spatialDelta(5)).toBe(-2)
     expect(spatialDelta(20)).toBe(-2)
   })
 
-  it('can leap +3 then hold at the nine-hole ceiling (no runaway)', () => {
+  it('takes MAX_SPATIAL clean episodes to reach the ceiling, then holds (no runaway)', () => {
     let s = SPATIAL_START
-    s = advanceSpatial(s, 0) // +3 → 3
-    expect(holeCountFor(s)).toBe(7)
-    s = advanceSpatial(s, 0) // +3 → clamped to 5
+    // The center climbs one hole at a time — no more 2-episode sprint to nine.
+    for (let i = 1; i <= MAX_SPATIAL; i++) {
+      s = advanceSpatial(s, 0)
+      expect(s).toBe(i)
+    }
     expect(s).toBe(MAX_SPATIAL)
     expect(holeCountFor(s)).toBe(MAX_HOLES)
-    s = advanceSpatial(s, 0) // still capped
+    s = advanceSpatial(s, 0) // capped — never overshoots
     expect(s).toBe(MAX_SPATIAL)
   })
 
@@ -83,6 +86,72 @@ describe('spatial adaptive step (the "fast" formula)', () => {
         expect(next).toBeLessThanOrEqual(MAX_SPATIAL)
       }
     }
+  })
+})
+
+describe('per-episode hole count (center + jitter)', () => {
+  it('always lands in the legal [MIN_HOLES, MAX_HOLES] band', () => {
+    for (let spatial = -2; spatial <= MAX_SPATIAL + 2; spatial++) {
+      for (const seed of SEEDS) {
+        const rng = mulberry32(seed * 17 + spatial + 5)
+        for (let i = 0; i < 50; i++) {
+          const n = episodeHoleCount(spatial, null, rng)
+          expect(n).toBeGreaterThanOrEqual(MIN_HOLES)
+          expect(n).toBeLessThanOrEqual(MAX_HOLES)
+          expect(Number.isInteger(n)).toBe(true)
+        }
+      }
+    }
+  })
+
+  it('breathes ±1 around the meter — no longer pinned to a single count', () => {
+    // A mid meter (center 6) must produce more than one distinct count over a
+    // run: this is exactly the anti-monotony the jitter buys.
+    const spatial = 2 // center = MIN_HOLES + 2 = 6
+    const seen = new Set<number>()
+    const rng = mulberry32(99)
+    for (let i = 0; i < 200; i++) seen.add(episodeHoleCount(spatial, null, rng))
+    expect(seen.size).toBeGreaterThan(1)
+    for (const n of seen) expect(Math.abs(n - holeCountFor(spatial))).toBeLessThanOrEqual(1)
+  })
+
+  it('never repeats the previous episode count when an alternative exists', () => {
+    // Walk a chain feeding each result back as prevCount; no two adjacent equal.
+    for (let spatial = SPATIAL_START; spatial <= MAX_SPATIAL; spatial++) {
+      for (const seed of SEEDS) {
+        const rng = mulberry32(seed * 41 + spatial)
+        let prev = episodeHoleCount(spatial, null, rng)
+        for (let i = 0; i < 100; i++) {
+          const next = episodeHoleCount(spatial, prev, rng)
+          expect(next).not.toBe(prev)
+          prev = next
+        }
+      }
+    }
+  })
+
+  it('leans DOWN at the ceiling so nine is a spike, not the steady state', () => {
+    // At the max meter the jitter offsets are {0,0,-1,-2} → counts {9,8,7}; the
+    // densest board must never be the only thing the child ever sees.
+    const seen = new Set<number>()
+    const rng = mulberry32(7)
+    for (let i = 0; i < 300; i++) seen.add(episodeHoleCount(MAX_SPATIAL, null, rng))
+    expect(seen.has(MAX_HOLES)).toBe(true)
+    expect(seen.has(MAX_HOLES - 1)).toBe(true)
+    expect(seen.has(MAX_HOLES - 2)).toBe(true)
+    expect(Math.max(...seen)).toBe(MAX_HOLES)
+  })
+
+  it('is deterministic for a given seed', () => {
+    const a = Array.from({ length: 10 }, () => 0)
+    const b = Array.from({ length: 10 }, () => 0)
+    const ra = mulberry32(3)
+    const rb = mulberry32(3)
+    for (let i = 0; i < 10; i++) {
+      a[i] = episodeHoleCount(3, null, ra)
+      b[i] = episodeHoleCount(3, null, rb)
+    }
+    expect(a).toEqual(b)
   })
 })
 
