@@ -25,9 +25,9 @@ import {
   MIN_HOLES,
   SPATIAL_START,
   advanceSpatial,
+  episodeHoleCount,
   episodeLength,
   generateBoard,
-  holeCountFor,
 } from './episode'
 import type { Spot } from './episode'
 import { buildCritterRig } from './critterRig'
@@ -222,8 +222,9 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.peakSkill = Math.max(saved.skill.motor ?? WHACK_SKILL_START, startSkill)
 
     // Board / spatial track: resume the saved spatial meter one step down
-    // (gentle warm-up — one fewer hole for the first episode, recovered fast by
-    // the aggressive step formula), and resume the persisted episode counter.
+    // (gentle warm-up — a slightly lower center for the first episode, recovered
+    // over a few episodes by the gentle step formula), and resume the persisted
+    // episode counter.
     const startSpatial = sessionStart(saved.skill.spatial ?? SPATIAL_START, {
       max: MAX_SPATIAL,
       warmupDrop: 1,
@@ -231,7 +232,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     })
     this.spatial = startSpatial
     this.episode = Math.max(0, Math.floor(saved.data.episode ?? 0))
-    this.holeCount = holeCountFor(this.spatial)
+    this.holeCount = episodeHoleCount(this.spatial)
     this.episodeLen = episodeLength()
 
     this.makeTextures()
@@ -1522,7 +1523,9 @@ export default class WhackASillyScene extends Phaser.Scene {
       // Clear the dancers' stale up/spawn state before re-laying the board, or
       // the fresh holes would count as occupied and never get critters.
       this.resetAllCritters()
-      this.holeCount = holeCountFor(this.spatial)
+      // The previous episode's count (still in this.holeCount) is passed so the
+      // next board is never the same size two episodes running.
+      this.holeCount = episodeHoleCount(this.spatial, this.holeCount)
       this.episodeLen = episodeLength()
       this.regenerateBoard()
       this.layout() // positions active holes at full; revealBoard re-hides + pops
