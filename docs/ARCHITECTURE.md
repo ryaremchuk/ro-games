@@ -37,11 +37,15 @@ Shared frame only (`src/shared/`), never shared game logic:
   next to home) + iOS audio unlock, wraps every game.
 - `PhaserGame.tsx` — reusable mount/destroy for a `Phaser.Game`.
 - `audio.ts` — Web Audio tone synthesis + `unlockAudio()`.
-- `level.ts` — shared level store: games call `reportLevel(n)` and the badge
-  updates. Each game owns its level RULES in its own `logic.ts` (pure,
-  tested); this store only carries the current value.
+- `level.ts` — the single source of truth for a game's visible level:
+  `levelFor(gameId) = stars + 1`, derived live from the observable star store.
+  Both the in-game badge (`GameFrame`) and the launcher tile (`HomePage`) read
+  it, so they can never disagree. Games don't report a level — they just bank
+  stars; `setLevelHidden(true)` suppresses the badge in special modes (e.g.
+  slingshot's authoring editor).
 - `progress.ts` — persists per-game adaptive skill meters and reward stars in
-  `localStorage` (see "Progress: skill, levels, stars" below).
+  `localStorage` and is observable (`subscribeProgress`); see "Progress: skill,
+  levels, stars" below.
 
 ## Directory map
 
@@ -56,7 +60,7 @@ src/
     GameFrame.tsx/.css  chrome around every game
     PhaserGame.tsx      Phaser mount point (day-0 infra)
     audio.ts            Web Audio helpers
-    level.ts            shared level store (current value → badge)
+    level.ts            single source of visible level (stars + 1 → badge + tile)
     progress.ts         adaptive skill meters + reward stars (localStorage)
   games/
     registry.tsx        SINGLE SOURCE OF TRUTH for games
@@ -96,10 +100,12 @@ public/
 
 4. Use `playTone(...)` from `shared/audio.ts` for sound. Audio is already
    unlocked by `GameFrame`.
-5. Report the game's current level with `reportLevel(...)` from
-   `shared/level.ts` (define the level rule as a pure function in the game's
-   `logic.ts` and test it). The standardized badge next to the home button
-   renders it; it resets automatically when the game unmounts.
+5. Set `leveled: true` on the game's registry row and bank one reward star per
+   level passed with `addStars(GAME_ID)` from `shared/progress.ts`. That is the
+   whole level system: the standardized badge (next to home) and the launcher
+   tile both show `stars + 1` from `shared/level.ts` — one number, always in
+   sync, no per-game reporting. Free-play games (no levels) omit `leveled` and
+   carry no badge.
 
 ## Rendering rules
 
@@ -117,10 +123,12 @@ currencies:
   skills differ. Games save the meter every round and start each session below
   the saved value via `sessionStart()` (warm-up + break decay), then climb back
   faster while below the saved peak.
-- **Levels** — a session-scoped reward rhythm. Uniform rule in every game:
+- **Levels** — the visible reward rhythm, derived (not stored): `shared/level.ts`
+  computes `levelFor(gameId) = stars + 1`, read live by both the in-game badge
+  and the launcher tile so they always match. Uniform rule in every game:
   passing a level (the game's own unit — solved round, bopped critter, cleared
-  board) ticks the badge +1 and banks one star via `addStars()`.
-- **Stars** — forever.
+  board) banks one star via `addStars()`, which ticks the number +1 everywhere.
+- **Stars** — forever; the count the level is derived from.
 
 Celebrations are pure animations on per-game `CELEBRATION_EVERY_*` beats. See
 `docs/DECISIONS.md` ("Progress: two-axis adaptive skill").

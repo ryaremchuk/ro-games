@@ -12,6 +12,13 @@ export interface GameMeta {
   color: string
   /** Placeholder visual until real art is added. */
   emoji: string
+  /**
+   * Whether this game has a level progression (banks reward stars). When true
+   * the shared level badge shows in-game and on the launcher tile
+   * (shared/level.ts — level = stars + 1). Free-play games (e.g. drawing) omit
+   * it and carry no badge.
+   */
+  leveled?: boolean
   /** Lazily-loaded game component (code-split per route). */
   component: LazyExoticComponent<ComponentType>
 }
@@ -36,6 +43,7 @@ export const games: GameMeta[] = [
     path: '/feed-the-monster',
     color: '#FFA94D',
     emoji: '👾',
+    leveled: true,
     component: lazyWithReload(() => import('./feed-the-monster/FeedTheMonsterGame')),
   },
   {
@@ -44,6 +52,7 @@ export const games: GameMeta[] = [
     path: '/animal-band',
     color: '#9B5DE5',
     emoji: '🥁',
+    leveled: true,
     component: lazyWithReload(() => import('./animal-band/AnimalBandGame')),
   },
   {
@@ -52,6 +61,7 @@ export const games: GameMeta[] = [
     path: '/whack-a-silly',
     color: '#6BCB77',
     emoji: '🐹',
+    leveled: true,
     component: lazyWithReload(() => import('./whack-a-silly/WhackASillyGame')),
   },
   {
@@ -60,6 +70,7 @@ export const games: GameMeta[] = [
     path: '/odd-one-out',
     color: '#4ECDC4',
     emoji: '🧩',
+    leveled: true,
     component: lazyWithReload(() => import('./odd-one-out/OddOneOutGame')),
   },
   {
@@ -68,6 +79,7 @@ export const games: GameMeta[] = [
     path: '/balloon-pop',
     color: '#4D96FF',
     emoji: '🎈',
+    leveled: true,
     component: lazyWithReload(() => import('./balloon-pop/BalloonPopGame')),
   },
   {
@@ -76,6 +88,7 @@ export const games: GameMeta[] = [
     path: '/slingshot',
     color: '#FFD93D',
     emoji: '🐦',
+    leveled: true,
     component: lazyWithReload(() => import('./slingshot/SlingshotGame')),
   },
   {
@@ -84,6 +97,7 @@ export const games: GameMeta[] = [
     path: '/memory',
     color: '#FF8FAB',
     emoji: '🐾',
+    leveled: true,
     component: lazyWithReload(() => import('./memory/MemoryGame')),
   },
 ]

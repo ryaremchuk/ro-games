@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { playTone } from '../../shared/audio'
-import { initLevel, reportLevel } from '../../shared/level'
 import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
 import {
   clampLevel,
@@ -131,13 +130,6 @@ export default function OddOneOutGame() {
     },
     [],
   )
-
-  // Standardized HUD badge: +1 per solved round (a reward counter, like
-  // every game). The adaptive L1-L5 ladder stays invisible — difficulty is
-  // never shown to the child. The badge resumes from the saved star trophy
-  // (initLevel), so its count climbs across sessions; the ladder does not.
-  useEffect(() => initLevel(GAME_ID), [])
-  useEffect(() => reportLevel(session.roundsCompleted + 1), [session.roundsCompleted])
 
   const setPhaseNow = (next: Phase) => {
     phaseRef.current = next

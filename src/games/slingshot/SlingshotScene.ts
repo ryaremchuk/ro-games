@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { clearLevel, initLevel, reportLevel } from '../../shared/level'
+import { setLevelHidden } from '../../shared/level'
 import { addStars } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
@@ -214,7 +214,6 @@ export default class SlingshotScene extends Phaser.Scene {
       this.starDrop = undefined
       this.teardownTestApi()
       this.teardownEditorApi()
-      clearLevel()
     })
     // React unmount calls game.destroy(), which emits DESTROY (not SHUTDOWN).
     // The window listeners are the only resource Phaser can't reclaim with the
@@ -236,12 +235,10 @@ export default class SlingshotScene extends Phaser.Scene {
       this.level = this.draft.level
       this.wireEditorInput()
       this.installEditorApi()
-    } else {
-      // Resume the visible level badge from the saved star trophy (every level
-      // cleared banked one star), so the count climbs across sessions. Skipped
-      // in the editor, which never shows the child-facing badge.
-      initLevel('slingshot')
     }
+    // The child-facing level badge (shared/level.ts — level = stars + 1) is
+    // suppressed in the authoring editor and shown in normal play.
+    setLevelHidden(this.editorOn)
 
     this.buildLevel(this.level)
 
@@ -748,11 +745,11 @@ export default class SlingshotScene extends Phaser.Scene {
     this.starDropPending = false
     this.clearLevelObjects()
     this.level = Math.max(1, level)
-    // Editor builds from its mutable draft; normal play from the generator.
-    // The badge stays hidden in the editor (reportLevel drives child-facing UI).
+    // Editor builds from its mutable draft; normal play from the generator. The
+    // child-facing level badge (shared/level.ts = stars + 1) is driven by banked
+    // stars, not this internal level index; editor mode is hidden (see create()).
     this.spec =
       this.editorOn && this.draft ? this.draft : generateLevel(this.level, mulberry32(this.level))
-    if (!this.editorOn) reportLevel(this.level)
 
     const w = this.scale.width
     const h = this.scale.height

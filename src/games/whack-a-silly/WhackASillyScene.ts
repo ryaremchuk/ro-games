@@ -1,6 +1,6 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { initLevel, reportLevel } from '../../shared/level'
+import { levelFor } from '../../shared/level'
 import { addStars, loadProgress, saveData, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
@@ -13,7 +13,6 @@ import {
   gapForSkill,
   initialWhackSkill,
   isConfettiBop,
-  levelForBops,
   planSpawn,
   registerCatch,
   registerEscape,
@@ -215,9 +214,6 @@ export default class WhackASillyScene extends Phaser.Scene {
     // Resume the saved motor meter a couple of steps down (warm-up ramp);
     // the peak lets registerCatch climb back at double speed.
     const saved = loadProgress(GAME_ID)
-    // Resume the visible level badge from the saved star trophy (every bopped
-    // critter banked one star), so the count climbs across sessions.
-    initLevel(GAME_ID)
     const startSkill = sessionStart(saved.skill.motor ?? WHACK_SKILL_START, {
       max: WHACK_SKILL_MAX,
       lastPlayedAt: saved.lastPlayedAt,
@@ -247,7 +243,6 @@ export default class WhackASillyScene extends Phaser.Scene {
     this.wireBackgroundTaps()
     this.regenerateBoard()
     this.layout()
-    reportLevel(levelForBops(this.bops))
 
     const offViewport = onViewportResize(this.handleWindowResize)
     const teardown = (): void => {
@@ -286,7 +281,7 @@ export default class WhackASillyScene extends Phaser.Scene {
     const api: WhackTestApi = {
       state: () => ({
         bops: this.bops,
-        level: levelForBops(this.bops),
+        level: levelFor(GAME_ID),
         spared: this.spared,
         skill: this.whackSkill.skill,
         activeCritters: this.activeCritters,
@@ -1155,9 +1150,8 @@ export default class WhackASillyScene extends Phaser.Scene {
     hole.state = 'leaving'
     this.stopCritterClock(hole)
     this.bops++
-    reportLevel(levelForBops(this.bops))
-    // Every bop passes a level: one persistent star on the launcher tile.
-    // The every-10 confetti below stays pure animation.
+    // Every bop passes a level: one persistent star, which drives the shared
+    // level badge (level = stars + 1). The every-10 confetti stays pure animation.
     addStars(GAME_ID)
     // Adaptive: catches in a row speed the garden up / add critters.
     this.applySkill(registerCatch(this.whackSkill, this.peakSkill))

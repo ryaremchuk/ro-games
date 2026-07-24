@@ -11,10 +11,11 @@
  *   returning child re-enters through a friendly ramp instead of a cold
  *   start at their ceiling. See sessionStart().
  * - STARS — a forever-accumulating reward counter (+1 per level passed, which
- *   every game aligns with one celebration beat). Shown on the launcher tile
- *   AND used to seed the in-game level badge (shared/level.initLevel), so the
- *   count the child sees keeps climbing across sessions — the one number that
- *   only ever grows, whatever the adaptive meters do.
+ *   every game aligns with one celebration beat). This IS the visible level:
+ *   the single shared level (shared/level.ts — level = stars + 1) reads it, so
+ *   the launcher tile and the in-game badge always show the same number and it
+ *   keeps climbing across sessions — the one number that only ever grows,
+ *   whatever the adaptive meters do.
  * - DATA — game-defined numeric state with no meter semantics (e.g. the
  *   feed-the-monster journey: episode / friends fed / growth step), saved so
  *   visible long-term progression survives restarts.
@@ -50,6 +51,33 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 const memoryStore = new Map<string, GameProgress>()
 /** Set once a localStorage write fails — from then on reads trust memory. */
 let storageBroken = false
+
+/**
+ * Per-game change subscribers. A game's progress is observable so the shared
+ * level (shared/level.ts) — derived live from the star count — can push the
+ * in-game badge and the launcher tile from the SAME source. Fires on any save
+ * to that game; consumers that only care about stars re-read and no-op when
+ * the value is unchanged.
+ */
+const progressListeners = new Map<string, Set<() => void>>()
+
+/** Subscribe to any saved change for a game; returns the unsubscribe function. */
+export function subscribeProgress(gameId: string, listener: () => void): () => void {
+  let set = progressListeners.get(gameId)
+  if (!set) {
+    set = new Set()
+    progressListeners.set(gameId, set)
+  }
+  set.add(listener)
+  return () => {
+    set.delete(listener)
+  }
+}
+
+function emitProgress(gameId: string): void {
+  const set = progressListeners.get(gameId)
+  if (set) for (const listener of set) listener()
+}
 
 /** Test hook: wipe the in-memory fallback between test cases. */
 export function resetProgressMemory(): void {
@@ -108,6 +136,7 @@ function store(gameId: string, progress: GameProgress): void {
     // Private mode / quota — the in-memory copy above keeps the session sane.
     storageBroken = true
   }
+  emitProgress(gameId)
 }
 
 /** Save a game's skill meters (merged over any axes not mentioned). */

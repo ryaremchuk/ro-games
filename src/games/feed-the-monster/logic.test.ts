@@ -20,7 +20,6 @@ import {
   generateRound,
   grayedBubbleItems,
   isRoundComplete,
-  levelForRound,
   pickTaskKind,
   requestTotal,
   unlockedKinds,
@@ -493,13 +492,5 @@ describe('dynamic generation', () => {
       expect(pool).toHaveLength(ACTIVE_POOL_SIZE)
       for (const food of pool) expect(FOODS).toContain(food)
     }
-  })
-})
-
-describe('levels', () => {
-  it('passes one level per fed round', () => {
-    expect(levelForRound(1)).toBe(1)
-    expect(levelForRound(7)).toBe(7)
-    expect(levelForRound(0)).toBe(1) // defensive: never below level 1
   })
 })

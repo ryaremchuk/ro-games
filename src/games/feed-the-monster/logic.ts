@@ -736,12 +736,3 @@ export function grayedBubbleItems(request: FoodRequest, eaten: readonly string[]
       return [...request.sequence.map(() => false), isRoundComplete(request, eaten)]
   }
 }
-
-// ─── Levels (reward rhythm, decoupled from the meter) ────────────────────────
-// Celebration beats live on the journey (friend grown / dance party) — see
-// journey.ts. Levels stay per-round: steady badge + star rhythm.
-
-/** 1-based HUD level = the current round: every fed round passes a level. */
-export function levelForRound(round: number): number {
-  return Math.max(round, 1)
-}

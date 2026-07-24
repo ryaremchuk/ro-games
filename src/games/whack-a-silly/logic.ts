@@ -150,11 +150,6 @@ export function isConfettiBop(bops: number): boolean {
   return bops > 0 && bops % CONFETTI_EVERY_BOPS === 0
 }
 
-/** 1-based HUD level: every bopped critter passes a level (and banks a star). */
-export function levelForBops(bops: number): number {
-  return Math.max(Math.floor(bops), 0) + 1
-}
-
 // ─── Celebration variety (pure, so the scene stays dumb) ─────────────────────
 
 /**

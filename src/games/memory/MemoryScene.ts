@@ -1,6 +1,5 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { initLevel, reportLevel } from '../../shared/level'
 import { addStars } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import { CARD_SUBJECTS, PAW_PRINT } from './art'
@@ -113,11 +112,7 @@ export default class MemoryScene extends Phaser.Scene {
       .setVisible(false)
     this.buildEmitters()
 
-    // Resume the visible level badge from the saved star trophy (every board
-    // cleared banked one star), so the count climbs across sessions.
-    initLevel(GAME_ID)
     this.level = 1
-    reportLevel(this.level)
     this.drawBackground()
     this.dealLevel()
 
@@ -736,7 +731,6 @@ export default class MemoryScene extends Phaser.Scene {
 
   private advanceLevel(): void {
     this.level++
-    reportLevel(this.level)
     this.fade.setSize(this.scale.width, this.scale.height).setAlpha(0).setVisible(true)
     this.tweens.add({
       targets: this.fade,

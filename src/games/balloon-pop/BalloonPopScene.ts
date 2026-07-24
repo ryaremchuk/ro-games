@@ -1,6 +1,5 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { initLevel, reportLevel } from '../../shared/level'
 import { addStars, loadProgress, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, viewportSize } from '../../shared/viewport'
 import {
@@ -10,7 +9,6 @@ import {
   SKILL_START,
   dotPositions,
   isSkyCelebration,
-  levelFor,
   pickTask,
   planBalloon,
   planInitialWave,
@@ -200,9 +198,6 @@ export default class BalloonPopScene extends Phaser.Scene {
     // Resume the saved skill meters a couple of steps down (warm-up ramp);
     // the peak lets updateSkill climb back at double speed.
     const saved = loadProgress(GAME_ID)
-    // Resume the visible level badge from the saved star trophy (every solved
-    // round banked one star), so the count climbs across sessions.
-    initLevel(GAME_ID)
     const startOptions = { max: SKILL_MAX, lastPlayedAt: saved.lastPlayedAt }
     this.skill = {
       motor: sessionStart(saved.skill.motor ?? SKILL_START, startOptions),
@@ -236,7 +231,6 @@ export default class BalloonPopScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.DESTROY, offViewport)
 
     this.scheduleBlink()
-    reportLevel(levelFor(this.roundsCompleted))
     this.time.delayedCall(450, () => this.startRound())
   }
 
@@ -1184,9 +1178,8 @@ export default class BalloonPopScene extends Phaser.Scene {
         this.time.delayedCall(i * 110, () => playTone(freq, 150, 'triangle', 0.09)),
       )
       this.roundsCompleted++
-      // Every solved round passes a level: badge +1, one persistent star
-      // banked (forever visible on the launcher tile).
-      reportLevel(levelFor(this.roundsCompleted))
+      // Every solved round passes a level: one persistent star banked, which
+      // drives the shared level badge (level = stars + 1) and the launcher tile.
       addStars(GAME_ID)
       // The rainbow is pure animation on its own every-5 beat.
       const celebrate = isSkyCelebration(this.roundsCompleted)
