@@ -15,12 +15,17 @@
  */
 
 import { foodById } from './logic'
-import type { Food } from './logic'
+import type { Food, Rng } from './logic'
 
 // ─── Growth ──────────────────────────────────────────────────────────────────
 
-/** Fed rounds to fully grow one friend. */
-export const GROW_STEPS = 6
+/**
+ * Fed rounds to fully grow one friend: base → +1 → +2 → +3 (ready) → +4 (max,
+ * graduates). Deliberately short so the "he grew!" payoff and the walk-aside
+ * celebration come round after round — a faster pace than the old six-step
+ * grind, tuned for a 3–4-year-old's attention span.
+ */
+export const GROW_STEPS = 4
 /** Grown friends that complete an episode (the dance party). */
 export const FRIENDS_PER_EPISODE = 5
 
@@ -78,9 +83,44 @@ export type FeedOutcome =
   /** The 5th friend finished — dance party, then the next episode. */
   | 'episode-complete'
 
-/** Advance the journey by one fed round. */
-export function feedStep(journey: JourneyState): { next: JourneyState; outcome: FeedOutcome } {
-  const grownTo = journey.growthStep + 1
+// ─── Big bite: a catch-up that grows the friend TWO steps at once ─────────────
+
+/** A single fed round that is NOT a big bite grows one step; a big bite, two. */
+export const NORMAL_BITE = 1
+export const BIG_BITE = 2
+
+/**
+ * Wrong feeds on the current friend (accumulated over its whole tenure, reset
+ * when a fresh friend hops in) at or above this count mean the child is stuck —
+ * the next correct round becomes a big bite to recover the lost ground. Mirrors
+ * logic.SPIT_BACKS_BEFORE_EASE, the same "two slips = struggling" read.
+ */
+export const BIG_BITE_STUCK_SPITS = 2
+
+/**
+ * A small chance every fed round becomes a big bite even when nothing is wrong —
+ * an occasional delightful "double" that keeps growth from feeling metronomic.
+ */
+export const BIG_BITE_CHANCE = 0.12
+
+/**
+ * How many steps this fed round grows the friend. A big bite (+2) fires as an
+ * INVISIBLE catch-up once the child has spat back enough on this friend that it
+ * has fallen behind — so a struggling toddler can never get stuck on the
+ * +1/−1 treadmill a pure size threshold would allow — plus a rare random
+ * sprinkle for joy even when they're cruising. Pure + seedable (see rng).
+ */
+export function growAmount(opts: { friendSpitBacks: number; rng: Rng }): 1 | 2 {
+  if (opts.friendSpitBacks >= BIG_BITE_STUCK_SPITS) return BIG_BITE
+  return opts.rng() < BIG_BITE_CHANCE ? BIG_BITE : NORMAL_BITE
+}
+
+/** Advance the journey by one fed round (grows `amount` steps — big bite = 2). */
+export function feedStep(
+  journey: JourneyState,
+  amount: number = NORMAL_BITE,
+): { next: JourneyState; outcome: FeedOutcome } {
+  const grownTo = journey.growthStep + Math.max(1, Math.floor(amount))
   if (grownTo < GROW_STEPS) {
     return { next: { ...journey, growthStep: grownTo }, outcome: 'grew' }
   }

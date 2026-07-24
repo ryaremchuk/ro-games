@@ -2,15 +2,20 @@ import { describe, expect, it } from 'vitest'
 import {
   AURA_FLOOR,
   BASE_SCALE,
+  BIG_BITE,
+  BIG_BITE_CHANCE,
+  BIG_BITE_STUCK_SPITS,
   EPISODES,
   FRIENDS_PER_EPISODE,
   FULL_SCALE,
   GROW_STEPS,
+  NORMAL_BITE,
   auraIntensity,
   darken,
   episodeFor,
   feedStep,
   friendColor,
+  growAmount,
   initialJourney,
   journeyFromData,
   journeyToData,
@@ -71,6 +76,35 @@ describe('journey state machine', () => {
     expect(rounds).toBe(GROW_STEPS * FRIENDS_PER_EPISODE)
   })
 
+  it('a big bite (+2) grows two steps and can graduate the friend early', () => {
+    // From the start, a big bite jumps two steps at once (still growing).
+    const two = feedStep(initialJourney(), BIG_BITE)
+    expect(two.outcome).toBe('grew')
+    expect(two.next.growthStep).toBe(2)
+
+    // One step short of full, a big bite crosses the line → friend graduates.
+    const nearlyFull: JourneyState = { episode: 0, friendsFed: 0, growthStep: GROW_STEPS - 1 }
+    expect(feedStep(nearlyFull, BIG_BITE).outcome).toBe('friend-grown')
+
+    // A normal bite from the same spot only grows one step.
+    expect(feedStep({ ...nearlyFull, growthStep: 0 }, NORMAL_BITE).next.growthStep).toBe(1)
+  })
+
+  it('growAmount is a big bite when stuck, else a random sprinkle', () => {
+    const never = () => 0.99 // above BIG_BITE_CHANCE → never a random big bite
+    const always = () => 0 // below BIG_BITE_CHANCE → always a random big bite
+
+    // Not stuck: follows the dice.
+    expect(growAmount({ friendSpitBacks: 0, rng: never })).toBe(NORMAL_BITE)
+    expect(growAmount({ friendSpitBacks: BIG_BITE_STUCK_SPITS - 1, rng: never })).toBe(NORMAL_BITE)
+    expect(BIG_BITE_CHANCE).toBeGreaterThan(0)
+    expect(growAmount({ friendSpitBacks: 0, rng: always })).toBe(BIG_BITE)
+
+    // Stuck: always a big bite, dice be damned (breaks the +1/−1 treadmill).
+    expect(growAmount({ friendSpitBacks: BIG_BITE_STUCK_SPITS, rng: never })).toBe(BIG_BITE)
+    expect(growAmount({ friendSpitBacks: BIG_BITE_STUCK_SPITS + 3, rng: never })).toBe(BIG_BITE)
+  })
+
   it('shrinks one step per wrong feed and never below the start', () => {
     const journey: JourneyState = { episode: 2, friendsFed: 3, growthStep: 2 }
     const once = shrinkStep(journey)
@@ -81,7 +115,7 @@ describe('journey state machine', () => {
   })
 
   it('round-trips through the persisted data bag and survives garbage', () => {
-    const journey: JourneyState = { episode: 7, friendsFed: 4, growthStep: 5 }
+    const journey: JourneyState = { episode: 7, friendsFed: 4, growthStep: 3 }
     expect(journeyFromData(journeyToData(journey))).toEqual(journey)
     expect(journeyFromData({})).toEqual(initialJourney())
     expect(journeyFromData({ episode: -3, friendsFed: 99, growthStep: Number.NaN })).toEqual({

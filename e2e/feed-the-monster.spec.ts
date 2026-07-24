@@ -199,6 +199,9 @@ test('feed: dragging the right food feeds the monster; wrong food is spat back',
 test('feed: clean rounds climb the adaptive meter and advance rounds', async ({ page }) => {
   await page.goto('./#/feed-the-monster')
   await waitForReady(page)
+  // Keep both rounds plain single-step grows — a random big bite could otherwise
+  // graduate the friend mid-test; this keeps the focus on meter + round advance.
+  await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
   const skillBefore = (await waitTraySettled(page)).skill
 
   await feedRound(page)
@@ -213,6 +216,10 @@ test('feed: a fed round visibly grows the friend; a wrong feed deflates it', asy
   await page.goto('./#/feed-the-monster')
   await waitForReady(page)
   await waitTraySettled(page)
+
+  // Silence the random big-bite so "grow back one step" is an exact assertion
+  // (the stuck catch-up never fires here — only one wrong feed).
+  await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
 
   // Jump mid-growth so both directions are observable.
   await forceJourneySettled(page, { growthStep: 3 })
@@ -289,12 +296,12 @@ test('feed: the journey survives a reload (persistent long-term progression)', a
   await waitForReady(page)
   await waitTraySettled(page)
 
-  await forceJourneySettled(page, { episode: 2, friendsFed: 2, growthStep: 4 })
+  await forceJourneySettled(page, { episode: 2, friendsFed: 2, growthStep: 2 })
 
   await page.reload()
   await waitForReady(page)
   const s = await waitTraySettled(page)
-  expect(s.journey).toEqual({ episode: 2, friendsFed: 2, growthStep: 4 })
+  expect(s.journey).toEqual({ episode: 2, friendsFed: 2, growthStep: 2 })
   expect(s.episodeId).toBe(EPISODES[2].id)
   expect(s.miniCount).toBe(2)
   expect(s.aura).toBeGreaterThan(0)
