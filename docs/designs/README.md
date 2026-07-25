@@ -23,13 +23,23 @@ though the design conversations happen in Ukrainian.
 
 ## Queue
 
-| #   | Design                                               | Adds which cognitive axis              | Status |
-| --- | ---------------------------------------------------- | -------------------------------------- | ------ |
-| 1   | [Food conveyor](feed-the-monster-conveyor.md)        | timing, inhibition, sustained scanning | draft  |
-| 2   | [Kitchen: build a dish](feed-the-monster-kitchen.md) | sequencing, part–whole composition     | draft  |
-| 3   | [The thief](feed-the-monster-thief.md)               | sustained attention, go/no-go          | draft  |
-| 4   | [Pixel Studio](drawing-pixel-studio.md)              | fine motor precision + made-by-me art  | draft  |
-| 5   | [Drawn food](feed-the-monster-drawn-food.md)         | production instead of selection        | draft  |
+| #   | Design                                               | Adds which cognitive axis              | Status                        |
+| --- | ---------------------------------------------------- | -------------------------------------- | ----------------------------- |
+| 1   | [Food conveyor](feed-the-monster-conveyor.md)        | timing, inhibition, sustained scanning | shipped                       |
+| 2   | [Kitchen: build a dish](feed-the-monster-kitchen.md) | sequencing, part–whole composition     | shipped (phase 1)             |
+| 3   | [The thief](feed-the-monster-thief.md)               | sustained attention, go/no-go          | shipped (both phases)         |
+| 4   | [Pixel Studio](drawing-pixel-studio.md)              | fine motor precision + made-by-me art  | shipped (part 1 + commission) |
+| 5   | [Drawn food](feed-the-monster-drawn-food.md)         | production instead of selection        | shipped                       |
+
+Each shipped design keeps an **"Answered as built"** section at the end: the open
+questions with the decision that was actually made, plus what building it forced
+us to change. That is the record a later session reads instead of re-deriving.
+
+Still open after this batch: the kitchen's **dish sheet** (phase 2, ~10 new
+composed-food sprites), the studio's **tier-1 decorative reuse** (the child's art
+on a balloon, a whack critter, a launcher tile), and **real art** for everything
+that currently ships procedural placeholders (belt, hatch, rollers, pot, the
+magpie's three frames, the butterfly's two).
 
 ## Why these three
 

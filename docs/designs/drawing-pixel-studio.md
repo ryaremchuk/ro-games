@@ -1,6 +1,7 @@
 # Design — Pixel Studio (the drawing game, rebuilt)
 
-> Status: **draft**, awaiting the design conversation.
+> Status: **SHIPPED — part 1 and the first commission** (`shared/pixel/*`, the
+> rebuilt `/drawing` route). Tier 1 decorative reuse is still open.
 > Adds: fine motor precision on a grid, colour choice, and — the real prize —
 > **art the child makes that other games then use**.
 
@@ -375,29 +376,42 @@ dogfooding test of the format.
 - **Device** — 16/32/64 all painted by an actual 4-year-old finger on the iPad
   before we call the precision ladder real.
 
-## Open questions for the design session
+## Answered as built
 
-1. **Does the freehand canvas survive?** Recommendation: **no** — one mode, no
-   mode switch for a non-reader, and freehand produces nothing reusable. But it
-   is the mode the child already knows, and paper does not have an undo button.
-   A two-tile split (🖍️ freehand / ▦ pixels) as two separate launcher entries is
-   the compromise if we want both.
+1. **The freehand canvas is gone.** One mode, no mode switch for a non-reader, and
+   only a grid produces something another game can use.
 2. ~~**Which reuse ships first?**~~ **Settled: the Feed the Monster commission**
    — "draw a food → the monster eats it now" is the moment that sells the whole
    idea. Written up as [drawn food](feed-the-monster-drawn-food.md); the
    decorative tier-1 slots come after it, one at a time.
-3. **Where does the gallery live?** Inside the drawing game only, or as a fourth
-   launcher tile ("the fridge door")?
+3. **Inside the studio**, behind a 🖼️ button on the rail. A launcher tile can
+   come later if the child goes looking for it.
 4. ~~**How does a commission reach the child?**~~ **Settled for the first
    consumer: pushed** — the pad opens over the game with the ask already on it,
    at a journey beat the game picks. A pull affordance (tap the empty plate) can
    come later if the child ever dismisses one and wants back in.
-5. **Palette size** — 15 colours is a lot of rail; 8 (today's set) is fast to
-   scan but limits what a drawing can be. Also: do we include a skin-tone and a
-   "shadow" pair, which are what make pixel art read?
+5. **15 colours, including a skin tone and a shadow-brown** — the pair that makes
+   pixel art read. It IS a lot of rail: the rail derives its column count from its
+   item count so nothing is ever clipped, and the swatch grid packs denser than the
+   tools (a wrong colour costs one cell; a wrong tool changes the mode).
 6. ~~**Do commissioned drawings persist forever?**~~ **Settled: forever, but
    capped** — six food slots, one per colour, newest per colour wins and the
    retired one stays in the gallery. The cap is what stops the tray degrading
    into blobs.
-7. **Parental controls** — is there any need to delete/hide a drawing, and if so
-   where does that live so a 4-year-old does not find it?
+7. **Parental controls** — a small ✕ on each gallery tile for now. Still open
+   whether that is too findable for a 4-year-old.
+
+### What building it changed
+
+- The pad measures **its own box**, not the window, because its first consumer is a
+  slide-up panel over a running Phaser scene rather than a full route.
+- `padLayout` takes the rail's ITEM COUNT. Sizing the rail without it clipped
+  everything past the fold — including undo, which is the one button a child cannot
+  recover from losing.
+- The gallery's React snapshot has to be **memoised**: `useSyncExternalStore`
+  compares by identity, and a freshly-built array per render is an infinite
+  re-render loop rather than a re-read (it crashed the route into its error
+  boundary).
+- Cell sizes as built: ~9 mm on an iPad held landscape, ~6.8 mm portrait (the
+  rail's second column costs the canvas some width), ~3.7 mm in iPhone-landscape —
+  matching this design's own table, and asserted in `layout.test.ts`.

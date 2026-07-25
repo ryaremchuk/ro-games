@@ -1,6 +1,7 @@
 # Design — The thief
 
-> Status: **draft**, awaiting the design conversation.
+> Status: **SHIPPED, both phases** (`thief.ts`, `thiefMode.ts`). Every open
+> question below is answered at the end.
 > Adds: sustained attention while a main task is running; later, go/no-go
 > response inhibition.
 
@@ -194,20 +195,33 @@ glance.
 - **Device** — is the telegraph enough warning; is the tap target big enough for
   a four-year-old's finger on a moving bird; is it funny rather than stressful.
 
-## Open questions for the design session
+## Answered as built
 
-1. **Which animal?** Seagull (classic food thief, but a stretch in a garden),
-   magpie (thief by reputation, fits every episode), raccoon (ground-based, no
-   flight animation needed), mouse. Recommendation: **magpie** — flies, universally
-   reads as a thief, and looks at home in all four episode themes.
-2. **Should the thief be per-episode** (a seagull at the picnic, a mouse in the
-   kitchen)? Lovely, but ×4 the art.
-3. **Reward for catching**: joy only (recommended, per the TOCHI finding), or a
-   small tangible payoff like turning the round into a big bite?
-4. **Ship phase 2 (the butterfly) at the same time**, or land the thief first and
-   watch whether the child even notices it before adding the no-go trial?
-5. **Does the thief ever visit the friend** instead of a plate — tugging its ear,
-   stealing its aura sparkle — as pure comedy with nothing at stake?
-6. **What happens if the child taps the thief the instant it lands**, before the
-   peck window really starts? Should there be a short grace period so an eager
-   child does not learn "spam-tap the sky"?
+1. **Magpie** — flies, reads as a thief everywhere, at home in all four themes.
+2. **One bird for every episode.** Per-episode visitors are ×4 the art for a beat
+   that lasts three seconds.
+3. **Joy only.** Confetti, a squawk and a delighted friend; no growth, no stars.
+   The journey stays tied to care performed.
+4. **Both phases shipped together.** The butterfly is gated behind the thief's OWN
+   meter (`BUTTERFLY_MIN_SKILL`), so it cannot reach a child who is not yet
+   reliably catching thieves — which is what "land the thief first" was protecting
+   against, enforced by the adaptive axis instead of by a release order.
+5. **Not yet.** Worth adding once the plate version has been watched on a device.
+6. **Every tap on a visible visitor counts**, including one during the glide in.
+   Punishing an eager child for being early is the wrong lesson, and there is
+   nothing to tap during the telegraph — so spam-tapping the sky can never pay off.
+
+### What building it changed
+
+- Tapping the butterfly **holds** the thief meter rather than dropping it. The
+  reward was already withheld (no giggle); deducting on top of that would punish
+  the same slip twice.
+- The stolen food's replacement is scheduled OFF the visit's own timer list. It was
+  on it, and `finish()` cleared that list on the very next line — so the bird flew
+  off with the food and nothing ever came back. Only a cancelled round (the round
+  is over, there is no plate to refill) calls the replacement off now.
+- Visitors are gated off belt rounds and commissions as well as duos: a bird on a
+  moving belt is two new mechanics in one round.
+- Both visitors are drawn **procedurally for now** — three magpie frames sharing
+  one body anchor plus two butterfly frames, following the whack-critter
+  separate-full-body-frames pattern rather than anything face-anchored.

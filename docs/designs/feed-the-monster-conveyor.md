@@ -1,6 +1,7 @@
 # Design — Food conveyor
 
-> Status: **draft**, awaiting the design conversation.
+> Status: **SHIPPED** (`belt.ts`, `conveyorMode.ts`). Every open question below is
+> answered at the end.
 > Adds: timing, response inhibition, sustained scanning of a moving stream.
 
 ## The pitch
@@ -191,18 +192,38 @@ That is **3 required sprites** (plus 1 optional). Everything else is reuse.
 - **Device** — iPad and iPhone-landscape: is the belt legible, is the grab
   comfortable, does the wait feel like anticipation or like dead air.
 
-## Open questions for the design session
+## Answered as built
 
-1. **Direction** — left→right or right→left? Worth trying both on the device.
-2. **Own difficulty meter** or reuse the cognitive one? (Recommendation: own.)
-3. **Does the belt replace the tray for a whole round, or only for some rounds?**
-   Recommendation: whole round, injected like a duo — mixing a static tray and a
-   belt inside one round would muddy both.
-4. **Should the belt be a permanent EPISODE (a "sushi bar" theme with its own
-   background and food pool) instead of a round mode?** That would give it a
-   stronger identity and a natural home, at the cost of appearing much less
-   often.
-5. **Empty slots on the belt** — should there be gaps (a real restaurant belt has
-   them, and they make the "wait" readable) or is it always full?
-6. **Does a big-bite round on the belt slow it down** as an extra kindness, or
-   stay at the round's normal speed?
+1. **Direction** — left → right, dishes emerging from a hatch at the left edge.
+   Still worth trying the mirror with a Ukrainian-speaking child on the device.
+2. **Own difficulty meter** — yes, `belt`, persisted beside `cognitive`. It moves
+   on a belt-specific signal: MISSED PASSES (wanted dishes that rode the whole
+   visible span un-taken), never on wrong feeds, which are cognitive.
+3. **Whole round**, injected like a duo. Kitchen kinds are excluded from belt
+   rounds (`CONVEYOR_EXCLUDED_KINDS`) — a pot is filled from the tray, and the
+   belt is what replaced the tray.
+4. **Round mode, not an episode.** Cheaper, and it keeps the belt appearing
+   across all four existing themes (it tints per episode for free).
+5. **Gaps, yes** — an eaten dish leaves its lane empty until the lane comes round
+   past the hatch, which is what makes the wait readable.
+6. **Never a big bite.** The belt IS the treat; eight glowing plates behind a
+   moving belt would just be noise.
+
+### What building it changed
+
+- `BELT_HIDDEN_LANES` is **one**, and that is a correctness constraint rather
+  than a visual one: a rescue dish still has to RIDE from the hatch into reach, so
+  every hidden lane adds a full pitch of latency to the anti-drought promise. At
+  the easiest setting a pitch is ~3 s against a 4 s budget.
+- The anti-drought guarantee is polled **every frame**, not once per lane-wrap.
+  Checking it only at the hatch left a whole pitch of latency on top of the ride
+  out; the per-frame check re-dresses the lane currently behind the hatch, which
+  is invisible by definition and always exists.
+- The honest ceiling is therefore `max(maxWaitMs, hatchDelay) + one pitch`, and a
+  slow belt compensates for its slow delivery by running wanted dishes DENSE (one
+  in three at the easiest setting) so the wait the child actually meets stays a
+  fraction of it. Both are asserted in `belt.test.ts`.
+- Belt art is **procedural for now** (`ftm-belt`, `ftm-belt-roller`, `ftm-hatch`
+  in `textures.ts`), neutral grey and tinted by `episode.palette.table`. Dropping
+  `art/belt-strip.png` etc. in later takes over through the same `hasArt()`
+  contract every other look uses — no code change.

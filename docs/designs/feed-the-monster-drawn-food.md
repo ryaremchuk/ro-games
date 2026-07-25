@@ -1,7 +1,7 @@
 # Design — Feed the Monster: the food the child drew
 
-> Status: **draft** — the shape below is agreed; the open questions at the end
-> are not.
+> Status: **SHIPPED** (`drawnFoods.ts`, `journey.commissionColor`,
+> `logic.withDrawnFoods`). Every open question below is answered at the end.
 > Adds: **production instead of selection** — the first task in the app where the
 > child _makes_ the answer rather than picking it.
 > Depends on: [Pixel Studio](drawing-pixel-studio.md) (the `PixelPad` component
@@ -223,26 +223,36 @@ chomp beats.
   in the same session. If that callback does not get a reaction, the feature is
   not finished.
 
-## Open questions
+## Answered as built
 
-1. **Does a drawn food get the big-bite boost** (`BIG_BITE_FOOD_BOOST`) when the
-   friend asks for it later, or is the extra celebration confined to the first
-   bite? Recommendation: first bite loud, later bites normal — otherwise the
-   drawn food becomes the strictly-best food and the child stops engaging with
-   the rest of the tray.
-2. **Is the favourite callback guaranteed or random?** Guaranteed once per
-   episode is legible; random is more alive. Recommendation: guaranteed the first
-   time a drawing is ever made, random after.
-3. **Does the child's art appear inside the request bubble**, or only on the
-   tray? Art in the bubble is the stronger moment but 16×16 upscaled to bubble
-   size may read as mush — settle it on the device.
-4. **Restrict the pad's palette to the asked colour's family?** It would
-   guarantee the drawing "looks red" and teaches shade. Recommendation: **no** —
-   taking colours away is the one thing that makes a free-play pad feel like a
-   test.
-5. **Should other games see `role: 'ftm-food'` drawings** as decoration (a
-   poster, a balloon print)? Cheap, and it makes the whole app feel like one
-   place. Probably yes, later.
-6. **What happens when the child draws nothing for several episodes in a row** —
-   does the game stop asking? Recommendation: keep asking, once per episode; the
-   ask is two taps to dismiss and the day they say yes is the day it works.
+1. **First bite loud, later bites normal.** The commission round is never a big
+   bite; instead its completion celebration is turned up on its own (double the
+   confetti, a star shower, a five-note flourish, a longer laugh). A drawn food
+   that also paid double growth would become the strictly-best food.
+2. **Guaranteed, once, `DRAWN_CALLBACK_ROUNDS` after the drawing is made.** Made
+   reliable rather than alive because the payoff is the whole point of the feature;
+   `logic.poolWithFood` guarantees the drawn food is genuinely in that round's
+   window, which rotation would otherwise leave to a one-in-three chance.
+3. **Yes, in the bubble too.** `tray.foodTexture` resolves a drawn food to the
+   child's own texture, and the bubble fills its tiles through the same call — so
+   the ask shows their art. Still to be judged on the device.
+4. **No restriction.** The pad shows the full palette; the asked colour rides
+   beside the done button as a blot instead.
+5. **Not yet** — the store already answers `(role, tag)` queries, so a decorative
+   consumer is a small change when we want one.
+6. **Keep asking, once per episode**, whatever the answer. The episode is marked
+   as asked even when the page comes back blank.
+
+### What building it changed
+
+- A commission **clears the tray** and stops the belt, the pot and any visitor: the
+  friend arrives with an EMPTY PLATE, and leftover food would otherwise stay
+  draggable behind the pad.
+- Drawn foods are resolvable through a small runtime registry
+  (`logic.registerRuntimeFood`) rather than by threading a catalog argument through
+  a dozen pure rules. Every DECISION stays pure; only the id→Food lookup grew.
+- `BubbleItem` now carries a `foodId` instead of an emoji glyph. The bubble used to
+  map the glyph back to an id, which every drawn food would have collided on —
+  they all show the same ✏️ fallback.
+- The pad opens as a slide-up panel over the bottom ~80% of the screen, so the
+  friend who asked stays visible and gets visibly impatient above it.
