@@ -165,11 +165,63 @@ so it advances on care performed, never on skill:
   gates play — precedent: StoryToys' Hungry Caterpillar (content on care,
   not tests) and Curious Learning's Feed the Monster (collection of friends).
 
+## Drawing: a pixel grid, and the pad is SHARED
+
+Decided July 2026, when the drawing game came up for its first real feature.
+Freehand was the weakest game in the app against the north star: no adaptive axis
+at all — nothing to get better at, nothing measured, and nothing the child made
+survived the next tap on 🗑️.
+
+- **A grid replaced the freehand canvas.** One mode, no mode switch for a
+  non-reader. The deciding argument was not the precision ladder (16 → 32 → 64,
+  real as it is) but REUSE: a grid of colour indices IS a sprite and can walk into
+  any other game; a smear of strokes is a photograph of a smear. The rejected
+  compromise was two launcher tiles (🖍️ freehand / ▦ pixels) — two entries for one
+  activity is a worse first choice for a 4-year-old than one good one.
+- **The pad lives in `src/shared/pixel/`, not in the drawing game.** Its first
+  consumer opens it as an overlay over a running Phaser scene (Feed the Monster
+  commissioning a food), with no route change and no lost game state. Building it
+  inside the route would have meant pulling it straight back out. `/drawing` is a
+  thin studio shell around the same component.
+- **We can never know what the child drew**, so every reuse path either does not
+  care (decorative) or ASKED for it (commissioned). A commissioned drawing is
+  tagged by construction — the monster asks for a colour, so the answer's colour is
+  true because we asked, not because anything was recognised. Precedent: _Drawn to
+  Life_ only ever accepted drawings into pre-defined slots, and Pixicade /
+  Draw Your Game assign meaning by colour-coded convention.
+- **The child's art is capped in the game, never in the gallery.** Six food slots,
+  one per colour, newest wins. That cap is a learning decision: an uncapped pool
+  slowly replaces recognisable food with blobs, and then "give me the two yellow
+  ones" stops teaching anything. The retired drawing stays in the gallery forever.
+
+## Feed the Monster: one axis per genuinely different skill
+
+Decided July 2026 with the conveyor and the thief. The game now runs THREE
+persisted meters — `cognitive`, `belt`, `thief` — and adding axes rather than
+widening one is the deliberate choice.
+
+- **A child can be great at colours and bad at timing.** One meter would average
+  the two into a difficulty that fits neither, which is the same false trade
+  Balloon Pop's motor/cognitive split solved. So the belt has its own ladder,
+  moved by its own signal (wanted dishes that rode past un-taken — timing and
+  scanning), and never by wrong feeds, which are cognitive.
+- **Each axis carries its own no-fail gates.** A new mechanic never lands on a
+  child who is currently struggling (`lastRoundEased`), never twice in a row, and
+  never on top of another mode.
+- **Composition is NOT a mode.** `dish` / `dish-ordered` are rows in
+  `logic.TASK_REGISTRY` because part–whole composition is a cognitive skill and the
+  cognitive meter should own it. The pot is furniture that appears for those kinds.
+- **Interruption pays joy, never progress.** Catching the thief gives confetti, a
+  squawk and a delighted friend — no growth, no stars. HCI work on children's games
+  (ACM TOCHI 2021) found reward framing pulls children away from the intended
+  thinking behaviour, and the journey stays tied to care performed.
+
 ## Deferred (not done yet, on purpose)
 
 - **Parent gate** (hold-to-confirm) before leaving a game or opening external
   links — planned once there's anything external to protect.
-- **Undo** in the drawing game (only clear-all exists in v1).
+- ~~**Undo** in the drawing game~~ — landed with the pixel studio (one stroke per
+  step, depth 20, no redo).
 - **Shared assets / real art** — currently emoji placeholders on tiles;
   Kenney.nl (CC0) and/or AI-generated art to come. This is expected to be the
   main bottleneck, not code.
