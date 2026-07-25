@@ -4,6 +4,7 @@ import {
   BASE_SCALE,
   BIG_BITE,
   BIG_BITE_CHANCE,
+  BIG_BITE_FOOD_BOOST,
   BIG_BITE_STUCK_SPITS,
   DUO_GROW_STEPS,
   EPISODES,
@@ -20,6 +21,7 @@ import {
   friendColor,
   growAmount,
   initialJourney,
+  isStuck,
   journeyFromData,
   journeyToData,
   scaleForStep,
@@ -106,6 +108,25 @@ describe('journey state machine', () => {
     // Stuck: always a big bite, dice be damned (breaks the +1/−1 treadmill).
     expect(growAmount({ friendSpitBacks: BIG_BITE_STUCK_SPITS, rng: never })).toBe(BIG_BITE)
     expect(growAmount({ friendSpitBacks: BIG_BITE_STUCK_SPITS + 3, rng: never })).toBe(BIG_BITE)
+  })
+
+  it('isStuck is the dice-free half of growAmount (the live mid-round upgrade)', () => {
+    const never = () => 0.99
+    for (let spits = 0; spits <= BIG_BITE_STUCK_SPITS + 2; spits++) {
+      // The scene polls isStuck on every spit back to upgrade a round in flight;
+      // it must agree exactly with what growAmount would decide with no dice.
+      expect(isStuck(spits)).toBe(growAmount({ friendSpitBacks: spits, rng: never }) === BIG_BITE)
+    }
+    expect(isStuck(BIG_BITE_STUCK_SPITS - 1)).toBe(false)
+    expect(isStuck(BIG_BITE_STUCK_SPITS)).toBe(true)
+  })
+
+  it('a big-bite round makes the food visibly bigger', () => {
+    // The tray multiplies every food's resting scale by this while the round is
+    // dressed — big enough for a 3-4yo to notice, small enough not to crowd the
+    // plate row (layout caps a slot at PLATE_MAX_W_CSS).
+    expect(BIG_BITE_FOOD_BOOST).toBeGreaterThan(1.08)
+    expect(BIG_BITE_FOOD_BOOST).toBeLessThan(1.3)
   })
 
   it('a duo grows both friends over DUO_GROW_STEPS, then graduates two at once', () => {

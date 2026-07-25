@@ -52,6 +52,18 @@ export interface FeedTestState {
   aura: number
   /** Fed friends standing in the lineup. */
   miniCount: number
+  /**
+   * Is the round being played a "big bite" (+2 growth)? Decided at round start
+   * and announced to the child (lip smack, glowing tray, bigger food), or
+   * upgraded mid-round once the child has struggled enough on this friend.
+   */
+  bigBite: boolean
+  /**
+   * Scale multiplier on every tray food: 1 normally, journey.BIG_BITE_FOOD_BOOST
+   * while a big-bite round is dressed. Asserts the INDICATION is really up, not
+   * just the flag (the glow + lip smack are canvas-only, this one is readable).
+   */
+  foodBoost: number
   /** True while a two-friend duo bonus round is on stage. */
   duoActive: boolean
   /** Per-friend duo state while a duo is live (else null) — lets a spec feed
@@ -93,8 +105,10 @@ export interface FeedTestApi {
   /**
    * Toggle the random "big bite" sprinkle (a fed round occasionally growing two
    * steps instead of one). Off makes growth deterministic (+1, unless the child
-   * is stuck) so a spec can assert an exact growthStep after a feed. The
-   * adaptive stuck-catch-up is unaffected — only the dice are silenced.
+   * is stuck) so a spec can assert an exact growthStep after a feed, and also
+   * takes back a big bite the LIVE round already won — the dice are rolled at
+   * round start, so by the time a spec speaks the round may already be golden.
+   * The adaptive stuck-catch-up is unaffected — only the dice are silenced.
    */
   setRandomBigBite: (enabled: boolean) => void
 
@@ -109,6 +123,12 @@ export interface FeedTestApi {
   devEpisode: (delta: number) => void
   /** Re-deal the current round as a fresh task, leaving the journey untouched. */
   devRegenerate: () => void
+  /**
+   * Dress/undress the CURRENT round as a big bite (lip smack, glowing tray,
+   * bigger food) without waiting on the 12% dice — so an adult can eyeball the
+   * announcement on the device. No-ops mid-transition or during a duo.
+   */
+  devBigBite: (on: boolean) => void
   /**
    * Start a two-friend duo bonus round now (dev/e2e), if ≥2 episode slots are
    * free and no duo/transition is already running. Bypasses the data+chance

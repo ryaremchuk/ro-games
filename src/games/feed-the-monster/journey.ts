@@ -109,14 +109,36 @@ export const BIG_BITE_STUCK_SPITS = 2
 export const BIG_BITE_CHANCE = 0.12
 
 /**
- * How many steps this fed round grows the friend. A big bite (+2) fires as an
- * INVISIBLE catch-up once the child has spat back enough on this friend that it
- * has fallen behind — so a struggling toddler can never get stuck on the
- * +1/−1 treadmill a pure size threshold would allow — plus a rare random
- * sprinkle for joy even when they're cruising. Pure + seedable (see rng).
+ * How much bigger every tray food sits during a big-bite round. One of the three
+ * layers that ANNOUNCE the round (see the scene's announceBigBite): the glowing
+ * plates carry the state, the friend's lip-smack the moment, and this the
+ * instant read. Doubles as a small kindness — bigger food is easier to grab.
+ */
+export const BIG_BITE_FOOD_BOOST = 1.15
+
+/**
+ * Has the child fallen behind on THIS friend (enough wrong feeds that the
+ * +1/−1 treadmill would trap them)? The catch-up half of growAmount, without
+ * the dice — the scene also polls it mid-round, so a round that turns rough
+ * can upgrade to a big bite while it is still being played.
+ */
+export function isStuck(friendSpitBacks: number): boolean {
+  return friendSpitBacks >= BIG_BITE_STUCK_SPITS
+}
+
+/**
+ * How many steps a fed round grows the friend. A big bite (+2) fires as a
+ * catch-up once the child has spat back enough on this friend that it has
+ * fallen behind — so a struggling toddler can never get stuck on the +1/−1
+ * treadmill a pure size threshold would allow — plus a rare random sprinkle for
+ * joy even when they're cruising. Pure + seedable (see rng).
+ *
+ * The scene rolls this at round START (not on completion) so the round can be
+ * announced to the child; the catch-up half is re-checked live on every spit
+ * back via isStuck.
  */
 export function growAmount(opts: { friendSpitBacks: number; rng: Rng }): 1 | 2 {
-  if (opts.friendSpitBacks >= BIG_BITE_STUCK_SPITS) return BIG_BITE
+  if (isStuck(opts.friendSpitBacks)) return BIG_BITE
   return opts.rng() < BIG_BITE_CHANCE ? BIG_BITE : NORMAL_BITE
 }
 
