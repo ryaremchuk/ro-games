@@ -69,6 +69,87 @@ export interface FeedTestState {
   /** Per-friend duo state while a duo is live (else null) — lets a spec feed
    * each mouth the food it wants. */
   duo: DuoState | null
+  /**
+   * The live commission while the pixel pad is open over the scene (else null):
+   * which colour was asked, and whether the ask NAMES the colour (it does not
+   * below the colour-round unlock, where it is simply "draw anything").
+   */
+  commission: { color: string; askColor: boolean } | null
+  /** Food ids of the child's drawings currently in the rotation (max 6). */
+  drawnFoodIds: string[]
+  /** True while this round's food rides the conveyor belt instead of the tray. */
+  conveyorActive: boolean
+  /** Live belt state while a conveyor round is on stage (else null). */
+  conveyor: ConveyorState | null
+  /** The belt's own adaptive meter, 0..BELT_SKILL_MAX. */
+  beltSkill: number
+  /** Live kitchen state while a `dish` round is on stage (else null). */
+  kitchen: KitchenState | null
+  /** The visitor on stage right now (else null). */
+  visitor: VisitorState | null
+  /** The thief axis's own adaptive meter, 0..THIEF_SKILL_MAX. */
+  thiefSkill: number
+}
+
+/** The thief (or the no-go butterfly), mid-visit. */
+export interface VisitorState {
+  kind: 'thief' | 'butterfly'
+  /** telegraph → approach → peck → leaving. */
+  phase: 'telegraph' | 'approach' | 'peck' | 'leaving'
+  /** Tray slot it is after. */
+  slot: number
+  /** The food on that plate. */
+  foodId: string
+  /** ms left in the peck window (0 outside it). */
+  msLeft: number
+  /** Where to tap, in css px. */
+  xCss: number
+  yCss: number
+}
+
+/** The pot, mid-cook. */
+export interface KitchenState {
+  recipeId: string
+  /** Do the parts have to go in left-to-right? */
+  ordered: boolean
+  /** The recipe's parts, in order. */
+  ingredients: string[]
+  /** What is in the pot already, in the order it went in. */
+  contents: string[]
+  /** What the pot will accept right now (one entry in an ordered round). */
+  wants: string[]
+  /** The cooked dish sitting on the pot, once every part is in (else null). */
+  madeDish: string | null
+  /** Pot centre in css px, for real-pointer drags. */
+  potCss: { x: number; y: number }
+  /** The pot's drop radius in css px. */
+  snapCss: number
+}
+
+/** One dish riding the belt right now. */
+export interface ConveyorDishState {
+  foodId: string
+  /** Would feeding this dish be correct right now? (logic.wantsFood) */
+  wanted: boolean
+  /** Is it past the hatch and on screen? */
+  visible: boolean
+  /** ms until the child could actually take it (0 = right now). */
+  msUntilReachable: number
+  /** Dish centre in css px, for real-pointer drags. */
+  xCss: number
+  yCss: number
+}
+
+export interface ConveyorState {
+  /** ms for one dish to cross the visible belt at this belt skill. */
+  traverseMs: number
+  /** The anti-drought budget: the longest wait the child may ever face. */
+  maxWaitMs: number
+  /** Is the belt advancing? (false while a dish is held, or mid-celebration) */
+  moving: boolean
+  /** Wanted dishes that rode the visible span un-taken this round. */
+  misses: number
+  dishes: ConveyorDishState[]
 }
 
 /** One duo friend's live ask + where to drop its food (css px). */
@@ -136,6 +217,38 @@ export interface FeedTestApi {
    * Returns false when a duo can't start right now.
    */
   forceDuo: () => boolean
+
+  // ─── Commissions (the food the child draws) ───────────────────────────────
+  /**
+   * Open the pixel pad with a commission at the next round start, bypassing the
+   * once-per-episode / episode-≥2 journey gate. Returns false while a
+   * transition or a duo owns the stage.
+   */
+  forceCommission: () => boolean
+  /**
+   * Submit a synthetic drawing for the open commission so a spec need not paint
+   * 40 cells by hand: `cells` are `{x, y, color}` palette entries on a 16×16
+   * grid, or an empty array to close the pad blank. Returns false when no
+   * commission is open.
+   */
+  submitDrawing: (cells: Array<{ x: number; y: number; color: number }>) => boolean
+  /** Dev: retire every drawn food from the game (the gallery keeps the art). */
+  wipeDrawnFoods: () => void
+
+  // ─── Conveyor ─────────────────────────────────────────────────────────────
+  /**
+   * Re-deal the current round on the belt, bypassing the data+chance axis.
+   * Returns false while a transition, a duo or the pad owns the stage.
+   */
+  forceConveyor: () => boolean
+
+  // ─── The thief ────────────────────────────────────────────────────────────
+  /**
+   * Send a visitor in right now, bypassing the data+chance axis. Returns false
+   * when one is already on stage, the tray is empty, or a celebration owns the
+   * screen.
+   */
+  forceVisitor: (kind: 'thief' | 'butterfly') => boolean
 }
 
 declare global {

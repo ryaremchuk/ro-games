@@ -14,8 +14,8 @@
  */
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { ALL_FOODS, COLOR_HEX, bubbleItems, grayedBubbleItems, requestTotal } from './logic'
-import type { FoodRequest } from './logic'
+import { COLOR_HEX, bubbleItems, grayedBubbleItems, requestTotal } from './logic'
+import type { BubbleItem, FoodColor, FoodRequest } from './logic'
 import * as layout from './layout'
 import * as textures from './textures'
 import type FeedTheMonsterScene from './FeedTheMonsterScene'
@@ -27,6 +27,12 @@ const GHOST_ALPHA = 0.5
 const SLOT_GREY = 0xd6d3ce // pattern answer socket — a "?" hole
 const DOTS_BACKING = 0xebe7e0 // subitizing frame behind the ink pips
 const BUBBLE_ITEM_CSS = 44
+/**
+ * A kitchen round's panel is taller than every other: it carries two rows (the
+ * finished dish above, its parts below). Still a fraction under a fifth of an
+ * iPad's height, so it never crowds the friend.
+ */
+const DISH_PANEL_H_CSS = 168
 // Mirrors the scene's ART SPEC ink + pentatonic-happy tones (the pips + the
 // request-cue melody share these exact values with the scene).
 const INK = 0x3d3a4b
@@ -43,6 +49,8 @@ export class RequestBubble {
   private pips: Phaser.GameObjects.Arc[] = []
   /** Accent ring around the pattern's answer socket (cleared per request). */
   private patternRing: Phaser.GameObjects.Arc | null = null
+  /** A kitchen round's part tiles, in recipe order (index = pot position). */
+  private dishParts: Phaser.GameObjects.Image[] = []
 
   private readonly scene: FeedTheMonsterScene
 
@@ -73,8 +81,8 @@ export class RequestBubble {
    * keeps rounded corners crisp at any width; the border is tinted by the
    * episode palette so the panel changes with the world.
    */
-  drawPanel(width: number): void {
-    const bh = this.px(layout.PANEL_H_CSS)
+  drawPanel(width: number, heightCss: number = layout.PANEL_H_CSS): void {
+    const bh = this.px(heightCss)
     const radius = this.px(26)
     this.panelGfx.clear()
     this.panelGfx.fillStyle(0xffffff, 0.96)
@@ -113,10 +121,46 @@ export class RequestBubble {
     this.bubble.setVisible(!hidden)
   }
 
-  showRequest(request: FoodRequest): void {
-    // A duo round stood this panel down (setHidden); showing a solo request
-    // brings it back — content-first, so it never flashes a stale ask.
+  /**
+   * The COMMISSION ask: a pencil and, once colour rounds are in rotation, a blot
+   * of the colour being asked for. No food tiles, nothing to feed — the panel is
+   * saying "make something" instead of "bring me something", and the colour is
+   * held on screen so it registers before the pad slides up.
+   *
+   * `color` is null below the colour-round unlock, where the ask is simply
+   * "draw anything".
+   */
+  showCommission(color: FoodColor | null): void {
+    this.clearTiles()
     this.bubble.setVisible(true)
+
+    const tile = this.px(BUBBLE_ITEM_CSS + 22)
+    const itemW = this.px(BUBBLE_ITEM_CSS + 14)
+    const count = color === null ? 1 : 2
+    this.drawPanel(count * itemW + this.px(52))
+
+    const pencil = this.scene.add.image(-((count - 1) / 2) * itemW, 0, 'ftm-pencil')
+    pencil.setDisplaySize(tile * 0.9, tile * 0.9)
+    this.bubble.add(pencil)
+    this.bubblePics.push(pencil)
+    this.pulse(pencil)
+
+    if (color !== null) {
+      const blot = this.scene.add.image(itemW / 2, 0, 'ftm-splash').setTint(COLOR_HEX[color])
+      blot.setDisplaySize(tile, tile)
+      this.bubble.add(blot)
+      this.bubblePics.push(blot)
+      this.pulse(blot)
+    }
+
+    this.popBubble()
+    // Two rising notes — "make me one", distinct from every count cue.
+    playTone(587, 150, 'triangle', 0.1)
+    this.scene.time.delayedCall(180, () => playTone(880, 200, 'triangle', 0.1))
+  }
+
+  /** Tear down the current tiles + decorations (shared by every show*). */
+  private clearTiles(): void {
     for (const pic of this.bubblePics) {
       this.scene.tweens.killTweensOf(pic)
       pic.destroy()
@@ -126,6 +170,117 @@ export class RequestBubble {
     this.bubbleExtras = []
     this.pips = []
     this.patternRing = null
+    this.dishParts = []
+  }
+
+  /** The panel's arrival pop (shared by every show*). */
+  private popBubble(): void {
+    this.scene.tweens.killTweensOf(this.bubble)
+    this.bubble.setScale(0)
+    this.scene.tweens.add({
+      targets: this.bubble,
+      scaleX: 1,
+      scaleY: 1,
+      duration: 320,
+      ease: 'Back.easeOut',
+    })
+  }
+
+  /**
+   * A KITCHEN round reads top-to-bottom instead of left-to-right: the finished
+   * dish big on the upper row, its parts small in a row underneath. No `+` and no
+   * `=` — both are abstract for a non-reader; the vertical "big thing above, its
+   * parts below" arrangement IS the whole/parts relationship, so it needs no
+   * learning.
+   *
+   * The panel grows taller for this one layout, which is fine: the request panel
+   * already redraws itself per request.
+   */
+  private showDishRequest(items: BubbleItem[]): void {
+    const dish = items.find((item) => item.dish === true)
+    const parts = items.filter((item) => item.part === true)
+    const bigTile = this.px(BUBBLE_ITEM_CSS + 46)
+    const partTile = this.px(BUBBLE_ITEM_CSS + 4)
+    const partGap = this.px(10)
+    const rowW = parts.length * partTile + Math.max(0, parts.length - 1) * partGap
+    this.drawPanel(Math.max(bigTile, rowW) + this.px(64), DISH_PANEL_H_CSS)
+
+    const dishY = -this.px(DISH_PANEL_H_CSS) * 0.17
+    const partY = this.px(DISH_PANEL_H_CSS) * 0.27
+
+    if (dish?.foodId !== undefined) {
+      const pic = this.scene.add.image(0, dishY, this.scene.tray.foodTexture(dish.foodId))
+      const size = bigTile * textures.foodScale(dish.foodId)
+      pic.setDisplaySize(size, size)
+      this.bubble.add(pic)
+      this.bubblePics.push(pic)
+    }
+    parts.forEach((part, i) => {
+      if (part.foodId === undefined) return
+      const x = (i - (parts.length - 1) / 2) * (partTile + partGap)
+      const pic = this.scene.add.image(x, partY, this.scene.tray.foodTexture(part.foodId))
+      const size = partTile * textures.foodScale(part.foodId)
+      pic.setDisplaySize(size, size)
+      this.bubble.add(pic)
+      this.bubblePics.push(pic)
+      this.dishParts.push(pic)
+    })
+    // Overlays must render above their tile.
+    for (const extra of this.bubbleExtras) this.bubble.bringToTop(extra)
+    this.popBubble()
+  }
+
+  /**
+   * A part went into the pot: its picture solidifies and takes a ✓. Driven from
+   * kitchenMode rather than from `eaten`, because the parts are cooked, never
+   * eaten — the same reason dots drives its pips and `not` its sockets directly.
+   */
+  markDishPart(index: number): void {
+    const pic = this.dishParts[index]
+    if (!pic || pic.getData('done')) return
+    pic.setData('done', true)
+    this.scene.tweens.killTweensOf(pic)
+    pic.setAlpha(1)
+    this.scene.tweens.add({
+      targets: pic,
+      scaleX: { from: pic.scaleX * 1.25, to: pic.scaleX },
+      scaleY: { from: pic.scaleY * 1.25, to: pic.scaleY },
+      duration: 240,
+      ease: 'Back.easeOut',
+    })
+    this.stampCheck(pic)
+  }
+
+  /** Punch the next-needed part — "this one now" in an ordered kitchen round. */
+  pulseDishPart(index: number): void {
+    const pic = this.dishParts[index]
+    if (!pic || !pic.active || pic.getData('done')) return
+    this.scene.tweens.killTweensOf(pic)
+    const sx = pic.scaleX
+    const sy = pic.scaleY
+    this.scene.tweens.add({
+      targets: pic,
+      scaleX: sx * 1.3,
+      scaleY: sy * 1.3,
+      duration: 220,
+      yoyo: true,
+      repeat: 1,
+      ease: 'Sine.easeInOut',
+      onComplete: () => pic.setScale(sx, sy),
+    })
+  }
+
+  showRequest(request: FoodRequest): void {
+    // A duo round stood this panel down (setHidden); showing a solo request
+    // brings it back — content-first, so it never flashes a stale ask.
+    this.bubble.setVisible(true)
+    this.clearTiles()
+    if (request.kind === 'dish') {
+      this.showDishRequest(bubbleItems(request))
+      // An ordered round says which part comes first before the child guesses.
+      if (request.ordered) this.scene.time.delayedCall(420, () => this.pulseDishPart(0))
+      return
+    }
 
     // Pattern rounds ask for exactly ONE food (the sequence's continuation),
     // yet their tiles used to look identical to a "feed all of these" combo —
@@ -151,8 +306,8 @@ export class RequestBubble {
       let ghost = false
       let qSize = 0
       let context = false
-      if (item.emoji !== undefined) {
-        const fid = this.foodIdForEmoji(item.emoji)
+      if (item.foodId !== undefined) {
+        const fid = item.foodId
         pic = this.scene.add.image(x, 0, this.scene.tray.foodTexture(fid))
         const size = (isPattern ? tile * 0.78 : tile) * textures.foodScale(fid)
         pic.setDisplaySize(size, size)
@@ -214,16 +369,7 @@ export class RequestBubble {
     })
     // Overlays (bans, ?, ✓, pips, rings) must render above their tile.
     for (const extra of this.bubbleExtras) this.bubble.bringToTop(extra)
-
-    this.scene.tweens.killTweensOf(this.bubble)
-    this.bubble.setScale(0)
-    this.scene.tweens.add({
-      targets: this.bubble,
-      scaleX: 1,
-      scaleY: 1,
-      duration: 320,
-      ease: 'Back.easeOut',
-    })
+    this.popBubble()
   }
 
   /** Domino-style pip offsets (in pip-spacing units) for 1..6. */
@@ -416,11 +562,6 @@ export class RequestBubble {
     })
   }
 
-  private foodIdForEmoji(emoji: string): string {
-    const food = ALL_FOODS.find((f) => f.emoji === emoji)
-    return food ? food.id : ALL_FOODS[0].id
-  }
-
   /**
    * Mark the just-satisfied want tiles as collected: solidify the ghosted tile
    * with a pop, retire its "?", and stamp the ✓. not/pattern carry progress via
@@ -504,6 +645,31 @@ export class RequestBubble {
         this.scene.time.delayedCall(request.sequence.length * 160 + 140, () => {
           playTone(988, 170, 'sine', 0.08)
           this.punchPatternRing()
+        })
+        return
+      }
+      case 'dish': {
+        // A rising arpeggio, one note per part, landing on a bright chord — "these
+        // go together and MAKE something", which is the whole idea of the round.
+        const parts = this.dishParts.length
+        for (let i = 0; i < Math.min(parts, PENTA.length); i++) {
+          this.scene.time.delayedCall(i * 190, () => {
+            playTone(PENTA[i], 150, 'sine', 0.1)
+            this.pulseDishPart(i)
+          })
+        }
+        this.scene.time.delayedCall(parts * 190 + 160, () => {
+          playTone(1047, 240, 'triangle', 0.11)
+          const dish = this.bubblePics[0]
+          if (dish?.active && !this.scene.transitioning) {
+            this.scene.tweens.add({
+              targets: dish,
+              scaleX: { from: dish.scaleX * 1.18, to: dish.scaleX },
+              scaleY: { from: dish.scaleY * 1.18, to: dish.scaleY },
+              duration: 300,
+              ease: 'Back.easeOut',
+            })
+          }
         })
         return
       }

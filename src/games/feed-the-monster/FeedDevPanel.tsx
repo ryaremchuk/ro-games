@@ -13,6 +13,15 @@ import { EPISODES, FRIENDS_PER_EPISODE, GROW_STEPS } from './journey'
  *   • Episode      — jump to the next/previous theme
  *   • Regenerate   — re-deal the current round as a fresh task
  *   • Big bite     — dress the current round as a big bite on demand
+ *   • Duo          — start a two-friend bonus round
+ *   • Conveyor     — re-deal this round on the sushi belt
+ *   • Thief / 🦋   — send a visitor in now (go and no-go)
+ *   • Commission   — open the pixel pad ("draw me something")
+ *   • Wipe drawn   — retire the drawn foods (the gallery keeps the art)
+ *
+ * Every ROUND MODE has a button here on purpose: each one is rare by design
+ * (gated on skill, spacing and chance), so without a way to summon it an adult
+ * cannot see it on the device at all.
  *
  * Not for the child: it's an adult debugging tool, so this uses plain text
  * (unlike every child-facing surface). The scene installs its hook
@@ -29,6 +38,12 @@ interface DevSnapshot {
   growthStep: number
   duoActive: boolean
   bigBite: boolean
+  conveyorActive: boolean
+  beltSkill: number
+  thiefSkill: number
+  visitor: string | null
+  drawnFoods: number
+  commission: string | null
 }
 
 function readSnapshot(): DevSnapshot | null {
@@ -44,6 +59,12 @@ function readSnapshot(): DevSnapshot | null {
     growthStep: s.journey.growthStep,
     duoActive: s.duoActive,
     bigBite: s.bigBite,
+    conveyorActive: s.conveyorActive,
+    beltSkill: s.beltSkill,
+    thiefSkill: s.thiefSkill,
+    visitor: s.visitor ? `${s.visitor.kind}:${s.visitor.phase}` : null,
+    drawnFoods: s.drawnFoodIds.length,
+    commission: s.commission ? s.commission.color : null,
   }
 }
 
@@ -106,9 +127,54 @@ export default function FeedDevPanel() {
         ))}
       </div>
 
-      <button type="button" style={styles.duo} onClick={() => act((a) => a.forceDuo())}>
-        ✌ Duo bonus
-      </button>
+      {/* One button per ROUND MODE. Each is rare by design, so this is the only
+          way to see it on the device without grinding the axes that gate it. */}
+      <div style={styles.modes}>
+        <button type="button" style={styles.mode} onClick={() => act((a) => a.forceDuo())}>
+          ✌ Duo
+        </button>
+        <button
+          type="button"
+          style={{
+            ...styles.mode,
+            background: snap?.conveyorActive ? '#4d96ff' : '#f4a259',
+            color: '#fff',
+          }}
+          onClick={() => act((a) => a.forceConveyor())}
+        >
+          🍣 Belt
+        </button>
+        <button type="button" style={styles.mode} onClick={() => act((a) => a.forceKind('dish'))}>
+          🍲 Cook
+        </button>
+        <button
+          type="button"
+          style={styles.mode}
+          onClick={() => act((a) => a.forceKind('dish-ordered'))}
+        >
+          🍲 Order
+        </button>
+        <button
+          type="button"
+          style={styles.mode}
+          onClick={() => act((a) => a.forceVisitor('thief'))}
+        >
+          🐦 Thief
+        </button>
+        <button
+          type="button"
+          style={styles.mode}
+          onClick={() => act((a) => a.forceVisitor('butterfly'))}
+        >
+          🦋 No-go
+        </button>
+        <button type="button" style={styles.mode} onClick={() => act((a) => a.forceCommission())}>
+          ✏️ Draw
+        </button>
+        <button type="button" style={styles.mode} onClick={() => act((a) => a.wipeDrawnFoods())}>
+          🧹 Wipe
+        </button>
+      </div>
 
       <button
         type="button"
@@ -124,16 +190,26 @@ export default function FeedDevPanel() {
 
       <div style={styles.readout}>
         {ready
-          ? snap.duoActive
-            ? `round ${snap.round} · DUO`
-            : `round ${snap.round} · ${snap.taskKind ?? '—'}`
+          ? snap.commission !== null
+            ? `commission · ${snap.commission}`
+            : snap.duoActive
+              ? `round ${snap.round} · DUO`
+              : `round ${snap.round} · ${snap.taskKind ?? '—'}${snap.conveyorActive ? ' · BELT' : ''}`
           : 'waiting for scene…'}
       </div>
+      {ready && (
+        <div style={styles.readout}>
+          belt {snap.beltSkill} · thief {snap.thiefSkill} · drawn {snap.drawnFoods}
+          {snap.visitor !== null ? ` · ${snap.visitor}` : ''}
+        </div>
+      )}
     </div>
   )
 }
 
-// Every task kind, for the one-tap jump chips (bypasses the meter gate).
+// Every task kind, for the one-tap jump chips (bypasses the meter gate). The two
+// kitchen kinds get their own buttons below — they are big enough beats to want
+// naming, not a chip in a grid.
 const TASK_KINDS = ['single', 'count', 'color', 'combo', 'dots', 'mix', 'not', 'pattern'] as const
 
 function Row({
@@ -238,6 +314,22 @@ const styles: Record<string, CSSProperties> = {
     color: '#fff',
     fontSize: 10,
     fontWeight: 600,
+    cursor: 'pointer',
+    touchAction: 'manipulation',
+  },
+  modes: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, 1fr)',
+    gap: 4,
+  },
+  mode: {
+    height: 30,
+    border: 'none',
+    borderRadius: 8,
+    background: 'rgba(255, 255, 255, 0.16)',
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 700,
     cursor: 'pointer',
     touchAction: 'manipulation',
   },

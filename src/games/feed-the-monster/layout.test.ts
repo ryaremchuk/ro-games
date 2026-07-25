@@ -1,7 +1,17 @@
 import { describe, it, expect } from 'vitest'
 import { TRAY_SIZE } from './logic'
+import { FULL_SCALE } from './journey'
 import {
+  beltBandY,
+  beltDishPos,
+  beltHeight,
+  beltY,
   bottomMargin,
+  dishPitch,
+  potPos,
+  potSnapRadius,
+  potWidth,
+  visibleDishCount,
   trayY,
   heroBaseline,
   traySlotWidth,
@@ -87,5 +97,153 @@ describe('feed-the-monster layout geometry', () => {
     expect(snapRadius({ ...m, bodyR: 200 })).toBe(200 * 0.9)
     // Tiny friend: the css-px floor (100 * dpr) keeps the zone forgiving.
     expect(snapRadius({ ...m, bodyR: 50 })).toBe(100)
+  })
+})
+
+/**
+ * The two shapes every layout in this app must read on. Backing px = css × dpr,
+ * and bodyR mirrors what the scene computes: min(min(w,h) × 0.17, 150 × dpr).
+ */
+const DEVICES: Array<{ name: string; metrics: LayoutMetrics }> = [
+  {
+    name: 'iPad 4:3 portrait',
+    metrics: {
+      w: 1668,
+      h: 2224,
+      dpr: 2,
+      bodyR: Math.min(1668 * 0.17, 300),
+      growth: FULL_SCALE,
+      safeInsetBottom: 20,
+    },
+  },
+  {
+    name: 'iPad 4:3 landscape',
+    metrics: {
+      w: 2224,
+      h: 1668,
+      dpr: 2,
+      bodyR: Math.min(1668 * 0.17, 300),
+      growth: FULL_SCALE,
+      safeInsetBottom: 20,
+    },
+  },
+  {
+    name: 'iPhone landscape ~2.2:1',
+    metrics: {
+      w: 2556,
+      h: 1179,
+      dpr: 3,
+      bodyR: Math.min(1179 * 0.17, 450),
+      growth: FULL_SCALE,
+      safeInsetBottom: 21,
+    },
+  },
+]
+
+describe('the kitchen pot', () => {
+  for (const device of DEVICES) {
+    describe(device.name, () => {
+      const d = device.metrics
+      const pot = potPos(d)
+      const w = potWidth(d)
+
+      it('stays fully on screen', () => {
+        expect(pot.x - w / 2).toBeGreaterThan(0)
+        expect(pot.x + w / 2).toBeLessThanOrEqual(d.w)
+        expect(pot.y).toBeGreaterThan(0)
+        expect(pot.y).toBeLessThan(d.h)
+      })
+
+      it('never overlaps the friend at FULL_SCALE', () => {
+        // The friend owns the centre and is WIDE when fully grown; the pot lives
+        // to the right of it.
+        const friend = monsterPos(d)
+        const friendRight = friend.x + d.bodyR * FULL_SCALE
+        expect(pot.x - w / 2, 'the pot sits under the grown friend').toBeGreaterThan(friendRight)
+      })
+
+      it('never overlaps the tray row', () => {
+        // Vertical clearance: the pot's bottom must clear the top of a plate.
+        const plateTop = trayY(d) - plateWidth(d) * 0.55
+        expect(pot.y + w * 0.4).toBeLessThan(plateTop)
+      })
+
+      it('never overlaps the fed-friends pile bottom-left', () => {
+        const pile = miniSlot(d, 3) // the slot that reaches furthest right
+        expect(pot.x - w / 2).toBeGreaterThan(pile.x + d.bodyR * 0.4)
+      })
+
+      it('gives the pot a drop zone at least as forgiving as the mouth’s', () => {
+        expect(potSnapRadius(d)).toBeGreaterThanOrEqual(100 * d.dpr)
+      })
+    })
+  }
+
+  it('scales the pot with the cast rather than pinning it in px', () => {
+    const small = potWidth({ ...m, bodyR: 100 })
+    const big = potWidth({ ...m, bodyR: 200 })
+    expect(big).toBeGreaterThan(small)
+  })
+
+  it('pulls the pot back in on a viewport too narrow for its usual spot', () => {
+    const narrow: LayoutMetrics = { ...m, w: 300, bodyR: 200 }
+    const pot = potPos(narrow)
+    expect(pot.x + potWidth(narrow) / 2).toBeLessThanOrEqual(narrow.w)
+  })
+})
+
+describe('the conveyor belt', () => {
+  for (const device of DEVICES) {
+    describe(device.name, () => {
+      const d = device.metrics
+
+      it('rides the same band as the plate row', () => {
+        expect(beltY(d)).toBe(trayY(d))
+      })
+
+      it('shows a sane number of dishes, derived from the viewport', () => {
+        const count = visibleDishCount(d)
+        expect(count).toBeGreaterThanOrEqual(4)
+        expect(count).toBeLessThanOrEqual(14)
+      })
+
+      it('keeps every visible dish inside the screen and clear of the bottom strip', () => {
+        const count = visibleDishCount(d)
+        const pitch = dishPitch(d)
+        for (let i = 0; i < count; i++) {
+          const at = beltDishPos(d, i + 0.5)
+          expect(at.x - pitch / 2).toBeGreaterThanOrEqual(-1)
+          expect(at.x + pitch / 2).toBeLessThanOrEqual(d.w + 1)
+        }
+        // The belt BAND must clear the home-indicator strip, like the tray does:
+        // drags that begin on the very bottom edge trigger the iOS minimize gesture.
+        expect(beltBandY(d) + beltHeight(d) / 2).toBeLessThanOrEqual(
+          d.h - d.safeInsetBottom * d.dpr + 1,
+        )
+        expect(beltBandY(d), 'the band sits at or below the dish line').toBeGreaterThanOrEqual(
+          beltY(d) - beltHeight(d),
+        )
+      })
+
+      it('spaces dishes exactly one pitch apart', () => {
+        const pitch = dishPitch(d)
+        expect(beltDishPos(d, 1.5).x - beltDishPos(d, 0.5).x).toBeCloseTo(pitch, 6)
+      })
+    })
+  }
+
+  it('keeps a dish the same PHYSICAL size on every device (unlike the 8-slot tray)', () => {
+    // That is the whole point: an iPhone in landscape shows MORE dishes rather
+    // than the same eight squeezed.
+    const ipad = DEVICES[0].metrics
+    const phone = DEVICES[2].metrics
+    expect(dishPitch(ipad) / ipad.dpr).toBeCloseTo(dishPitch(phone) / phone.dpr, 6)
+    expect(visibleDishCount(phone)).toBeGreaterThanOrEqual(visibleDishCount(ipad))
+  })
+
+  it('shrinks the pitch rather than showing two plates on a very narrow screen', () => {
+    const narrow: LayoutMetrics = { ...m, w: 300 }
+    expect(visibleDishCount(narrow)).toBeGreaterThanOrEqual(4)
+    expect(dishPitch(narrow) * 4).toBeLessThanOrEqual(narrow.w + 1)
   })
 })

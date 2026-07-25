@@ -128,13 +128,23 @@ interface DuoFriend {
   bubble: DuoBubble
 }
 
-/** A tray drop target (mirror of the scene's FeedMouth), one per open mouth. */
+/**
+ * A tray drop target — one per open mouth in a normal or duo round, plus the
+ * kitchen's pot when one is on the table. The tray routes a released food to the
+ * NEAREST target inside its snap radius and hands it over; nothing about the drag
+ * has to know whether it is feeding a friend or filling a pot.
+ */
 export interface FeedMouth {
   x: number
   y: number
   isOpen: () => number
   setOpen: (target: number, ms: number) => void
   accept: (img: Phaser.GameObjects.Image) => void
+  /**
+   * Drop radius for THIS target, when it differs from the mouth's default
+   * (layout.snapRadius) — the pot's zone is its own size, not the friend's.
+   */
+  snap?: number
 }
 
 export class DuoMode {
@@ -333,7 +343,7 @@ export class DuoMode {
     friend.rig.squintEyes()
     friend.rig.shakeHead()
 
-    const slot = layout.slotPos(this.scene.metrics(), img.getData('slot') as number)
+    const slot = this.scene.tray.homePos(img)
     const base = this.scene.tray.foodBaseScale(img)
     this.scene.tray.arcTo(img, slot.x, slot.y, 520, () => {
       img.setInteractive()

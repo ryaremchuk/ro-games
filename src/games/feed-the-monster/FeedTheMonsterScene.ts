@@ -3,24 +3,32 @@ import { playTone } from '../../shared/audio'
 import { addStars, loadProgress, saveData, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, safeAreaInset, viewportSize } from '../../shared/viewport'
 import {
+  FOOD_COLORS,
   SKILL_MAX,
   SKILL_START,
   SPIT_BACKS_BEFORE_EASE,
   TASK_REGISTRY,
+  activePoolForRound,
   generateRound,
+  generateTray,
   isRoundComplete,
+  poolWithFood,
   requestTotal,
   shouldInjectDuo,
   updateSkill,
   wantsFood,
+  withDrawnFoods,
 } from './logic'
-import type { DuoContext, Food, FoodRequest, Round, TaskKind } from './logic'
+import type { DuoContext, Food, FoodColor, FoodRequest, Round, TaskKind } from './logic'
 import {
   BIG_BITE,
+  COMMISSION_COLOR_MIN_SKILL,
+  DRAWN_CALLBACK_ROUNDS,
   FRIENDS_PER_EPISODE,
   GROW_STEPS,
   NORMAL_BITE,
   auraIntensity,
+  commissionColor,
   episodeFor,
   feedStep,
   friendColor,
@@ -32,6 +40,10 @@ import {
   shrinkStep,
 } from './journey'
 import type { Episode, JourneyState } from './journey'
+import { gridToDrawing } from '../../shared/pixel/artStore'
+import type { Drawing } from '../../shared/pixel/artStore'
+import { createGrid, paintCell } from '../../shared/pixel/grid'
+import { adoptDrawing, loadDrawnFoods, stampDrawnFood, wipeDrawnFoods } from './drawnFoods'
 import { artEntries, artKey } from './art'
 import type { FeedTestApi } from './testHook'
 import * as layout from './layout'
@@ -43,6 +55,18 @@ import { JourneyStage } from './journeyStage'
 import { Tray } from './tray'
 import { DuoMode } from './duoMode'
 import type { FeedMouth } from './duoMode'
+import { ConveyorMode } from './conveyorMode'
+import { KitchenMode } from './kitchenMode'
+import { ThiefMode } from './thiefMode'
+import { THIEF_SKILL_MAX, pickVisitor, shouldVisit, updateThiefSkill } from './thief'
+import type { VisitOutcome, VisitorKind } from './thief'
+import {
+  BELT_SKILL_MAX,
+  CONVEYOR_EXCLUDED_KINDS,
+  beltDials,
+  shouldInjectConveyor,
+  updateBeltSkill,
+} from './belt'
 
 /** Registry id — also the key the shared progress store files this under. */
 const GAME_ID = 'feed-the-monster'
@@ -161,6 +185,71 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   /** Dev overlay: force the next friend-boundary round to be a duo. */
   private forceDuoNext = false
 
+  // ─── Commissions: the food the child drew ──────────────────────────────────
+  /**
+   * The foods the child has drawn that are currently in the rotation — at most
+   * six, one per colour (see drawnFoods.ts). They SUBSTITUTE into the episode
+   * pool rather than extend it, so the "every window has every colour"
+   * satisfiability invariant survives (logic.withDrawnFoods).
+   */
+  private drawnFoods: Food[] = []
+  /**
+   * The live commission, while the pad is open over the scene. The React shell
+   * watches this through the `commission` scene event.
+   */
+  private commission: { color: FoodColor; askColor: boolean } | null = null
+  /** Episode index of the last commission OFFERED (−1 = never). Persisted. */
+  private lastCommissionEpisode = -1
+  /** The friend nagging for its drawing while the pad is open; cleared on submit. */
+  private impatience?: Phaser.Time.TimerEvent
+  /** Dev overlay: open a commission at the next round start whatever the journey. */
+  private forceCommissionNext = false
+  /**
+   * The drawn food the friend will ask for BY NAME once the countdown runs out —
+   * the emotional payoff of the whole feature, and mechanically just a nudge on
+   * the next count round (logic's RoundContext.preferFoodId).
+   */
+  private callbackFoodId: string | null = null
+  private callbackInRounds = 0
+  /** Turns the completion celebration up for the round that eats a new drawing. */
+  private drawnBiteRound = false
+
+  /**
+   * The CONVEYOR round mode — the plate row replaced, for that round, by a slow
+   * kaiten-sushi loop. Injected on its own data+chance axis and driven by its OWN
+   * persisted meter (`belt`), so belt practice and task difficulty scale
+   * independently: a child can be great at colours and bad at timing.
+   * See ./conveyorMode and ./belt.
+   */
+  readonly conveyorMode = new ConveyorMode(this)
+  /**
+   * The KITCHEN — the pot a `dish` / `dish-ordered` round is cooked in. Unlike the
+   * belt and the duo, cooking is a TASK KIND in the registry, not a separate axis:
+   * it is a cognitive task (part–whole composition), so the cognitive meter owns
+   * it. See ./kitchenMode and ./recipes.
+   */
+  readonly kitchenMode = new KitchenMode(this)
+  /**
+   * The THIEF — the game's first interruption, and later the go/no-go butterfly.
+   * Rides its own persisted meter (`thief`) on its own data+chance axis, gated so
+   * it never lands on a struggling child. See ./thiefMode and ./thief.
+   */
+  readonly thiefMode = new ThiefMode(this)
+  /** The thief axis's own adaptive meter, 0..THIEF_SKILL_MAX (persisted). */
+  private thiefSkill = 0
+  /** Rounds since the last visit (anti-drought ramp); large so the first is soon. */
+  private roundsSinceLastVisit = 99
+  /** A visit is scheduled for this round; cancelled on completion/transition. */
+  private visitTimer?: Phaser.Time.TimerEvent
+  /** Dev overlay: force a specific visitor at the next round start. */
+  private forceVisitorNext: VisitorKind | null = null
+  /** The belt's own adaptive meter, 0..BELT_SKILL_MAX (persisted separately). */
+  private beltSkill = 0
+  /** Solo rounds since the last belt round (anti-drought ramp). */
+  private roundsSinceLastConveyor = 99
+  /** Dev overlay: make the next round a belt round. */
+  private forceConveyorNext = false
+
   /**
    * The food tray (plates + draggable foods, their build/layout/animation and
    * the drag mechanics). Owns its own display objects; reads live scene state
@@ -216,10 +305,24 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const saved = loadProgress(GAME_ID)
     this.skillPeak = saved.skill.cognitive ?? SKILL_START
     this.skill = sessionStart(this.skillPeak, { max: SKILL_MAX, lastPlayedAt: saved.lastPlayedAt })
+    // The belt rides its own axis — same warm-up ramp, its own ceiling.
+    this.beltSkill = sessionStart(saved.skill.belt ?? 0, {
+      max: BELT_SKILL_MAX,
+      warmupDrop: 1,
+      lastPlayedAt: saved.lastPlayedAt,
+    })
+    this.thiefSkill = sessionStart(saved.skill.thief ?? 0, {
+      max: THIEF_SKILL_MAX,
+      warmupDrop: 1,
+      lastPlayedAt: saved.lastPlayedAt,
+    })
 
     // Resume the journey exactly where it left off — the long-term
     // progression (friends grown, episodes) survives restarts by design.
     this.journey = journeyFromData(saved.data)
+    this.lastCommissionEpisode = Number.isFinite(saved.data.commissionEpisode)
+      ? saved.data.commissionEpisode
+      : -1
     this.episode = episodeFor(this.journey)
     this.growth = scaleForStep(this.journey.growthStep)
 
@@ -230,6 +333,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       color: this.friendBodyColor(),
       foodCss: FOOD_CSS,
     })
+
+    // The foods the child drew in earlier sessions come back as foods: textures
+    // registered, catalog entries registered, ready to be asked for.
+    this.drawnFoods = loadDrawnFoods(this, { dpr: this.dpr, foodCss: FOOD_CSS })
 
     this.bgGfx = this.add.graphics().setDepth(0)
     // Full-bleed episode backdrop (bg-<episode>.png), cover-scaled in layout();
@@ -311,6 +418,16 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         foodBoost: this.tray.foodBoost,
         duoActive: this.duoMode.active,
         duo: this.duoMode.active ? this.duoMode.snapshot() : null,
+        commission: this.commission
+          ? { color: this.commission.color, askColor: this.commission.askColor }
+          : null,
+        drawnFoodIds: this.drawnFoods.map((f) => f.id),
+        conveyorActive: this.conveyorMode.active,
+        conveyor: this.conveyorMode.active ? this.conveyorMode.snapshotState() : null,
+        beltSkill: this.beltSkill,
+        kitchen: this.kitchenMode.active ? this.kitchenMode.snapshotState() : null,
+        visitor: this.thiefMode.snapshotState(),
+        thiefSkill: this.thiefSkill,
       }),
       forceKind: (kind) => {
         if (this.transitioning || this.duoMode.active || !this.round) return false
@@ -351,6 +468,44 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         if (this.transitioning || this.duoMode.active || !this.round) return
         this.setBigBite(on)
       },
+      forceCommission: () => {
+        if (this.transitioning || this.duoMode.active || this.commission) return false
+        this.forceCommissionNext = true
+        // Re-enter the round start so the gate runs now, not next round.
+        this.startRound(this.roundNumber)
+        return this.commission !== null
+      },
+      submitDrawing: (cells) => {
+        if (!this.commission) return false
+        const grid = createGrid(16)
+        for (const cell of cells) paintCell(grid, cell.x, cell.y, cell.color)
+        this.submitCommission(cells.length > 0 ? gridToDrawing(grid) : null)
+        return true
+      },
+      forceConveyor: () => {
+        if (this.transitioning || this.duoMode.active || this.commission || !this.round)
+          return false
+        this.conveyorMode.stop()
+        this.roundsSinceLastConveyor = 0
+        this.setBigBite(false)
+        this.dealRound(true)
+        return true
+      },
+      forceVisitor: (kind) => {
+        if (this.transitioning || this.thiefMode.active || !this.round) return false
+        this.visitTimer?.remove()
+        this.visitTimer = undefined
+        this.roundsSinceLastVisit = 0
+        return this.thiefMode.start(kind, this.thiefSkill)
+      },
+      wipeDrawnFoods: () => {
+        wipeDrawnFoods()
+        this.drawnFoods = []
+        this.callbackFoodId = null
+        this.lastCommissionEpisode = -1
+        saveData(GAME_ID, { commissionEpisode: -1 })
+      },
+
       devRegenerate: () => {
         if (this.transitioning || this.duoMode.active || !this.round) return
         // Dev: re-deal a TRULY RANDOM task across EVERY kind, not gated by the
@@ -432,7 +587,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       skill: this.skill,
       recentKinds: opts.recentKinds,
       previous: opts.previous,
-      foods: this.episode.foods,
+      foods: this.episodeFoods(),
       forceKind: opts.forceKind,
     })
     this.round = round
@@ -647,6 +802,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     for (let i = 0; i < this.tray.plates.length; i++) {
       this.tray.placeSlot(i, this.slotPos(i)) // re-anchors the glow + reskins the plate
     }
+    this.kitchenMode.place()
+    // On the belt a food's home is its LANE, not a plate slot — re-anchoring to
+    // slotPos here would yank every dish into the (hidden) still row on a resize.
+    if (this.conveyorMode.active) {
+      this.conveyorMode.place()
+      return
+    }
     for (const food of this.tray.foods) {
       if (food === this.tray.dragged) continue
       this.tweens.killTweensOf(food)
@@ -663,37 +825,307 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.eaten = []
     this.spitBacks = 0
     this.transitioning = false
+    this.drawnBiteRound = false
     this.roundsSinceLastDuo++
+    this.roundsSinceLastConveyor++
     // A duo grows on its own synchronized curve (journey.duoFeedStep), so a big
     // bite never applies to one — clear the dressing before handing the round over.
     this.setBigBite(false)
+    // A commission is a once-per-episode journey beat and takes precedence over
+    // the duo axis (which gets its chance the very next round). Both only ever
+    // land on a fresh friend, so they would otherwise compete for the same slot.
+    if (this.tryCommission()) return
     // A duo bonus only ever begins at a friend boundary (a fresh friend about to
     // start), on its own data+chance axis — never mid-growth of a solo friend.
     if (this.journey.growthStep === 0 && this.tryInjectDuo()) return
 
+    // The belt is a whole-round mode: decided here, before the round is dealt, so
+    // the generator can be told which task kinds it cannot host.
+    const conveyor = this.tryInjectConveyor()
     // Roll the big bite BEFORE the tray is built, so a big-bite round's food
     // drops in already boosted and the whole round reads as special from its
     // first frame. (It used to be rolled on completion, where nothing could
-    // show it.) The stuck half is re-checked live in spitBack.
-    this.setBigBite(
-      growAmount({ friendSpitBacks: this.friendSpitBacks, rng: this.growthRng }) === BIG_BITE,
-    )
+    // show it.) The stuck half is re-checked live in spitBack. A belt round is
+    // never a big bite: the belt IS the treat, and eight glowing plates behind a
+    // moving belt would just be noise.
+    if (!conveyor) {
+      this.setBigBite(
+        growAmount({ friendSpitBacks: this.friendSpitBacks, rng: this.growthRng }) === BIG_BITE,
+      )
+    }
+    this.dealRound(conveyor)
+  }
+
+  /**
+   * The belt's own axis: weigh live game DATA (cognitive fluency, recent
+   * struggle, rounds since the last belt) + chance. Returns true when this round
+   * rides the belt. Never stacks with a duo (that returned already) and never
+   * with a commission.
+   */
+  private tryInjectConveyor(): boolean {
+    const wanted =
+      this.forceConveyorNext ||
+      shouldInjectConveyor(
+        {
+          skill: this.skill,
+          roundsSinceLastConveyor: this.roundsSinceLastConveyor,
+          struggling: this.lastRoundEased,
+        },
+        Math.random,
+      )
+    this.forceConveyorNext = false
+    if (!wanted) {
+      this.conveyorMode.stop()
+      return false
+    }
+    this.roundsSinceLastConveyor = 0
+    return true
+  }
+
+  /**
+   * Generate + present the round for the current `roundNumber`, once every round
+   * MODE gate (commission, duo) has declined it. Also spends the drawn-food
+   * callback when its countdown is up: the friend asks for the thing the child
+   * drew, by name, as an ordinary count round.
+   */
+  private dealRound(onBelt = false): void {
+    let preferFoodId: string | undefined
+    let forceKind: TaskKind | undefined
+    if (this.callbackFoodId !== null) {
+      if (this.callbackInRounds > 0) this.callbackInRounds--
+      else {
+        preferFoodId = this.callbackFoodId
+        // Force a kind that means "I want THIS one" — the nudge is ignored by
+        // kinds where a named food is context (see logic.generateRequest).
+        forceKind = this.skill >= 1 ? 'count' : 'single'
+        this.callbackFoodId = null
+      }
+    }
 
     const round = generateRound({
-      round: n,
+      round: this.roundNumber,
       skill: this.skill,
       recentKinds: this.recentKinds,
       previous: this.previousRequest,
-      foods: this.episode.foods,
+      foods: this.episodeFoods(),
+      forceKind,
+      preferFoodId,
+      // A kitchen round fills a pot FROM the tray, and the belt is what replaced
+      // the tray — the two modes cannot share a round.
+      avoidKinds: onBelt ? CONVEYOR_EXCLUDED_KINDS : undefined,
     })
     this.round = round
     this.previousRequest = round.request
     this.recentKinds.push(round.taskKind)
     if (this.recentKinds.length > 6) this.recentKinds.shift()
     this.roundStartAt = this.time.now
-    this.tray.buildTray(round.tray)
+    if (onBelt) this.conveyorMode.serve(round, beltDials(this.beltSkill))
+    else this.tray.buildTray(round.tray)
+    // The pot only exists during a kitchen round — a permanent pot would take that
+    // ground every round for nothing.
+    if (round.request.kind === 'dish') this.kitchenMode.start(round.request)
+    else this.kitchenMode.stop()
     this.bubbleUi.showRequest(round.request)
     this.time.delayedCall(450, () => this.bubbleUi.playRequestCue(round.request))
+    this.scheduleVisit(onBelt)
+  }
+
+  // ─── The thief ─────────────────────────────────────────────────────────────
+
+  /**
+   * Maybe drop a visitor in partway through this round. Scheduled rather than
+   * immediate: an interruption that arrives with the request is not an
+   * interruption, it is part of the task.
+   */
+  private scheduleVisit(onBelt: boolean): void {
+    this.visitTimer?.remove()
+    this.visitTimer = undefined
+    this.roundsSinceLastVisit++
+    const forced = this.forceVisitorNext
+    this.forceVisitorNext = null
+    const wanted =
+      forced !== null ||
+      shouldVisit(
+        {
+          skill: this.skill,
+          roundsSinceLastVisit: this.roundsSinceLastVisit,
+          struggling: this.lastRoundEased,
+          // A bird landing on a MOVING belt dish stacks two new mechanics on one
+          // round; a kitchen round already asks the child to hold a composed goal.
+          busy: onBelt || this.duoMode.active || this.commission !== null,
+        },
+        Math.random,
+      )
+    if (!wanted) return
+    this.roundsSinceLastVisit = 0
+    const kind = forced ?? pickVisitor(this.thiefSkill, Math.random)
+    // Land it a beat after the request has been read, and only once per round.
+    this.visitTimer = this.time.delayedCall(2200 + Math.random() * 2000, () => {
+      if (this.transitioning || this.tray.dragged) return
+      this.thiefMode.start(kind, this.thiefSkill)
+    })
+  }
+
+  /**
+   * How a visit went. The thief axis moves on it; the JOURNEY deliberately does
+   * not — catching a bird pays joy, never growth or stars, so the game never
+   * teaches that reflexes matter more than caring for the friend.
+   * @internal Exposed for ThiefMode.
+   */
+  noteVisitOutcome(outcome: VisitOutcome): void {
+    this.thiefSkill = updateThiefSkill(this.thiefSkill, outcome)
+    saveSkill(GAME_ID, { thief: this.thiefSkill })
+  }
+
+  /**
+   * Would feeding this food be correct right now? Used by the thief to prefer a
+   * DISTRACTOR: stealing something the child still needs would be the game taking
+   * their work away.
+   * @internal Exposed for ThiefMode.
+   */
+  wantsNow(foodId: string): boolean {
+    return this.round ? wantsFood(this.round.request, this.eaten, foodId) : false
+  }
+
+  /**
+   * A plausible food to drop into an emptied plate — one from this round's pool
+   * that is not wanted, so a replacement never silently solves the round.
+   * @internal Exposed for ThiefMode.
+   */
+  replacementFood(slot: number): string {
+    const pool = activePoolForRound(this.roundNumber, this.episodeFoods())
+    const spare = pool.filter((f) => !this.wantsNow(f.id))
+    const from = spare.length > 0 ? spare : pool
+    return from[(slot + this.roundNumber) % from.length].id
+  }
+
+  /**
+   * The episode's food pool with the child's drawings SUBSTITUTED in (never
+   * appended — see logic.withDrawnFoods for why the length is load-bearing).
+   * @internal Exposed for DuoMode via duoGenContext.
+   */
+  private episodeFoods(): readonly Food[] {
+    return this.drawnFoods.length === 0
+      ? this.episode.foods
+      : withDrawnFoods(this.episode.foods, this.drawnFoods)
+  }
+
+  // ─── Commission: "draw me something red" ───────────────────────────────────
+
+  /**
+   * Offer this episode's commission, if one is due. Returns true when the pad is
+   * taking over the round: no tray is dealt, the bubble shows the ask instead,
+   * and play resumes from `submitCommission`.
+   */
+  private tryCommission(): boolean {
+    // `drawnFoods` is kept newest-first, which is exactly the order the
+    // "refresh the oldest slot" rule needs (see journey.commissionColor).
+    const ownedColors = this.drawnFoods.map((f) => f.color)
+    const forced = this.forceCommissionNext
+    this.forceCommissionNext = false
+    // The dev/e2e force answers only the WHICH-colour half — it deliberately
+    // bypasses the journey gate (episode ≥ 2, once per episode, fresh friend) so
+    // an adult can see the beat on demand in episode 1.
+    const color = forced
+      ? (FOOD_COLORS.find((c) => !ownedColors.includes(c)) ??
+        ownedColors[ownedColors.length - 1] ??
+        FOOD_COLORS[0])
+      : commissionColor({
+          journey: this.journey,
+          lastCommissionEpisode: this.lastCommissionEpisode,
+          ownedColors,
+        })
+    if (color === null) return false
+
+    // Below the colour-round unlock the ask is simply "draw anything" — a colour
+    // the child has not met as a CONCEPT yet is not an ask, it is a riddle.
+    const askColor = this.skill >= COMMISSION_COLOR_MIN_SKILL
+    this.commission = { color, askColor }
+    this.round = null
+    this.bubbleUi.showCommission(askColor ? color : null)
+    // The friend stays visible above the pad and gets visibly impatient — the
+    // one real risk of this feature is the child settling into the pad and
+    // forgetting who asked.
+    this.impatience?.remove()
+    this.impatience = this.time.addEvent({
+      delay: 4200,
+      loop: true,
+      callback: () => this.monsterRig.lickLips(),
+    })
+    this.events.emit('commission', this.commission)
+    return true
+  }
+
+  /**
+   * The child pressed done. A drawing becomes a food and is eaten right now with
+   * the celebration turned up; a blank page costs nothing at all — the plate
+   * fills with an ordinary food and the round proceeds, and the ask comes back
+   * next episode.
+   * @internal Called by FeedTheMonsterGame's pad overlay.
+   */
+  submitCommission(drawing: Drawing | null): void {
+    if (!this.commission) return
+    const { color, askColor } = this.commission
+    this.commission = null
+    this.impatience?.remove()
+    this.impatience = undefined
+    // Asked once per episode whatever the answer: dismissing is two taps, and
+    // the day the child says yes is the day the feature works.
+    this.lastCommissionEpisode = this.journey.episode
+    saveData(GAME_ID, { commissionEpisode: this.lastCommissionEpisode })
+    this.events.emit('commission', null)
+
+    const food = drawing ? this.adoptCommission(drawing, askColor ? color : undefined) : null
+    if (!food) {
+      this.dealRound()
+      return
+    }
+
+    // Eat it on the spot: one drawn food, nothing else wanted. Built directly
+    // (not through the kind registry) because the ONE thing this round must do is
+    // put the child's drawing on the tray — five seconds from pencil to chomp.
+    this.drawnBiteRound = true
+    this.callbackFoodId = food.id
+    this.callbackInRounds = DRAWN_CALLBACK_ROUNDS
+    this.dealNamedRound(food.id, 1)
+  }
+
+  /** File a finished commission, register it, and put it in the rotation. */
+  private adoptCommission(drawing: Drawing, asked?: FoodColor): Food | null {
+    const provisional = adoptDrawing(this, drawing, {
+      dpr: this.dpr,
+      foodCss: FOOD_CSS,
+      color: asked,
+    })
+    if (!provisional) return null
+    // Stamp the effective colour so "six slots, one per colour" stays exact — the
+    // ask when there was one, the drawing's own modal colour otherwise.
+    stampDrawnFood(drawing, provisional.color)
+    // Newest first (matches artStore.newestPerTag, and drives which slot a later
+    // commission refreshes once all six colours are owned).
+    this.drawnFoods = [provisional, ...this.drawnFoods.filter((f) => f.color !== provisional.color)]
+    return provisional
+  }
+
+  /** A plain "N of this food" round about one specific food, tray guaranteed. */
+  private dealNamedRound(foodId: string, count: number): void {
+    const request: FoodRequest = { kind: 'count', entries: [{ foodId, count }] }
+    const pool = poolWithFood(
+      activePoolForRound(this.roundNumber, this.episodeFoods()),
+      foodId,
+      this.episodeFoods(),
+    )
+    this.round = {
+      round: this.roundNumber,
+      taskKind: count === 1 ? 'single' : 'count',
+      request,
+      tray: generateTray(request, pool, Math.random),
+    }
+    this.previousRequest = request
+    this.roundStartAt = this.time.now
+    this.tray.buildTray(this.round.tray)
+    this.bubbleUi.showRequest(request)
+    this.time.delayedCall(450, () => this.bubbleUi.playRequestCue(request))
   }
 
   /**
@@ -753,7 +1185,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   /** @internal Round-generation context DuoMode feeds to generateDuoRound. */
   duoGenContext(): { round: number; skill: number; foods: readonly Food[] } {
-    return { round: this.roundNumber, skill: this.skill, foods: this.episode.foods }
+    return { round: this.roundNumber, skill: this.skill, foods: this.episodeFoods() }
   }
 
   /** @internal Bank a completed duo round into the adaptive meter, exactly like
@@ -773,6 +1205,16 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.skillPeak = Math.max(this.skillPeak, this.skill)
     this.lastRoundEased = spitBacks >= SPIT_BACKS_BEFORE_EASE
     saveSkill(GAME_ID, { cognitive: this.skill })
+    // The belt's axis moves only on belt rounds, and on its own signal: wanted
+    // dishes that rode past un-taken. That is timing and sustained scanning —
+    // the thing the belt exists to train — not colour discrimination.
+    if (this.conveyorMode.active) {
+      this.beltSkill = updateBeltSkill(this.beltSkill, {
+        missedPasses: this.conveyorMode.misses,
+        spitBacks,
+      })
+      saveSkill(GAME_ID, { belt: this.beltSkill })
+    }
   }
 
   // ─── Feeding ─────────────────────────────────────────────────────────────
@@ -786,7 +1228,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   feedMouths(): FeedMouth[] {
     if (this.duoMode.active) return this.duoMode.mouths()
     const world = this.monsterRig.mouthWorld()
-    return [
+    const targets: FeedMouth[] = [
       {
         x: world.x,
         y: world.y,
@@ -795,6 +1237,26 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         accept: (img) => this.feed(img),
       },
     ]
+    // In a kitchen round the pot is a second drop target: the child fills it, then
+    // feeds what comes out. The friend still refuses raw parts (wantsFood accepts
+    // only the cooked dish), so there is one right thing to do at every moment.
+    const pot = this.kitchenMode.dropTarget()
+    if (pot) targets.push(pot)
+    return targets
+  }
+
+  /**
+   * The pot spat a wrong part back. It counts as a cognitive slip exactly like a
+   * mouth spit-back: it is the same mistake (this thing does not belong here), and
+   * the meter should hear it.
+   * @internal Exposed for KitchenMode.
+   */
+  notePotReject(): void {
+    this.spitBacks++
+    this.friendSpitBacks++
+    if (isStuck(this.friendSpitBacks)) this.setBigBite(true, 700)
+    this.funnyUntil = this.time.now + 500
+    this.monsterRig.squintEyes()
   }
 
   /**
@@ -837,6 +1299,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     if (!this.round) return
     const foodId = img.getData('foodId') as string
     this.eaten.push(foodId)
+    // A belt dish leaving for good turns its lane into a gap the scheduler
+    // refills when it next comes round past the hatch; a cooked dish leaving means
+    // the pot's job is done.
+    this.conveyorMode.noteEaten(img)
+    this.kitchenMode.noteEaten(img)
     this.tray.foods = this.tray.foods.filter((f) => f !== img)
     img.destroy()
 
@@ -910,7 +1377,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       })
     }
 
-    const slot = this.slotPos(img.getData('slot') as number)
+    const slot = this.tray.homePos(img)
     const base = this.tray.foodBaseScale(img)
     this.tray.arcTo(img, slot.x, slot.y, 550, () => {
       img.setInteractive()
@@ -927,6 +1394,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   private completeRound(): void {
     this.transitioning = true
+    // No visitor may share the stage with a celebration: the child's attention is
+    // owed to the friend growing, and a bird landing mid-confetti reads as chaos.
+    this.visitTimer?.remove()
+    this.visitTimer = undefined
+    this.thiefMode.cancel()
 
     // Leftover distractors tumble away.
     this.tray.foods.forEach((food, i) => {
@@ -934,13 +1406,22 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       this.time.delayedCall(150 + i * 40, () => this.tray.fadeOutFood(food))
     })
 
-    // Burp + confetti.
+    // Burp + confetti. Eating a brand-new DRAWING gets a bigger reaction than
+    // any normal bite — that beat ("I made this and it got used, now") is the
+    // whole emotional payload of the commission, so it must not read as ordinary.
     const mp = this.monsterPos()
+    const drawnBite = this.drawnBiteRound
     this.time.delayedCall(250, () => {
       playTone(98, 220, 'sawtooth', 0.09)
       this.time.delayedCall(170, () => playTone(78, 190, 'sawtooth', 0.07))
-      this.confetti.explode(60, mp.x, mp.y - this.bodyR * this.growth)
-      this.monsterRig.beHappy(900) // laugh with the confetti (guards its own revert on rebuild)
+      this.confetti.explode(drawnBite ? 110 : 60, mp.x, mp.y - this.bodyR * this.growth)
+      this.monsterRig.beHappy(drawnBite ? 1600 : 900) // laugh with the confetti (guards its own revert on rebuild)
+      if (drawnBite) {
+        this.stars.explode(24, mp.x, mp.y - this.bodyR * this.growth)
+        ;[523, 659, 784, 1047, 1319].forEach((freq, i) =>
+          this.time.delayedCall(180 + i * 110, () => playTone(freq, 200, 'triangle', 0.11)),
+        )
+      }
     })
 
     // Round fed = level passed: one persistent star on the launcher tile.
@@ -1021,12 +1502,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   // ─── Per-frame: pupils track the food / last touch ───────────────────────
 
-  update(): void {
+  update(_time: number, delta: number): void {
     // 100% monster pupil tracking — delegated to the rig (the lineup minis
     // deliberately do NOT track; they idle-glance on their own timers). In a
     // duo, the right friend's rig tracks too (the left one IS monsterRig).
     this.monsterRig.update()
     if (this.duoMode.active) this.duoMode.update()
+    if (this.conveyorMode.active) this.conveyorMode.update(delta)
   }
 
   /** Ambient growth sparkles for the walker (and the duo's right friend). */

@@ -24,6 +24,13 @@ const FOOD_ART_SCALE: Record<string, number> = {
   lemon: 0.8, // big round citrus — dwarfed the thinner foods at full size
 }
 
+/**
+ * Height the belt pieces are AUTHORED at, in CSS px. The scene stretches them to
+ * layout.beltHeight, so this only fixes their internal proportions (tread rib
+ * size, front-edge lip, roller diameter) — not how tall the belt looks.
+ */
+const BELT_TEX_H_CSS = 74
+
 /** Per-food visual-scale correction (evens out oddly-cropped art slices). */
 export function foodScale(foodId: string): number {
   return FOOD_ART_SCALE[foodId] ?? 1
@@ -152,6 +159,176 @@ export function monsterTexture(scene: Phaser.Scene, color: number, bodyR: number
   return key
 }
 
+// A magpie: black head and back, white belly, a long dark tail, one big friendly
+// eye, an orange beak. Mischievous, never menacing — the thief is shooed, it
+// squawks, it comes back another day. A magpie because it flies, reads
+// universally as a thief, and looks at home in all four episode themes.
+const MAGPIE_DARK = 0x2b2b38
+const MAGPIE_SHEEN = 0x3f4a6b
+const MAGPIE_LIGHT = 0xf4f4f8
+const BEAK = 0xf7a03c
+
+/** Canvas the bird frames are authored on, in CSS px (all three share it). */
+const THIEF_W_CSS = 132
+const THIEF_H_CSS = 108
+
+/**
+ * The three thief frames on one shared canvas and one shared anchor:
+ * `ftm-thief-fly-up` / `-fly-down` (alternate for flight) and `-perch` (standing,
+ * head down, beak forward mid-peck).
+ */
+function buildThiefFrames(scene: Phaser.Scene, px: (css: number) => number): void {
+  const w = px(THIEF_W_CSS)
+  const h = px(THIEF_H_CSS)
+  // Body centre, identical in every frame — this is the shared anchor.
+  const cx = w * 0.46
+  const cy = h * 0.54
+  const bodyR = h * 0.26
+
+  const frames: Array<{ key: string; wing: 'up' | 'down' | 'folded'; perch: boolean }> = [
+    { key: 'ftm-thief-fly-up', wing: 'up', perch: false },
+    { key: 'ftm-thief-fly-down', wing: 'down', perch: false },
+    { key: 'ftm-thief-perch', wing: 'folded', perch: true },
+  ]
+
+  for (const frame of frames) {
+    if (scene.textures.exists(frame.key)) continue
+    const g = scene.add.graphics()
+
+    // Tail: a long dark wedge sweeping back and up.
+    g.fillStyle(MAGPIE_DARK, 1)
+    g.fillTriangle(
+      cx - bodyR * 0.4,
+      cy,
+      cx - bodyR * 3.1,
+      frame.perch ? cy + bodyR * 0.9 : cy - bodyR * 0.5,
+      cx - bodyR * 2.9,
+      frame.perch ? cy + bodyR * 1.5 : cy + bodyR * 0.2,
+    )
+
+    // Legs (perched only) — two little sticks onto the plate.
+    if (frame.perch) {
+      g.lineStyle(px(5), BEAK, 1)
+      for (const dx of [-bodyR * 0.3, bodyR * 0.25]) {
+        g.lineBetween(cx + dx, cy + bodyR * 0.7, cx + dx, cy + bodyR * 1.5)
+      }
+    }
+
+    // Body: white belly under a dark back.
+    g.fillStyle(MAGPIE_LIGHT, 1)
+    g.fillEllipse(cx, cy + bodyR * 0.18, bodyR * 1.85, bodyR * 1.7)
+    g.fillStyle(MAGPIE_DARK, 1)
+    g.fillEllipse(cx - bodyR * 0.15, cy - bodyR * 0.42, bodyR * 1.75, bodyR * 1.15)
+
+    // Head: dark, tilted down for the peck frame.
+    const headX = cx + bodyR * 0.95
+    const headY = frame.perch ? cy - bodyR * 0.05 : cy - bodyR * 0.72
+    g.fillStyle(MAGPIE_DARK, 1)
+    g.fillCircle(headX, headY, bodyR * 0.74)
+
+    // Beak, forward (and down when pecking).
+    g.fillStyle(BEAK, 1)
+    g.fillTriangle(
+      headX + bodyR * 0.5,
+      headY - bodyR * 0.16,
+      headX + bodyR * 0.5,
+      headY + bodyR * 0.22,
+      headX + bodyR * (frame.perch ? 1.5 : 1.45),
+      headY + bodyR * (frame.perch ? 0.6 : 0.05),
+    )
+
+    // One big friendly eye with a catchlight — the whole difference between
+    // "cheeky" and "creepy".
+    g.fillStyle(0xffffff, 1)
+    g.fillCircle(headX + bodyR * 0.2, headY - bodyR * 0.2, bodyR * 0.27)
+    g.fillStyle(0x1a1622, 1)
+    g.fillCircle(headX + bodyR * 0.26, headY - bodyR * 0.18, bodyR * 0.15)
+    g.fillStyle(0xffffff, 1)
+    g.fillCircle(headX + bodyR * 0.2, headY - bodyR * 0.26, bodyR * 0.06)
+
+    // The wing, which is the only thing that differs between the flight frames.
+    g.fillStyle(MAGPIE_SHEEN, 1)
+    if (frame.wing === 'up') {
+      g.fillTriangle(
+        cx - bodyR * 0.2,
+        cy - bodyR * 0.3,
+        cx + bodyR * 0.9,
+        cy - bodyR * 2.5,
+        cx - bodyR * 1.5,
+        cy - bodyR * 1.5,
+      )
+    } else if (frame.wing === 'down') {
+      g.fillTriangle(
+        cx - bodyR * 0.2,
+        cy - bodyR * 0.1,
+        cx + bodyR * 0.8,
+        cy + bodyR * 1.9,
+        cx - bodyR * 1.5,
+        cy + bodyR * 1.1,
+      )
+    } else {
+      g.fillEllipse(cx - bodyR * 0.25, cy + bodyR * 0.05, bodyR * 1.2, bodyR * 0.8)
+    }
+    // A white wing flash — the magpie's signature.
+    g.fillStyle(MAGPIE_LIGHT, 0.9)
+    if (frame.wing === 'folded') {
+      g.fillEllipse(cx - bodyR * 0.5, cy + bodyR * 0.2, bodyR * 0.5, bodyR * 0.42)
+    }
+
+    g.generateTexture(frame.key, w, h)
+    g.destroy()
+  }
+}
+
+/**
+ * The no-go visitor: `ftm-butterfly-open` / `-closed`. It must read as OBVIOUSLY
+ * harmless next to the bird — bright, round, soft, no beak — because the whole
+ * go/no-go trial depends on the child telling them apart at a glance.
+ */
+function buildButterflyFrames(scene: Phaser.Scene, px: (css: number) => number): void {
+  const w = px(THIEF_W_CSS)
+  const h = px(THIEF_H_CSS)
+  const cx = w * 0.46
+  const cy = h * 0.54
+  const r = h * 0.26
+
+  for (const open of [true, false]) {
+    const key = open ? 'ftm-butterfly-open' : 'ftm-butterfly-closed'
+    if (scene.textures.exists(key)) continue
+    const g = scene.add.graphics()
+    const spread = open ? 1 : 0.42
+
+    // Four round wings, warm and soft, with paler spots.
+    for (const side of [-1, 1] as const) {
+      g.fillStyle(0xffb703, 1)
+      g.fillEllipse(cx + side * r * 1.05 * spread, cy - r * 0.5, r * 1.5 * spread, r * 1.5)
+      g.fillStyle(0xff8fab, 1)
+      g.fillEllipse(cx + side * r * 0.9 * spread, cy + r * 0.6, r * 1.25 * spread, r * 1.15)
+      g.fillStyle(0xfff3bf, 0.95)
+      g.fillCircle(cx + side * r * 1.15 * spread, cy - r * 0.62, r * 0.3 * spread)
+    }
+    // A soft round body — no beak, nothing pointy anywhere.
+    g.fillStyle(0x6b4f8a, 1)
+    g.fillEllipse(cx, cy, r * 0.44, r * 1.7)
+    g.fillCircle(cx, cy - r * 0.92, r * 0.3)
+    // Curly antennae with little bobbles.
+    g.lineStyle(px(4), 0x6b4f8a, 1)
+    for (const side of [-1, 1] as const) {
+      g.lineBetween(cx, cy - r * 1.1, cx + side * r * 0.5, cy - r * 1.75)
+      g.fillStyle(0x6b4f8a, 1)
+      g.fillCircle(cx + side * r * 0.5, cy - r * 1.75, px(4))
+    }
+    // Two friendly eyes.
+    g.fillStyle(0xffffff, 1)
+    for (const side of [-1, 1] as const) g.fillCircle(cx + side * r * 0.13, cy - r * 0.95, r * 0.11)
+    g.fillStyle(0x1a1622, 1)
+    for (const side of [-1, 1] as const) g.fillCircle(cx + side * r * 0.13, cy - r * 0.95, r * 0.06)
+
+    g.generateTexture(key, w, h)
+    g.destroy()
+  }
+}
+
 /**
  * Build every procedural texture the scene needs for the current journey point
  * (friend body, plate, splash, ban/check badges, "?" glyph, particles, halo,
@@ -232,6 +409,135 @@ export function buildSceneTextures(
     g.destroy()
   }
   emojiTexture(scene, opts.dpr, 'ftm-star', '⭐', 30)
+  // The commission ask: "make me one" (see requestBubble.showCommission).
+  emojiTexture(scene, opts.dpr, 'ftm-pencil', '✏️', 40)
+
+  // ── The thief, and the no-go butterfly ───────────────────────────────────
+  // Separate FULL-BODY frames, swapped — no face-anchored parts, no rigged wings.
+  // That is what the whack-a-mole critters do, and it is the pattern that has not
+  // caused layout bugs; anything hung off a socket has to sit right at every scale
+  // on every screen (see journey.auraIntensity for why the worn accessories went).
+  // All three thief frames share ONE body anchor, so swapping them cannot make the
+  // bird jump.
+  buildThiefFrames(scene, px)
+  buildButterflyFrames(scene, px)
+
+  // The kitchen POT: a friendly wide pot, 3/4 view, two handles, NO LID (the
+  // contents must be visible — that is the whole read of a kitchen round). Drawn
+  // neutral so episode.palette can tint it, thick soft outline to match the food
+  // sprites' style.
+  if (!scene.textures.exists('ftm-pot')) {
+    const w = px(150)
+    const h = px(120)
+    const g = scene.add.graphics()
+    const bodyTop = h * 0.3
+    // Handles first, so the body overlaps them.
+    g.lineStyle(px(11), 0x8f8f98, 1)
+    for (const side of [-1, 1] as const) {
+      g.beginPath()
+      g.arc(
+        w / 2 + side * w * 0.35,
+        bodyTop + (h - bodyTop) * 0.28,
+        w * 0.12,
+        side < 0 ? Math.PI * 0.35 : Math.PI * 0.65,
+        side < 0 ? Math.PI * 1.65 : Math.PI * 1.95,
+      )
+      g.strokePath()
+    }
+    // Body: a bucket that tapers slightly toward the base.
+    g.fillStyle(0x6f6f78, 1)
+    g.fillRoundedRect(w * 0.13, bodyTop, w * 0.74, h - bodyTop, {
+      tl: px(6),
+      tr: px(6),
+      bl: px(22),
+      br: px(22),
+    })
+    // Rim, and the dark opening behind it.
+    g.fillStyle(0x8f8f98, 1)
+    g.fillEllipse(w / 2, bodyTop, w * 0.84, h * 0.24)
+    g.fillStyle(0x413f4a, 1)
+    g.fillEllipse(w / 2, bodyTop + px(2), w * 0.7, h * 0.17)
+    // A soft highlight down the left of the body — makes it read as metal.
+    g.fillStyle(0xb4b4bd, 0.5)
+    g.fillRoundedRect(w * 0.2, bodyTop + h * 0.16, w * 0.1, (h - bodyTop) * 0.62, px(8))
+    g.generateTexture('ftm-pot', w, h)
+    g.destroy()
+  }
+
+  // ── Conveyor belt ────────────────────────────────────────────────────────
+  // Drawn procedurally and NEUTRAL GREY on purpose: every piece is tinted by
+  // episode.palette.table at runtime, so one set of art themes itself across all
+  // four episodes instead of needing four variants. A shipped
+  // `art/belt-strip.png` etc. would take over through the same hasArt() contract
+  // every other look in this game already uses.
+
+  // The running surface, as a horizontally TILEABLE segment: the tread pattern
+  // must meet itself at both edges, because the belt is drawn as a tileSprite
+  // whose tilePositionX scrolls — that scroll IS the visible motion.
+  if (!scene.textures.exists('ftm-belt')) {
+    const period = px(48)
+    const h = px(BELT_TEX_H_CSS)
+    const lip = h * 0.28 // darker front edge, so the belt reads as 3/4 view
+    const g = scene.add.graphics()
+    g.fillStyle(0xd9d9de, 1)
+    g.fillRect(0, 0, period, h - lip)
+    g.fillStyle(0xb2b2ba, 1)
+    g.fillRect(0, h - lip, period, lip)
+    // Two tread ribs per period, inset so neither touches the seam.
+    g.fillStyle(0xc4c4cb, 1)
+    for (const at of [period * 0.22, period * 0.68]) {
+      g.fillRect(at, px(3), period * 0.1, h - lip - px(6))
+    }
+    // A soft highlight along the top edge — the light on a metal belt.
+    g.fillStyle(0xf0f0f4, 0.75)
+    g.fillRect(0, 0, period, px(3))
+    g.generateTexture('ftm-belt', period, h)
+    g.destroy()
+  }
+
+  // One end roller / drum cap, seen from the side; mirrored for the other end.
+  if (!scene.textures.exists('ftm-belt-roller')) {
+    const r = px(BELT_TEX_H_CSS / 2)
+    const g = scene.add.graphics()
+    g.fillStyle(0xb2b2ba, 1)
+    g.fillCircle(r, r, r)
+    g.fillStyle(0xd9d9de, 1)
+    g.fillCircle(r, r, r * 0.62)
+    g.fillStyle(0x9a9aa2, 1)
+    g.fillCircle(r, r, r * 0.2)
+    g.generateTexture('ftm-belt-roller', r * 2, r * 2)
+    g.destroy()
+  }
+
+  // The kitchen opening dishes emerge from: an arched doorway with a soft
+  // curtain, sitting at the belt's entry edge so a dish is never seen to pop
+  // into existence out of nothing.
+  if (!scene.textures.exists('ftm-hatch')) {
+    const w = px(96)
+    const h = px(132)
+    const g = scene.add.graphics()
+    // Frame: an arch (a rounded rect whose top corners are the full radius).
+    g.fillStyle(0xa9a9b2, 1)
+    g.fillRoundedRect(0, 0, w, h, { tl: w / 2, tr: w / 2, bl: px(6), br: px(6) })
+    // The dark opening.
+    g.fillStyle(0x4a4752, 1)
+    g.fillRoundedRect(px(9), px(9), w - px(18), h - px(9), {
+      tl: w / 2,
+      tr: w / 2,
+      bl: 0,
+      br: 0,
+    })
+    // A curtain hanging in it — three soft scallops.
+    g.fillStyle(0xe4e4ea, 1)
+    const scallop = (w - px(18)) / 3
+    for (let i = 0; i < 3; i++) {
+      g.fillEllipse(px(9) + scallop * (i + 0.5), h * 0.34, scallop * 1.06, h * 0.44)
+    }
+    g.fillStyle(0xcfcfd7, 1)
+    g.fillRect(px(9), px(9), w - px(18), px(7))
+    g.generateTexture('ftm-hatch', w, h)
+    g.destroy()
+  }
 
   // Growth-aura halo: a soft radial glow, tinted per friend and scaled/faded
   // by growth in applyAura. A CanvasTexture gradient stays a crisp bloom at
