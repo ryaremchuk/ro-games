@@ -33,6 +33,8 @@ const BUBBLE_ITEM_CSS = 44
  * iPad's height, so it never crowds the friend.
  */
 const DISH_PANEL_H_CSS = 168
+/** Clearance above the panel, so a taller one never rides off the top edge. */
+const PANEL_TOP_MARGIN_CSS = 14
 // Mirrors the scene's ART SPEC ink + pentatonic-happy tones (the pips + the
 // request-cue melody share these exact values with the scene).
 const INK = 0x3d3a4b
@@ -51,6 +53,8 @@ export class RequestBubble {
   private patternRing: Phaser.GameObjects.Arc | null = null
   /** A kitchen round's part tiles, in recipe order (index = pot position). */
   private dishParts: Phaser.GameObjects.Image[] = []
+  /** Height of the panel as currently drawn — reposition() keeps it on screen. */
+  private panelHCss = layout.PANEL_H_CSS
 
   private readonly scene: FeedTheMonsterScene
 
@@ -82,6 +86,7 @@ export class RequestBubble {
    * episode palette so the panel changes with the world.
    */
   drawPanel(width: number, heightCss: number = layout.PANEL_H_CSS): void {
+    this.panelHCss = heightCss
     const bh = this.px(heightCss)
     const radius = this.px(26)
     this.panelGfx.clear()
@@ -110,9 +115,19 @@ export class RequestBubble {
     })
   }
 
-  /** The task panel owns the top of the screen, detached from the friend. */
+  /**
+   * The task panel owns the top of the screen, detached from the friend.
+   *
+   * Its centre is nudged down when the panel is TALLER than the standard one — a
+   * kitchen round carries two rows, and at the standard centre its upper row hung
+   * off the top edge.
+   */
   reposition(): void {
-    this.bubble.setPosition(this.scene.scale.width / 2, this.px(layout.PANEL_CENTER_Y_CSS))
+    const y = Math.max(
+      this.px(layout.PANEL_CENTER_Y_CSS),
+      this.px(this.panelHCss / 2 + PANEL_TOP_MARGIN_CSS),
+    )
+    this.bubble.setPosition(this.scene.scale.width / 2, y)
   }
 
   /** Hide/show the whole top task panel — a duo round shows its own per-friend
@@ -138,6 +153,7 @@ export class RequestBubble {
     const itemW = this.px(BUBBLE_ITEM_CSS + 14)
     const count = color === null ? 1 : 2
     this.drawPanel(count * itemW + this.px(52))
+    this.reposition()
 
     const pencil = this.scene.add.image(-((count - 1) / 2) * itemW, 0, 'ftm-pencil')
     pencil.setDisplaySize(tile * 0.9, tile * 0.9)
@@ -204,6 +220,7 @@ export class RequestBubble {
     const partGap = this.px(10)
     const rowW = parts.length * partTile + Math.max(0, parts.length - 1) * partGap
     this.drawPanel(Math.max(bigTile, rowW) + this.px(64), DISH_PANEL_H_CSS)
+    this.reposition()
 
     const dishY = -this.px(DISH_PANEL_H_CSS) * 0.17
     const partY = this.px(DISH_PANEL_H_CSS) * 0.27
@@ -296,6 +313,7 @@ export class RequestBubble {
     const itemW = this.px(BUBBLE_ITEM_CSS + (isPattern ? 18 : 10))
     const bw = items.length * itemW + this.px(52)
     this.drawPanel(bw)
+    this.reposition()
 
     const tile = this.px(BUBBLE_ITEM_CSS + 22)
     items.forEach((item, i) => {

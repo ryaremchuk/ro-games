@@ -28,11 +28,12 @@ import { playTone } from '../../shared/audio'
 import { wantsFood } from './logic'
 import type { Round } from './logic'
 import {
-  BELT_HIDDEN_LANES,
-  beltIsDry,
+  FIRST_VISIBLE_SLOT,
+  isSlotVisible,
   laneCount,
   laneSlot,
   msUntilReachable,
+  needsRescue,
   nextDishFood,
   pickWantedFood,
   rescueLane,
@@ -137,10 +138,9 @@ export class ConveyorMode {
       const lane: Lane = { foodId: null, food: null, plate, lastSlot: 0, passedWanted: false }
       this.lanes.push(lane)
       const slot = laneSlot(i, this.offset, total)
-      const seeded =
-        slot >= BELT_HIDDEN_LANES
-          ? round.tray[(slot - BELT_HIDDEN_LANES) % round.tray.length]
-          : this.scheduleFood(i)
+      const seeded = isSlotVisible(slot, total)
+        ? round.tray[Math.floor(slot - FIRST_VISIBLE_SLOT) % round.tray.length]
+        : this.scheduleFood(i)
       this.fillLane(i, seeded)
       lane.lastSlot = slot
     }
@@ -192,11 +192,14 @@ export class ConveyorMode {
       .setDepth(3)
       .setTint(tint)
 
+    // Rollers at the belt's two ends, inset by half their own width so the drum
+    // is fully visible rather than half off screen.
     const rollerKey = this.scene.hasArt('belt-roller') ? artKey('belt-roller') : 'ftm-belt-roller'
+    const rollerW = h * 0.92
     for (const side of [-1, 1] as const) {
       const roller = this.scene.add
-        .image(side < 0 ? 0 : m.w, y, rollerKey)
-        .setDisplaySize(h * 0.92, h * 0.92)
+        .image(side < 0 ? rollerW / 2 : m.w - rollerW / 2, y, rollerKey)
+        .setDisplaySize(rollerW, rollerW)
         .setDepth(3)
         .setTint(tint)
       roller.setFlipX(side > 0)
@@ -205,11 +208,14 @@ export class ConveyorMode {
 
     // The hatch dishes emerge from, at the belt's entry edge (the belt runs
     // left → right), drawn ABOVE the dishes so a dish slides out from behind it.
+    // Anchored by its LEFT edge at x = 0: a centred hatch put half the doorway
+    // off screen, which read as a brown box rather than a kitchen.
     const hatchKey = this.scene.hasArt('hatch') ? artKey('hatch') : 'ftm-hatch'
+    const hatchW = h * 1.5
     this.hatch = this.scene.add
-      .image(this.px(6), y - h * 0.42, hatchKey)
-      .setOrigin(0.5, 1)
-      .setDisplaySize(h * 1.5, h * 2.1)
+      .image(0, y - h * 0.42, hatchKey)
+      .setOrigin(0, 1)
+      .setDisplaySize(hatchW, h * 2.1)
       .setDepth(6)
       .setTint(tint)
   }
@@ -350,7 +356,14 @@ export class ConveyorMode {
         this.fillLane(i, this.scheduleFood(i))
       }
       lane.lastSlot = slot
-      if (lane.foodId !== null && this.wanted(lane.foodId)) lane.passedWanted = true
+      // A MISS is a wanted dish that rode the WHOLE visible span un-taken, so it
+      // only becomes one after being seen near the hatch end. Marking it anywhere
+      // on the belt counted the initial seeding — dishes dealt mid-span, some
+      // already at the far edge — as misses the child never had a chance at, and
+      // three of them landed before the first feed.
+      if (lane.foodId !== null && slot <= FIRST_VISIBLE_SLOT + 1 && this.wanted(lane.foodId)) {
+        lane.passedWanted = true
+      }
 
       this.placeLane(lane, slot, layout.dishPitch(m))
     }
@@ -359,10 +372,13 @@ export class ConveyorMode {
   }
 
   /**
-   * Nothing feedable anywhere on the loop — because the child cleared the wanted
-   * dishes faster than the belt's one-per-pitch supply. Re-dress the lane that is
-   * currently BEHIND THE HATCH, which is invisible by definition and always
-   * exists, so the rescue costs the child nothing and shows them nothing.
+   * The anti-drought guarantee, checked every frame: if the wait for a wanted dish
+   * has grown past the budget, re-dress the lane currently BEHIND THE HATCH, which
+   * is invisible by definition and always exists — so the rescue costs the child
+   * nothing and shows them nothing.
+   *
+   * Doing this per frame rather than only when a lane wraps is what removes a
+   * whole pitch of latency from the promise (see belt.needsRescue).
    */
   private rescueIfDry(visible: number, total: number): void {
     const round = this.scene.round
@@ -373,7 +389,7 @@ export class ConveyorMode {
       slot: laneSlot(i, this.offset, total),
       foodId: lane.foodId,
     }))
-    const dry = beltIsDry({
+    const dry = needsRescue({
       others: snapshot,
       lanes: total,
       step: stepMs(this.dials.traverseMs, visible),
@@ -458,7 +474,7 @@ export class ConveyorMode {
           {
             foodId: lane.foodId,
             wanted: this.wanted(lane.foodId),
-            visible: slot >= BELT_HIDDEN_LANES,
+            visible: isSlotVisible(slot, total),
             msUntilReachable: msUntilReachable(slot, total, step),
             xCss: at.x / this.scene.dpr,
             yCss: at.y / this.scene.dpr,

@@ -13,6 +13,8 @@
 import Phaser from 'phaser'
 import { darken } from './journey'
 import type { Episode } from './journey'
+import { foodById } from './logic'
+import { allRecipeFoods } from './recipes'
 import { artKey } from './art'
 import type { XY } from './layout'
 
@@ -558,8 +560,15 @@ export function buildSceneTextures(
     }
   }
 
-  for (const food of opts.episode.foods) {
-    if (!hasArt(`food-${food.id}`))
-      emojiTexture(scene, opts.dpr, `ftm-food-${food.id}`, food.emoji, opts.foodCss)
+  // Every food this episode can put on the tray — its own pool, PLUS anything a
+  // kitchen recipe names. A recipe's parts are pushed onto the tray by id
+  // regardless of the episode (a burger needs bread wherever it is cooked), so
+  // skipping them here would leave a missing-texture box on the plate. They all
+  // happen to ship art today; this makes it structural rather than lucky.
+  const needed = new Map<string, string>()
+  for (const food of opts.episode.foods) needed.set(food.id, food.emoji)
+  for (const id of allRecipeFoods()) needed.set(id, foodById(id).emoji)
+  for (const [id, emoji] of needed) {
+    if (!hasArt(`food-${id}`)) emojiTexture(scene, opts.dpr, `ftm-food-${id}`, emoji, opts.foodCss)
   }
 }

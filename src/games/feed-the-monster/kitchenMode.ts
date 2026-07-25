@@ -394,6 +394,7 @@ export class KitchenMode {
     const at = layout.potPos(m)
     return {
       recipeId: this.request?.recipeId ?? '',
+      result: this.request ? dishResult(this.request) : '',
       ordered: this.request?.ordered ?? false,
       ingredients: this.request ? [...recipeById(this.request.recipeId).ingredients] : [],
       contents: [...this.contents],

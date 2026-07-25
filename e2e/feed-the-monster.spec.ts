@@ -139,6 +139,23 @@ async function feedCorrectOnce(page: Page, s: FeedTestState): Promise<void> {
   const startRound = s.round
   const before = s.eaten.length
   for (let attempt = 0; attempt < 3; attempt++) {
+    const now = await readState(page)
+    // A KITCHEN round has a different next step: nothing on the tray is feedable
+    // until the recipe has been cooked, so fill the pot first.
+    if (now.kitchen !== null && now.kitchen.madeDish === null) {
+      const part = now.foods.find((f) => now.kitchen!.wants.includes(f.foodId))
+      expect(part, 'a wanted ingredient must always be on the tray').toBeTruthy()
+      const inBefore = now.kitchen.contents.length
+      await dragToPoint(page, part!, { x: now.kitchen.potCss.x, y: now.kitchen.potCss.y })
+      await pollState(
+        page,
+        'ingredient went into the pot',
+        (later) =>
+          (later.kitchen?.contents.length ?? 0) > inBefore || later.kitchen?.madeDish !== null,
+        12_000,
+      ).catch(() => undefined)
+      continue
+    }
     const target = (await readState(page)).foods.find((f) => f.correct)
     expect(target, 'a correct food must always be on the tray').toBeTruthy()
     await dragToMouth(page, target!)
@@ -158,6 +175,20 @@ async function feedCorrectOnce(page: Page, s: FeedTestState): Promise<void> {
   throw new Error('correct feed never registered after 3 drags')
 }
 
+/**
+ * Close an open commission by handing back a blank page.
+ *
+ * A commission is a journey BEAT, not a round: it lands on the first friend of an
+ * episode, which means any spec that feeds through an episode boundary will meet
+ * one and find no tray at all. Closing it blank is the child's own no-cost exit,
+ * and it leaves the round to proceed normally.
+ */
+async function dismissCommission(page: Page): Promise<void> {
+  if ((await readState(page)).commission === null) return
+  await page.evaluate(() => window.__feedTheMonster!.submitDrawing([]))
+  await pollState(page, 'commission closed', (s) => s.commission === null, 20_000)
+}
+
 /** Feed correct foods one-by-one until the round completes and the next lays out. */
 async function feedRound(page: Page): Promise<void> {
   const startRound = (await waitTraySettled(page)).round
@@ -167,6 +198,7 @@ async function feedRound(page: Page): Promise<void> {
     await feedCorrectOnce(page, s)
   }
   await pollState(page, 'next round started', (s) => s.round > startRound, 45_000)
+  await dismissCommission(page)
   await waitTraySettled(page)
 }
 
@@ -406,6 +438,390 @@ for (const kind of ['dots', 'not', 'pattern', 'mix'] as const) {
     await feedRound(page)
   })
 }
+
+// ─── The conveyor ─────────────────────────────────────────────────────────────
+
+test('feed: a conveyor round serves food from a moving belt, and freezes it to grab', async ({
+  page,
+}) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  const started = await page.evaluate(() => window.__feedTheMonster!.forceConveyor())
+  expect(started).toBe(true)
+  const s0 = await pollState(
+    page,
+    'belt on stage',
+    (s) => s.conveyorActive && (s.conveyor?.dishes.length ?? 0) > 0,
+  )
+  // The belt derives its dish count from the viewport — never the tray's fixed 8.
+  expect(s0.conveyor!.dishes.length).toBeGreaterThanOrEqual(4)
+  expect(s0.conveyor!.traverseMs).toBeGreaterThan(0)
+  expect(
+    s0.conveyor!.dishes.some((d) => d.wanted),
+    'the belt is loaded with something feedable from the first frame',
+  ).toBe(true)
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-conveyor.png' })
+
+  // It really moves: a dish's x changes on its own.
+  const before = await readState(page)
+  const tracked = before.conveyor!.dishes[0]
+  await pollState(
+    page,
+    'belt advanced',
+    (s) => {
+      const now = s.conveyor?.dishes.find((d) => d.foodId === tracked.foodId)
+      return now !== undefined && Math.abs(now.xCss - tracked.xCss) > 4
+    },
+    20_000,
+  )
+
+  // Freeze rule: touching a dish stops the belt (motion is only in the SCAN).
+  const held = (await readState(page)).conveyor!.dishes.find((d) => d.visible && d.xCss > 0)!
+  expect(held, 'a dish must be on screen to be grabbed').toBeTruthy()
+  await page.mouse.move(held.xCss, held.yCss)
+  await page.mouse.down()
+  await pollState(page, 'belt stopped while held', (s) => s.conveyor?.moving === false, 10_000)
+  await page.mouse.up()
+  await pollState(page, 'belt resumed on release', (s) => s.conveyor?.moving === true, 15_000)
+
+  // The anti-drought guarantee, as the child experiences it: something feedable
+  // is always within the budget.
+  const live = await readState(page)
+  const soonest = Math.min(
+    ...live.conveyor!.dishes.filter((d) => d.wanted).map((d) => d.msUntilReachable),
+  )
+  expect(soonest).toBeLessThanOrEqual(live.conveyor!.maxWaitMs + live.conveyor!.traverseMs)
+})
+
+test('feed: feeding from the belt completes the round and returns the still tray', async ({
+  page,
+}) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+  await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
+
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceConveyor())).toBe(true)
+  const start = await pollState(page, 'belt on stage', (s) => s.conveyorActive)
+  const startRound = start.round
+
+  // Feed straight off the belt: grab a wanted dish (which freezes the belt) and
+  // drag it to the mouth, exactly as a plate food.
+  for (let guard = 0; guard < 12; guard++) {
+    const s = await readState(page)
+    if (!s.conveyorActive || s.transitioning || s.round !== startRound) break
+    const dish = s.conveyor!.dishes.find((d) => d.wanted && d.visible && d.xCss > 0)
+    if (!dish) {
+      await keepAwake(page)
+      await page.waitForTimeout(400)
+      continue
+    }
+    const eatenBefore = s.eaten.length
+    await dragToPoint(
+      page,
+      { xCss: dish.xCss, yCss: dish.yCss },
+      { x: s.mouth.xCss, y: s.mouth.yCss },
+    )
+    await pollState(
+      page,
+      'belt feed registered',
+      (now) => now.round !== startRound || now.transitioning || now.eaten.length > eatenBefore,
+      12_000,
+    ).catch(() => undefined)
+  }
+
+  await pollState(page, 'round after the belt started', (s) => s.round > startRound, 45_000)
+  // The still plate row comes back for the next round.
+  const after = await pollState(page, 'still tray restored', (s) => !s.conveyorActive, 30_000)
+  await waitTraySettled(page)
+  expect(after.foods.length).toBeGreaterThan(0)
+})
+
+// ─── The kitchen ──────────────────────────────────────────────────────────────
+
+for (const kind of ['dish', 'dish-ordered'] as const) {
+  test(`feed: a ${kind} round is cooked in the pot, then fed`, async ({ page }) => {
+    await page.goto('./#/feed-the-monster')
+    await waitForReady(page)
+    await waitTraySettled(page)
+    await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
+
+    await forceKindSettled(page, kind)
+    const s0 = await pollState(page, 'pot on the table', (s) => s.kitchen !== null)
+    expect(s0.taskKind).toBe(kind)
+    expect(s0.kitchen!.ordered).toBe(kind === 'dish-ordered')
+    expect(s0.kitchen!.ingredients.length).toBeGreaterThanOrEqual(2)
+    expect(s0.kitchen!.contents).toEqual([])
+    expect(s0.kitchen!.madeDish).toBeNull()
+    // Every part the recipe needs is on the tray, and the RESULT is not.
+    for (const part of s0.kitchen!.ingredients) {
+      expect(s0.foods.map((f) => f.foodId)).toContain(part)
+    }
+    // The made dish is the only thing the mouth accepts, so a spare one on the
+    // tray would let the child skip the pot entirely.
+    expect(s0.foods.map((f) => f.foodId)).not.toContain(s0.kitchen!.result)
+    expect(
+      s0.foods.some((f) => f.correct),
+      'nothing on the tray is feedable yet',
+    ).toBe(false)
+    await page.screenshot({ path: `e2e/__screenshots__/feed-${kind}.png` })
+
+    // The friend refuses a raw part — the same spit-back the child already knows.
+    const raw = s0.foods.find((f) => s0.kitchen!.ingredients.includes(f.foodId))!
+    await dragToMouth(page, raw)
+    await pollState(page, 'raw part refused', (s) => s.spitBacks >= 1, 20_000)
+    expect((await readState(page)).kitchen!.contents).toEqual([])
+    await pollState(page, 'tray restored', (s) => s.foods.length === 8, 20_000)
+
+    // Now cook it: drop each wanted part into the pot.
+    for (let guard = 0; guard < 8; guard++) {
+      const s = await readState(page)
+      if (!s.kitchen || s.kitchen.madeDish !== null) break
+      const want = s.kitchen.wants[0]
+      const food = s.foods.find((f) => f.foodId === want)
+      if (!food) {
+        await keepAwake(page)
+        await page.waitForTimeout(400)
+        continue
+      }
+      const inBefore = s.kitchen.contents.length
+      await dragToPoint(page, food, { x: s.kitchen.potCss.x, y: s.kitchen.potCss.y })
+      await pollState(
+        page,
+        `part ${want} went in`,
+        (now) => (now.kitchen?.contents.length ?? 0) > inBefore || now.kitchen?.madeDish !== null,
+        15_000,
+      )
+    }
+
+    const cooked = await pollState(
+      page,
+      'dish popped out of the pot',
+      (s) => s.kitchen?.madeDish !== null,
+      20_000,
+    )
+    expect(cooked.kitchen!.contents.length).toBe(cooked.kitchen!.ingredients.length)
+    await page.screenshot({ path: `e2e/__screenshots__/feed-${kind}-cooked.png` })
+
+    // …and feeding the made dish completes the round.
+    const startRound = cooked.round
+    const made = await pollState(
+      page,
+      'made dish is draggable',
+      (s) => s.foods.some((f) => f.foodId === s.kitchen?.madeDish),
+      20_000,
+    )
+    const dish = made.foods.find((f) => f.foodId === made.kitchen!.madeDish)!
+    expect(dish.correct, 'the cooked dish is the one thing the mouth wants').toBe(true)
+    await dragToMouth(page, dish)
+    await pollState(page, 'round completed by the made dish', (s) => s.round > startRound, 45_000)
+  })
+}
+
+test('feed: an ordered kitchen round refuses a part offered out of turn', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  await forceKindSettled(page, 'dish-ordered')
+  const s = await pollState(
+    page,
+    'ordered pot with more than one part left',
+    (state) => (state.kitchen?.ingredients.length ?? 0) >= 2,
+  )
+  expect(s.kitchen!.wants, 'an ordered round wants exactly one part at a time').toHaveLength(1)
+
+  // The LAST part is not the next one, so the pot must spit it back.
+  const wrong = s.kitchen!.ingredients[s.kitchen!.ingredients.length - 1]
+  expect(wrong).not.toBe(s.kitchen!.wants[0])
+  const food = s.foods.find((f) => f.foodId === wrong)!
+  await dragToPoint(page, food, { x: s.kitchen!.potCss.x, y: s.kitchen!.potCss.y })
+  await pollState(page, 'out-of-turn part spat back', (now) => now.spitBacks >= 1, 20_000)
+  expect((await readState(page)).kitchen!.contents).toEqual([])
+  // Nothing is lost: the part arcs home and the tray stays whole.
+  await pollState(page, 'tray whole after the refusal', (now) => now.foods.length === 8, 20_000)
+})
+
+// ─── The thief ────────────────────────────────────────────────────────────────
+
+test('feed: tapping the thief shoos it and the tray stays whole', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  const started = await page.evaluate(() => window.__feedTheMonster!.forceVisitor('thief'))
+  expect(started).toBe(true)
+  const visit = await pollState(page, 'thief telegraphed', (s) => s.visitor !== null)
+  expect(visit.visitor!.kind).toBe('thief')
+  // The telegraph is mandatory: nothing appears on a plate without warning.
+  expect(['telegraph', 'approach']).toContain(visit.visitor!.phase)
+  const before = await readState(page)
+  const targeted = before.visitor!.foodId
+
+  const perched = await pollState(
+    page,
+    'thief perched and pecking',
+    (s) => s.visitor?.phase === 'peck',
+    20_000,
+  )
+  expect(perched.visitor!.msLeft).toBeGreaterThan(0)
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-thief.png' })
+
+  // Tap it inside the window.
+  await page.mouse.move(perched.visitor!.xCss, perched.visitor!.yCss)
+  await page.mouse.down()
+  await page.mouse.up()
+  await pollState(page, 'thief shooed off', (s) => s.visitor === null, 20_000)
+
+  // Nothing was stolen: the targeted food is still on the tray, tray still full.
+  const after = await pollState(page, 'tray whole', (s) => s.foods.length === 8, 20_000)
+  expect(after.foods.map((f) => f.foodId)).toContain(targeted)
+  expect(after.transitioning).toBe(false)
+})
+
+test('feed: an ignored thief steals the food, a replacement arrives, the round still completes', async ({
+  page,
+}) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+  await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
+
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor('thief'))).toBe(true)
+  await pollState(page, 'thief on stage', (s) => s.visitor !== null)
+  // Do nothing at all — let the peck window lapse.
+  await pollState(page, 'thief left with the food', (s) => s.visitor === null, 30_000)
+
+  // Rule 2: stolen food is ALWAYS replaced, so the round stays completable.
+  const after = await pollState(page, 'plate refilled', (s) => s.foods.length === 8, 30_000)
+  expect(
+    after.foods.some((f) => f.correct),
+    'a correct food is still reachable',
+  ).toBe(true)
+  await waitTraySettled(page)
+  await feedRound(page)
+})
+
+test('feed: the butterfly takes nothing, whether it is tapped or left alone', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor('butterfly'))).toBe(true)
+  const visit = await pollState(page, 'butterfly on stage', (s) => s.visitor !== null)
+  expect(visit.visitor!.kind).toBe('butterfly')
+  const trayBefore = (await readState(page)).foods.length
+  await pollState(
+    page,
+    'butterfly fluttering on the plate',
+    (s) => s.visitor?.phase === 'peck',
+    25_000,
+  )
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-butterfly.png' })
+
+  // Leave it entirely alone: it must fly off having taken nothing.
+  await pollState(page, 'butterfly left on its own', (s) => s.visitor === null, 30_000)
+  const after = await pollState(
+    page,
+    'tray untouched',
+    (s) => s.foods.length === trayBefore,
+    20_000,
+  )
+  expect(after.foods.length).toBe(trayBefore)
+
+  // And tapping it is not punished either — the tray is still whole afterwards.
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor('butterfly'))).toBe(true)
+  const second = await pollState(
+    page,
+    'second butterfly perched',
+    (s) => s.visitor?.phase === 'peck',
+    25_000,
+  )
+  await page.mouse.move(second.visitor!.xCss, second.visitor!.yCss)
+  await page.mouse.down()
+  await page.mouse.up()
+  await pollState(page, 'tapped butterfly left', (s) => s.visitor === null, 20_000)
+  expect((await readState(page)).foods.length).toBe(trayBefore)
+})
+
+// ─── The food the child drew ──────────────────────────────────────────────────
+
+test('feed: a commissioned drawing becomes a food and is eaten on the spot', async ({ page }) => {
+  await page.goto('./#/feed-the-monster?e2e')
+  await waitForReady(page)
+  await waitTraySettled(page)
+  await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
+  await page.evaluate(() => window.__feedTheMonster!.wipeDrawnFoods())
+
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceCommission())).toBe(true)
+  const open = await pollState(page, 'commission open', (s) => s.commission !== null)
+  expect(open.commission!.color).toBeTruthy()
+  // No round is dealt while the pad is up — the friend is waiting to be given
+  // something, not to be fed from a tray.
+  expect(open.foods).toHaveLength(0)
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-commission.png' })
+
+  // Paint something (a synthetic drawing — a spec should not have to paint 40
+  // cells by hand) and hand it over.
+  const submitted = await page.evaluate(() =>
+    window.__feedTheMonster!.submitDrawing([
+      { x: 6, y: 6, color: 3 },
+      { x: 7, y: 6, color: 3 },
+      { x: 6, y: 7, color: 3 },
+      { x: 7, y: 7, color: 3 },
+    ]),
+  )
+  expect(submitted).toBe(true)
+
+  const dealt = await pollState(
+    page,
+    'the drawing landed on the tray as a food',
+    (s) => s.commission === null && s.drawnFoodIds.length === 1 && s.foods.length === 8,
+    30_000,
+  )
+  const drawnId = dealt.drawnFoodIds[0]
+  expect(dealt.foods.map((f) => f.foodId)).toContain(drawnId)
+  const drawn = dealt.foods.find((f) => f.foodId === drawnId)!
+  expect(drawn.correct, 'the child’s drawing is exactly what the friend wants now').toBe(true)
+  await waitTraySettled(page)
+
+  // …and it is eaten, right now, which is the whole emotional payload.
+  const startRound = (await readState(page)).round
+  const target = (await readState(page)).foods.find((f) => f.foodId === drawnId)!
+  await dragToMouth(page, target)
+  await pollState(page, 'the friend ate the drawing', (s) => s.round > startRound, 45_000)
+
+  // It survives a reload: a drawn food is a food from now on.
+  await page.reload()
+  await waitForReady(page)
+  const resumed = await waitTraySettled(page)
+  expect(resumed.drawnFoodIds).toContain(drawnId)
+})
+
+test('feed: closing the pad blank costs nothing — the round just proceeds', async ({ page }) => {
+  await page.goto('./#/feed-the-monster?e2e')
+  await waitForReady(page)
+  await waitTraySettled(page)
+  await page.evaluate(() => window.__feedTheMonster!.wipeDrawnFoods())
+
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceCommission())).toBe(true)
+  await pollState(page, 'commission open', (s) => s.commission !== null)
+
+  // An empty grid: the plate fills with an ordinary food and play continues.
+  expect(await page.evaluate(() => window.__feedTheMonster!.submitDrawing([]))).toBe(true)
+  const after = await pollState(
+    page,
+    'an ordinary round was dealt instead',
+    (s) => s.commission === null && s.foods.length === 8,
+    30_000,
+  )
+  expect(after.drawnFoodIds).toHaveLength(0)
+  await waitTraySettled(page)
+  expect((await readState(page)).foods.some((f) => f.correct)).toBe(true)
+  await feedRound(page)
+})
 
 test('feed: a duo bonus stands up two friends fed from one tray by mouth', async ({ page }) => {
   await page.goto('./#/feed-the-monster')

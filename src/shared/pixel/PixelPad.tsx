@@ -76,6 +76,12 @@ export interface PixelPadProps {
   /** Extra rail content above the tools (the studio's size buttons, gallery). */
   railTop?: ReactNode
   /**
+   * How many full-size buttons `railTop` adds. The rail's column count is derived
+   * from its item count so nothing is ever clipped (layout.railFits), and it
+   * cannot count React children it was handed as opaque nodes.
+   */
+  railTools?: number
+  /**
    * Strip at the top-left the rail must keep clear (the shell's home button and
    * level badge live there). See layout.PadMetrics.chromeTop.
    */
@@ -99,6 +105,7 @@ export default function PixelPad({
   initial,
   onDone,
   railTop,
+  railTools = 0,
   chromeTop = 0,
   doneLabel = '✓',
   exposeTestApi = false,
@@ -125,8 +132,13 @@ export default function PixelPad({
   toolRef.current = tool
 
   const layout: PadLayout = useMemo(
-    () => padLayout({ vw: box.vw || 1, vh: box.vh || 1, chromeTop }),
-    [box.vw, box.vh, chromeTop],
+    () =>
+      padLayout(
+        { vw: box.vw || 1, vh: box.vh || 1, chromeTop },
+        // Eraser + undo + bin, plus whatever the shell added.
+        { tools: 3 + railTools, swatches: SWATCHES.length },
+      ),
+    [box.vw, box.vh, chromeTop, railTools],
   )
 
   // ─── Rendering ─────────────────────────────────────────────────────────────
@@ -360,15 +372,36 @@ export default function PixelPad({
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
+  // Two zones, because they obey different touch minimums: full-size TOOLS (a
+  // wrong tool changes the mode) above a denser swatch grid (a wrong colour costs
+  // one cell). layout.padLayout sized both to fit — see railFits.
   const railStyle: CSSProperties = {
     ...styles.rail,
     left: layout.railX,
     top: layout.railY,
     width: layout.railW,
     height: layout.railH,
-    gridTemplateColumns: `repeat(${layout.railColumns}, 1fr)`,
+    gap: layout.gap,
   }
-  const swatchSide = layout.button / (layout.railColumns === 2 ? 1.15 : 1)
+  const toolZone: CSSProperties = {
+    display: 'grid',
+    gridTemplateColumns: `repeat(${layout.toolColumns}, ${layout.button}px)`,
+    gap: layout.gap,
+    justifyContent: 'center',
+  }
+  const swatchZone: CSSProperties = {
+    display: 'grid',
+    gridTemplateColumns: `repeat(${layout.swatchColumns}, ${layout.swatch}px)`,
+    gap: layout.gap,
+    justifyContent: 'center',
+  }
+  const toolStyle = (extra: CSSProperties = {}): CSSProperties => ({
+    ...styles.tool,
+    width: layout.button,
+    height: layout.button,
+    fontSize: Math.round(layout.button * 0.4),
+    ...extra,
+  })
 
   return (
     <div ref={rootRef} style={styles.root}>
@@ -390,63 +423,53 @@ export default function PixelPad({
       </div>
 
       <div style={railStyle}>
-        {railTop}
-        {SWATCHES.map((index) => {
-          const active = !tool.eraser && tool.color === index
-          return (
-            <button
-              key={index}
-              type="button"
-              aria-label={`Colour ${PALETTE[index]}`}
-              onClick={() => {
-                setTool({ color: index, eraser: false })
-                playTone(430 + index * 24, 55, 'sine', 0.06)
-              }}
-              style={{
-                ...styles.swatch,
-                width: swatchSide,
-                height: swatchSide,
-                background: PALETTE[index],
-                outline: active ? '4px solid #fff' : '2px solid rgba(0,0,0,0.18)',
-                transform: active ? 'scale(1.06)' : 'none',
-              }}
-            />
-          )
-        })}
-        <button
-          type="button"
-          aria-label="Eraser"
-          onClick={() => setTool((t) => ({ ...t, eraser: true }))}
-          style={{
-            ...styles.tool,
-            width: swatchSide,
-            height: swatchSide,
-            background: tool.eraser ? '#ffd166' : 'rgba(255,255,255,0.9)',
-          }}
-        >
-          🧽
-        </button>
-        <button
-          type="button"
-          aria-label="Undo"
-          onClick={undo}
-          style={{
-            ...styles.tool,
-            width: swatchSide,
-            height: swatchSide,
-            opacity: undoDepth === 0 ? 0.45 : 1,
-          }}
-        >
-          ↩︎
-        </button>
-        <button
-          type="button"
-          aria-label="New page"
-          onClick={clear}
-          style={{ ...styles.tool, width: swatchSide, height: swatchSide }}
-        >
-          🗑️
-        </button>
+        <div style={toolZone}>
+          {railTop}
+          <button
+            type="button"
+            aria-label="Eraser"
+            onClick={() => setTool((t) => ({ ...t, eraser: true }))}
+            style={toolStyle({ background: tool.eraser ? '#ffd166' : 'rgba(255,255,255,0.9)' })}
+          >
+            🧽
+          </button>
+          {/* Never greyed into uselessness — an empty stack is simply inert. */}
+          <button
+            type="button"
+            aria-label="Undo"
+            onClick={undo}
+            style={toolStyle({ opacity: undoDepth === 0 ? 0.45 : 1 })}
+          >
+            ↩︎
+          </button>
+          <button type="button" aria-label="New page" onClick={clear} style={toolStyle()}>
+            🗑️
+          </button>
+        </div>
+        <div style={swatchZone}>
+          {SWATCHES.map((index) => {
+            const active = !tool.eraser && tool.color === index
+            return (
+              <button
+                key={index}
+                type="button"
+                aria-label={`Colour ${PALETTE[index]}`}
+                onClick={() => {
+                  setTool({ color: index, eraser: false })
+                  playTone(430 + index * 24, 55, 'sine', 0.06)
+                }}
+                style={{
+                  ...styles.swatch,
+                  width: layout.swatch,
+                  height: layout.swatch,
+                  background: PALETTE[index],
+                  outline: active ? '4px solid #fff' : '2px solid rgba(0,0,0,0.18)',
+                  transform: active ? 'scale(1.06)' : 'none',
+                }}
+              />
+            )
+          })}
+        </div>
       </div>
 
       {/* Done is the loudest thing on screen: the pad must never become a place
@@ -502,11 +525,10 @@ const styles: Record<string, CSSProperties> = {
   },
   rail: {
     position: 'absolute',
-    display: 'grid',
-    alignContent: 'center',
-    justifyItems: 'center',
-    gap: 6,
-    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   swatch: {
     border: 'none',

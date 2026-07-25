@@ -55,6 +55,12 @@ export const MAX_DRAWINGS = 120
 let memoryStore: Drawing[] | null = null
 /** Set once a write fails — from then on reads trust memory. */
 let storageBroken = false
+/**
+ * Memoised newest-first list for React (see drawingsSnapshot). Cleared on every
+ * write; `useSyncExternalStore` compares snapshots by identity, so a fresh array
+ * per render would be an infinite re-render loop rather than a re-read.
+ */
+let snapshot: Drawing[] | null = null
 
 const listeners = new Set<() => void>()
 
@@ -67,6 +73,7 @@ export function subscribeArt(listener: () => void): () => void {
 }
 
 function emit(): void {
+  snapshot = null
   for (const listener of listeners) listener()
 }
 
@@ -74,6 +81,7 @@ function emit(): void {
 export function resetArtMemory(): void {
   memoryStore = null
   storageBroken = false
+  snapshot = null
 }
 
 function isDrawing(raw: unknown): raw is Drawing {
@@ -160,6 +168,18 @@ function writeAll(drawings: Drawing[]): void {
  */
 export function listDrawings(): Drawing[] {
   return readAll().sort((a, b) => b.createdAt - a.createdAt)
+}
+
+/**
+ * `listDrawings()` for React's `useSyncExternalStore`, which compares snapshots
+ * by IDENTITY: handing it a freshly-built array on every render is an infinite
+ * re-render loop, not a re-read. So the array is memoised and only rebuilt after
+ * a write. (Cross-tab writes are not observed — nothing in this app needs them,
+ * and the gallery is re-read on mount anyway.)
+ */
+export function drawingsSnapshot(): Drawing[] {
+  snapshot ??= listDrawings()
+  return snapshot
 }
 
 /** Drawings commissioned for a slot (optionally one specific ask), newest first. */

@@ -27,7 +27,7 @@ import type { Grid, GridSize } from '../../shared/pixel/grid'
 import {
   deleteDrawing,
   drawingToGrid,
-  listDrawings,
+  drawingsSnapshot,
   subscribeArt,
 } from '../../shared/pixel/artStore'
 import type { Drawing } from '../../shared/pixel/artStore'
@@ -45,7 +45,9 @@ export default function DrawingGame() {
   /** Bumped to force a genuinely fresh pad (a new page, not a re-render). */
   const [pageKey, setPageKey] = useState(0)
 
-  const drawings = useSyncExternalStore(subscribeArt, listDrawings)
+  // drawingsSnapshot (not listDrawings) — useSyncExternalStore compares by
+  // identity, so a fresh array per render would loop forever.
+  const drawings = useSyncExternalStore(subscribeArt, drawingsSnapshot)
 
   /**
    * Changing the grid size does not destroy work: the pad files whatever is on
@@ -117,6 +119,7 @@ export default function DrawingGame() {
         initial={reopened?.grid}
         onDone={onDone}
         railTop={railTop}
+        railTools={GRID_SIZES.length + 1}
         chromeTop={CHROME_TOP_CSS}
         exposeTestApi
       />

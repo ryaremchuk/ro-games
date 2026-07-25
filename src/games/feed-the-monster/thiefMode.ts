@@ -41,6 +41,9 @@ type Phase = 'telegraph' | 'approach' | 'peck' | 'leaving'
 
 /** Wing-flap frame interval while gliding. */
 const FLAP_MS = 150
+/** Visitor footprint in CSS px. Comfortably bigger than a food, on purpose. */
+const VISITOR_W_CSS = 124
+const VISITOR_H_CSS = 104
 export class ThiefMode {
   /** True from the telegraph until the visitor is off screen. */
   active = false
@@ -55,6 +58,10 @@ export class ThiefMode {
   private shadow?: Phaser.GameObjects.Ellipse
   private flap?: Phaser.Time.TimerEvent
   private timers: Phaser.Time.TimerEvent[] = []
+  /**
+   * The stolen food's replacement. Kept OFF `timers` on purpose — see steal().
+   */
+  private replacementTimer?: Phaser.Time.TimerEvent
   private wingUp = true
   private peckEndsAt = 0
   /** Set once the visit has resolved, so a double tap can't score twice. */
@@ -140,9 +147,13 @@ export class ThiefMode {
     this.bird = this.scene.add
       .image(this.scene.scale.width + this.px(120), at.y - this.px(200), key)
       .setDepth(21)
-    this.bird.setDisplaySize(this.px(this.kind === 'thief' ? 96 : 78), this.px(78))
-    // A generous hit area — at least as big as a food's, plus a margin, because a
-    // four-year-old is aiming a finger at something that just moved.
+    this.bird.setDisplaySize(
+      this.px(this.kind === 'thief' ? VISITOR_W_CSS : VISITOR_H_CSS),
+      this.px(VISITOR_H_CSS),
+    )
+    // The whole sprite is the hit area, and the sprite is deliberately larger than
+    // a food: a four-year-old is aiming a finger at something that just moved, and
+    // the tap must be at least as forgiving as a food's ~100 css hit circle.
     this.bird.setInteractive({ useHandCursor: true })
     this.bird.on('pointerdown', () => this.onTap())
 
@@ -278,8 +289,15 @@ export class ThiefMode {
       })
       // Rule 2: ALWAYS replaced. When the thief had no choice but a wanted food,
       // the replacement is the identical food, so the round stays clearable.
+      //
+      // Deliberately NOT on `this.timers`: those are the VISIT's own beats and
+      // `finish()` — which runs on the very next line — clears them. The
+      // replacement has to outlive the bird, or a theft leaves a permanently
+      // empty plate. Only `cancel()` (the round ended) may call it off.
       const replacement = this.mustReplaceSame ? this.foodId : this.scene.replacementFood(this.slot)
-      this.after(520, () => {
+      this.replacementTimer?.remove()
+      this.replacementTimer = this.scene.time.delayedCall(520, () => {
+        this.replacementTimer = undefined
         if (this.scene.transitioning) return
         this.scene.tray.dropReplacement(this.slot, replacement)
         playTone(659, 90, 'sine', 0.06)
@@ -332,6 +350,10 @@ export class ThiefMode {
     this.resolved = true
     for (const timer of this.timers) timer.remove()
     this.timers = []
+    // A cancelled visit is the ONE case where the replacement is dropped too: the
+    // round is over, so there is no plate left to refill.
+    this.replacementTimer?.remove()
+    this.replacementTimer = undefined
     this.flap?.remove()
     this.flap = undefined
     if (this.bird) {

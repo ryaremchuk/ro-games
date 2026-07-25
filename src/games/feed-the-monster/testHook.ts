@@ -110,6 +110,8 @@ export interface VisitorState {
 /** The pot, mid-cook. */
 export interface KitchenState {
   recipeId: string
+  /** The food the pot will produce — the ONE thing this round feeds. */
+  result: string
   /** Do the parts have to go in left-to-right? */
   ordered: boolean
   /** The recipe's parts, in order. */

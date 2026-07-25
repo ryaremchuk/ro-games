@@ -72,19 +72,33 @@ export function laneSlot(index: number, offset: number, lanes: number): number {
   return slot < 0 ? slot + lanes : slot
 }
 
-/** Is this slot still behind the hatch — i.e. not on screen at all? */
+/**
+ * The first slot whose dish is FULLY on screen. A dish is drawn centred on its
+ * slot, so "off screen" has to account for its own half-width: the visible span
+ * is pushed one pitch to the right of the hatch lane, which is what makes
+ * `isSlotHidden` mean *actually invisible* rather than merely *flagged hidden*.
+ * (It did not, and the dry-belt rescue could then visibly swap a dish that was
+ * half past the hatch.)
+ */
+export const FIRST_VISIBLE_SLOT = BELT_HIDDEN_LANES + 1
+
+/** Is this slot's dish entirely off screen, behind the hatch? */
 export function isSlotHidden(slot: number): boolean {
-  return slot < BELT_HIDDEN_LANES
+  return slot <= BELT_HIDDEN_LANES
 }
 
-/** Is this slot on screen (past the hatch, before the right edge)? */
+/** Is this slot's dish fully on screen (past the hatch, before the right edge)? */
 export function isSlotVisible(slot: number, lanes: number): boolean {
-  return !isSlotHidden(slot) && slot < lanes
+  return slot >= FIRST_VISIBLE_SLOT && slot <= lanes
 }
 
-/** Slot → x offset in pitches from the left screen edge (may be negative). */
+/**
+ * Slot → x offset in pitches from the left screen edge (negative behind the
+ * hatch). Slot `FIRST_VISIBLE_SLOT` lands its LEFT edge exactly at x = 0 and the
+ * last lane its right edge at the far edge, so the loop fills the width.
+ */
 export function slotPitchX(slot: number): number {
-  return slot - BELT_HIDDEN_LANES + 0.5
+  return slot - BELT_HIDDEN_LANES - 0.5
 }
 
 /** ms for a dish to advance one pitch, from the visible-traverse time. */
@@ -100,9 +114,9 @@ export function stepMs(traverseMs: number, visibleDishes: number): number {
 export function msUntilReachable(slot: number, lanes: number, step: number): number {
   const exitIn = (lanes - slot) * step
   if (isSlotVisible(slot, lanes)) {
-    return exitIn >= BELT_GRAB_GRACE_MS ? 0 : exitIn + BELT_HIDDEN_LANES * step
+    return exitIn >= BELT_GRAB_GRACE_MS ? 0 : exitIn + FIRST_VISIBLE_SLOT * step
   }
-  return (BELT_HIDDEN_LANES - slot) * step
+  return Math.max(0, (FIRST_VISIBLE_SLOT - slot) * step)
 }
 
 // ─── Difficulty dials (the belt's own axis) ───────────────────────────────────
@@ -200,45 +214,55 @@ export function soonestWantedMs(ctx: BeltRefillContext): number {
   return soonest
 }
 
-/** How long a dish scheduled at the hatch takes to become grabbable. */
+/** How long a dish spawned at the hatch takes to become grabbable. */
 export function hatchDelayMs(step: number): number {
-  return BELT_HIDDEN_LANES * step
+  return FIRST_VISIBLE_SLOT * step
 }
 
 /**
- * Is there nothing wanted anywhere on the loop?
+ * Has the wait for a wanted dish grown past what the budget allows?
  *
- * A lane is normally refilled only when it wraps past the hatch, so the belt
- * supplies about one dish per pitch. That is comfortably faster than a
- * 3–4-year-old can drag, but a child who clears two wanted dishes in quick
- * succession can still empty the belt of anything feedable — and then wait TWO
- * pitches (one for the next wrap, one for the ride out) before a rescue arrives.
- * At the easiest setting that is 6 s against a 4 s promise.
+ * This is the anti-drought guarantee's CONTINUOUS check, and it is the one the
+ * child actually experiences. The spawn decision in `nextDishFood` only runs when
+ * a lane reaches the hatch — once per pitch — so on its own it leaves up to a
+ * pitch of latency on top of the ride out of the hatch. Polling this every frame
+ * and re-dressing the emerging lane (`rescueLane`) removes that latency.
  *
- * The fix is `rescueLane` below, and this is its trigger.
+ * What remains is physical and cannot be removed: a dish still has to RIDE from
+ * the hatch into reach, which takes `hatchDelayMs`. On the slowest belt a pitch is
+ * ~3 s, so the honest worst case there is the larger of the budget and the hatch
+ * delay — the belt keeps its promise by making wanted dishes DENSE when it is slow
+ * (one in three at the easiest setting), so the typical wait is a fraction of it.
  */
+export function needsRescue(ctx: BeltRefillContext): boolean {
+  return soonestWantedMs(ctx) > refillThresholdMs(ctx.maxWaitMs, ctx.step)
+}
+
+/** Is there nothing wanted anywhere on the loop at all? */
 export function beltIsDry(ctx: BeltRefillContext): boolean {
   return soonestWantedMs(ctx) === Infinity
 }
 
 /**
- * The lane to re-dress when the belt has gone dry: the one currently BEHIND THE
- * HATCH.
+ * The lane to re-dress when the belt has gone dry: the hidden lane CLOSEST TO
+ * EMERGING.
  *
  * The trick is that a hidden lane's dish is, by definition, not on screen — so it
  * can be swapped for a wanted one with nothing visibly materialising or changing.
- * And because the lanes are evenly spaced one per pitch, there is ALWAYS exactly
- * one lane hidden, so the rescue can always act. That turns the worst dry spell
- * from two pitches into one: the swapped dish rides out of the hatch immediately.
+ * And because the lanes are one pitch apart and the hidden span is one pitch wide,
+ * there is ALWAYS exactly one such lane, so the rescue can always act.
+ *
+ * Closest to emerging, not furthest: the child is waiting, and the lane about to
+ * come out of the hatch reaches them in a single pitch instead of a whole loop.
  *
  * Returns the lane's index into the array passed in, or null if none is hidden.
  */
 export function rescueLane(lanes: readonly BeltLaneSnapshot[]): number | null {
   let best: number | null = null
-  let bestSlot = Infinity
+  let bestSlot = -Infinity
   lanes.forEach((lane, index) => {
     if (!isSlotHidden(lane.slot)) return
-    if (lane.slot < bestSlot) {
+    if (lane.slot > bestSlot) {
       bestSlot = lane.slot
       best = index
     }

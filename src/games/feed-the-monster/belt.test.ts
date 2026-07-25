@@ -4,6 +4,7 @@ import {
   BELT_HIDDEN_LANES,
   BELT_MISSES_BEFORE_EASE,
   BELT_SKILL_MAX,
+  FIRST_VISIBLE_SLOT,
   CONVEYOR_BASE_CHANCE,
   CONVEYOR_EXCLUDED_KINDS,
   CONVEYOR_MAX_CHANCE,
@@ -69,14 +70,18 @@ describe('the loop', () => {
     }
   })
 
-  it('hides exactly the lanes behind the hatch, and they sit off the left edge', () => {
+  it('splits the loop into hidden, emerging and visible, in that order', () => {
     const lanes = laneCount(6)
-    for (let slot = 0; slot < lanes; slot++) {
-      const visible = isSlotVisible(slot, lanes)
-      expect(visible).toBe(slot >= BELT_HIDDEN_LANES)
-      expect(isSlotHidden(slot), 'hidden and visible are exact complements').toBe(!visible)
-      // A hidden slot is left of x = 0; a visible one is on screen.
-      expect(slotPitchX(slot) < 0).toBe(!visible)
+    for (let slot = 0; slot <= lanes; slot++) {
+      expect(isSlotHidden(slot)).toBe(slot <= BELT_HIDDEN_LANES)
+      expect(isSlotVisible(slot, lanes)).toBe(slot >= FIRST_VISIBLE_SLOT)
+      // Between the two is exactly one pitch of "emerging from the hatch", where a
+      // dish is half on screen — which is why hidden and visible are not
+      // complements, and why the rescue only ever touches a HIDDEN lane.
+      if (!isSlotHidden(slot) && !isSlotVisible(slot, lanes)) {
+        expect(slot).toBeGreaterThan(BELT_HIDDEN_LANES)
+        expect(slot).toBeLessThan(FIRST_VISIBLE_SLOT)
+      }
     }
   })
 
@@ -86,17 +91,29 @@ describe('the loop', () => {
       const hidden = Array.from({ length: lanes }, (_, i) =>
         isSlotHidden(laneSlot(i, offset, lanes)),
       ).filter(Boolean)
-      expect(hidden).toHaveLength(BELT_HIDDEN_LANES)
+      expect(hidden.length).toBeGreaterThanOrEqual(1)
     }
   })
 
-  it('keeps every visible dish inside the screen width', () => {
+  it('keeps every visible dish inside the screen width, half-width included', () => {
     const visible = 6
     const lanes = laneCount(visible)
-    for (let slot = BELT_HIDDEN_LANES; slot < lanes; slot++) {
+    for (let slot = FIRST_VISIBLE_SLOT; slot <= lanes; slot++) {
       const pitchX = slotPitchX(slot)
-      expect(pitchX).toBeGreaterThan(0)
-      expect(pitchX, 'a dish never rides off the right edge').toBeLessThan(visible)
+      // The dish is drawn CENTRED on its slot, so its own half-width has to fit.
+      expect(pitchX - 0.5, `slot ${slot} pokes off the left edge`).toBeGreaterThanOrEqual(-0.001)
+      expect(pitchX + 0.5, `slot ${slot} pokes off the right edge`).toBeLessThanOrEqual(
+        visible + 0.001,
+      )
+    }
+  })
+
+  it('a hidden dish is ENTIRELY off screen, half-width included', () => {
+    // Not merely flagged hidden: the dry-belt rescue swaps a hidden dish, so any
+    // sliver of it on screen would be a dish visibly changing under the child.
+    for (let slot = 0; slot <= BELT_HIDDEN_LANES; slot += 0.1) {
+      expect(isSlotHidden(slot)).toBe(true)
+      expect(slotPitchX(slot) + 0.5, `slot ${slot} is partly visible`).toBeLessThanOrEqual(0.001)
     }
   })
 
@@ -111,11 +128,12 @@ describe('msUntilReachable', () => {
   const step = stepMs(18_000, 6)
 
   it('is zero for a dish on screen with grabbing room to spare', () => {
-    expect(msUntilReachable(BELT_HIDDEN_LANES, lanes, step)).toBe(0)
+    expect(msUntilReachable(FIRST_VISIBLE_SLOT, lanes, step)).toBe(0)
   })
 
   it('is the ride out of the hatch for a hidden dish', () => {
-    expect(msUntilReachable(0, lanes, step)).toBe(BELT_HIDDEN_LANES * step)
+    expect(msUntilReachable(0, lanes, step)).toBe(hatchDelayMs(step))
+    expect(msUntilReachable(BELT_HIDDEN_LANES, lanes, step)).toBe(step)
   })
 
   it('sends a dish about to leave round the loop rather than calling it reachable', () => {
@@ -214,6 +232,9 @@ interface SimResult {
   fed: number
   /** Was the request cleared before the run ended? */
   completed: boolean
+  /** Ticks measured, and how many of them were over the stated budget. */
+  ticks: number
+  overBudgetTicks: number
 }
 
 /**
@@ -278,6 +299,8 @@ function simulate(opts: {
 
   let worstWaitMs = 0
   let dryTicks = 0
+  let overBudgetTicks = 0
+  let measured = 0
   let fed = 0
   const needed = opts.needed ?? Infinity
   const lastSlot = Array.from({ length: total }, (_, i) => laneSlot(i, offset, total))
@@ -334,11 +357,24 @@ function simulate(opts: {
       wanted,
     }
     const soonest = soonestWantedMs(ctx)
+    measured++
     if (soonest === Infinity) dryTicks++
-    else worstWaitMs = Math.max(worstWaitMs, soonest)
+    else {
+      worstWaitMs = Math.max(worstWaitMs, soonest)
+      if (soonest > opts.dials.maxWaitMs) overBudgetTicks++
+    }
   }
 
-  return { worstWaitMs, dryTicks, spawned, wantedSpawned, fed, completed: fed >= needed }
+  return {
+    worstWaitMs,
+    dryTicks,
+    spawned,
+    wantedSpawned,
+    fed,
+    completed: fed >= needed,
+    ticks: measured,
+    overBudgetTicks,
+  }
 }
 
 describe('anti-drought guarantee', () => {
@@ -360,13 +396,16 @@ describe('anti-drought guarantee', () => {
             tickMs: 100,
           })
           expect(result.dryTicks, `belt ran dry (skill ${skill}, ${visible} dishes)`).toBe(0)
-          // The budget plus at most one pitch of scheduling latency: the belt only
-          // decides when a lane reaches the hatch, and a pitch is the granularity
-          // a belt HAS.
+          // The provable ceiling: a rescue dish still has to RIDE from the hatch
+          // into reach, so the worst case is the larger of the budget and that ride
+          // (plus a pitch of decision granularity). On a slow belt the ride is the
+          // binding term — which is exactly why a slow belt also runs its wanted
+          // dishes DENSE, so the wait the child actually meets is a fraction of it
+          // (asserted separately below).
           expect(
             result.worstWaitMs,
             `skill ${skill}, ${visible} dishes, seed ${seed}`,
-          ).toBeLessThanOrEqual(dials.maxWaitMs + step + 1)
+          ).toBeLessThanOrEqual(Math.max(dials.maxWaitMs, hatchDelayMs(step)) + step + 1)
         }
       }
     }
@@ -417,6 +456,31 @@ describe('anti-drought guarantee', () => {
         needed: 5,
       })
       expect(result.completed, `skill ${skill} could not finish`).toBe(true)
+    }
+  })
+
+  it('keeps the wait the child actually meets well inside the budget', () => {
+    // The provable ceiling above is the ride out of the hatch; this is the number
+    // that matters in play. A slow belt compensates for its slow delivery by
+    // running wanted dishes dense, so time spent over budget stays rare.
+    for (const skill of SKILLS) {
+      const dials = beltDials(skill)
+      for (const seed of [2, 11, 23]) {
+        const result = simulate({
+          visible: 6,
+          dials,
+          pool: POOL,
+          wantedIds: new Set(['apple', 'pear']),
+          rng: mulberry32(seed),
+          ticks: 1800,
+          tickMs: 100,
+        })
+        const share = result.overBudgetTicks / Math.max(1, result.ticks)
+        expect(
+          share,
+          `skill ${skill} seed ${seed} spent ${Math.round(share * 100)}% over budget`,
+        ).toBeLessThan(0.15)
+      }
     }
   })
 

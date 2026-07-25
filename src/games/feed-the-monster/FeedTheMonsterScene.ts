@@ -590,13 +590,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       foods: this.episodeFoods(),
       forceKind: opts.forceKind,
     })
-    this.round = round
-    this.previousRequest = round.request
     this.eaten = []
     this.spitBacks = 0
-    this.roundStartAt = this.time.now
-    this.tray.buildTray(round.tray)
-    this.bubbleUi.showRequest(round.request)
+    this.conveyorMode.stop()
+    this.presentRound(round)
   }
 
   /** Is `?<name>` present in the URL (top-level search or the hash query)? */
@@ -914,10 +911,22 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       // the tray — the two modes cannot share a round.
       avoidKinds: onBelt ? CONVEYOR_EXCLUDED_KINDS : undefined,
     })
-    this.round = round
-    this.previousRequest = round.request
     this.recentKinds.push(round.taskKind)
     if (this.recentKinds.length > 6) this.recentKinds.shift()
+    this.presentRound(round, onBelt)
+    this.scheduleVisit(onBelt)
+  }
+
+  /**
+   * Put a generated round on stage: the food source, the round's furniture and
+   * the ask. EVERY path that deals a round goes through here — the normal loop,
+   * the dev/e2e forceKind, the commission's own round — so a mode can never be
+   * left half-dressed (forcing a `dish` kind used to deal the round without ever
+   * standing the pot up, which made the round unplayable).
+   */
+  private presentRound(round: Round, onBelt = false): void {
+    this.round = round
+    this.previousRequest = round.request
     this.roundStartAt = this.time.now
     if (onBelt) this.conveyorMode.serve(round, beltDials(this.beltSkill))
     else this.tray.buildTray(round.tray)
@@ -927,7 +936,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     else this.kitchenMode.stop()
     this.bubbleUi.showRequest(round.request)
     this.time.delayedCall(450, () => this.bubbleUi.playRequestCue(round.request))
-    this.scheduleVisit(onBelt)
   }
 
   // ─── The thief ─────────────────────────────────────────────────────────────
@@ -1042,6 +1050,12 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     const askColor = this.skill >= COMMISSION_COLOR_MIN_SKILL
     this.commission = { color, askColor }
     this.round = null
+    // The friend arrives with an EMPTY PLATE: nothing to be fed, only something
+    // to be given. Any leftover food would also be draggable behind the pad.
+    this.conveyorMode.stop()
+    this.kitchenMode.stop()
+    this.thiefMode.cancel()
+    this.tray.clearFoods()
     this.bubbleUi.showCommission(askColor ? color : null)
     // The friend stays visible above the pad and gets visibly impatient — the
     // one real risk of this feature is the child settling into the pad and
@@ -1115,17 +1129,12 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       foodId,
       this.episodeFoods(),
     )
-    this.round = {
+    this.presentRound({
       round: this.roundNumber,
       taskKind: count === 1 ? 'single' : 'count',
       request,
       tray: generateTray(request, pool, Math.random),
-    }
-    this.previousRequest = request
-    this.roundStartAt = this.time.now
-    this.tray.buildTray(this.round.tray)
-    this.bubbleUi.showRequest(request)
-    this.time.delayedCall(450, () => this.bubbleUi.playRequestCue(request))
+    })
   }
 
   /**
