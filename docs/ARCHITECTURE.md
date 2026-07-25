@@ -25,7 +25,7 @@ audio feedback, no text the child must read. Hosted free on GitHub Pages.
 ┌───────────────────────────────────────────────────────────┐
 │  Games (src/games/<id>/) — self-contained, share nothing    │
 │  render engine chosen per game:                             │
-│    Canvas 2D            (drawing)                           │
+│    Canvas 2D            (drawing — the pixel studio)        │
 │    Phaser 4             (movement/sprites/physics — via      │
 │                          shared/PhaserGame.tsx)             │
 └───────────────────────────────────────────────────────────┘
@@ -46,6 +46,13 @@ Shared frame only (`src/shared/`), never shared game logic:
 - `progress.ts` — persists per-game adaptive skill meters and reward stars in
   `localStorage` and is observable (`subscribeProgress`); see "Progress: skill,
   levels, stars" below.
+- `pixel/` — the **pixel pad**, the one piece of shared game-facing UI. It is
+  shared rather than owned by the drawing game because its first consumer opens it
+  as an overlay over a running Phaser scene: the `/drawing` route is a thin studio
+  shell around the same component. `grid.ts` is pure (Bresenham, stroke undo,
+  base64), `artStore.ts` is the child's gallery in `localStorage` queried by
+  `(role, tag)`, and `drawingTexture.ts` is the single place a saved drawing
+  becomes something a Phaser game can draw. See `docs/designs/drawing-pixel-studio.md`.
 
 ## Directory map
 
@@ -62,10 +69,17 @@ src/
     audio.ts            Web Audio helpers
     level.ts            single source of visible level (stars + 1 → badge + tile)
     progress.ts         adaptive skill meters + reward stars (localStorage)
+    pixel/              the shared pixel pad (opens over any game)
+      PixelPad.tsx      the instrument: canvas, rail, undo, done
+      grid.ts           pure: Bresenham, stroke undo, encode/decode
+      palette.ts        the 15 colours + paper
+      layout.ts         pure proportional pad/rail geometry
+      artStore.ts       the gallery in localStorage, queried by (role, tag)
+      drawingTexture.ts Drawing → NEAREST canvas texture for Phaser
   games/
     registry.tsx        SINGLE SOURCE OF TRUTH for games
-    drawing/            first game (Canvas 2D)
-      DrawingGame.tsx/.css
+    drawing/            the pixel studio (Canvas 2D, wraps shared/pixel)
+      DrawingGame.tsx
 public/
   logo.svg              source image for PWA icons
   favicon.svg
@@ -119,10 +133,15 @@ public/
 `shared/progress.ts` persists per-game state in `localStorage`. Three decoupled
 currencies:
 
-- **Skill** — invisible and adaptive, on two axes (motor / cognitive) where the
-  skills differ. Games save the meter every round and start each session below
+- **Skill** — invisible and adaptive, on as many named axes as a game has genuinely
+  different skills. Games save the meter every round and start each session below
   the saved value via `sessionStart()` (warm-up + break decay), then climb back
-  faster while below the saved peak.
+  faster while below the saved peak. Feed the Monster runs three: `cognitive`
+  (which task kinds are in rotation and how hard they run), `belt` (conveyor speed
+  and how long the child may wait, moved by missed passes), and `thief` (reaction
+  window and how often the no-go butterfly appears). Separate axes are the point —
+  a child can be great at colours and bad at timing, and one meter would average
+  the two into a difficulty that fits neither.
 - **Levels** — the visible reward rhythm, derived (not stored): `shared/level.ts`
   computes `levelFor(gameId) = stars + 1`, read live by both the in-game badge
   and the launcher tile so they always match. Uniform rule in every game:
@@ -132,6 +151,35 @@ currencies:
 
 Celebrations are pure animations on per-game `CELEBRATION_EVERY_*` beats. See
 `docs/DECISIONS.md` ("Progress: two-axis adaptive skill").
+
+## Round modes (Feed the Monster)
+
+Feed the Monster has grown past "one tray, one friend", and the pattern that keeps
+it maintainable is a **self-contained mode widget** the scene delegates to, leaving
+the polished solo flow untouched. `duoMode.ts` set the shape; `conveyorMode.ts`,
+`kitchenMode.ts` and `thiefMode.ts` follow it. Each one owns its own display
+objects, reads live scene state through the passed `this`, and reuses the shared
+`Tray` for anything draggable — so the drag mechanics, the magnetic snap and the
+feed handoff exist once.
+
+Every decision a mode acts on lives in a **pure, unit-tested sibling**:
+`belt.ts`, `recipes.ts`, `thief.ts`, `journey.ts`, `logic.ts`. The widget draws;
+the sibling decides. That split is what lets a mode's adaptive curves and no-fail
+guarantees be proven over hundreds of seeds without a browser.
+
+How a round reaches the stage:
+
+1. `startRound` runs the mode gates in order — commission (a once-per-episode
+   journey beat), duo (its own data+chance axis), conveyor (likewise).
+2. `dealRound` generates through `logic.generateRound`, telling it which task kinds
+   the chosen mode cannot host (`avoidKinds`).
+3. `presentRound` puts it on stage. **Every** path that deals a round goes through
+   this one function — the normal loop, the dev/e2e `forceKind`, the commission's
+   own round — so a mode can never be left half-dressed.
+
+Cooking is deliberately NOT a mode: `dish` / `dish-ordered` are task kinds in
+`logic.TASK_REGISTRY`, because composition is a cognitive skill and the cognitive
+meter should own it. The pot is just furniture that appears for those kinds.
 
 ## PWA & hosting
 
