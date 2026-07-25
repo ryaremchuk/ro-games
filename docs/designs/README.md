@@ -28,6 +28,7 @@ though the design conversations happen in Ukrainian.
 | 1   | [Food conveyor](feed-the-monster-conveyor.md)        | timing, inhibition, sustained scanning | draft  |
 | 2   | [Kitchen: build a dish](feed-the-monster-kitchen.md) | sequencing, part–whole composition     | draft  |
 | 3   | [The thief](feed-the-monster-thief.md)               | sustained attention, go/no-go          | draft  |
+| 4   | [Pixel Studio](drawing-pixel-studio.md)              | fine motor precision + made-by-me art  | draft  |
 
 ## Why these three
 
@@ -51,3 +52,12 @@ A fourth candidate (**hide the request**, i.e. the thought bubble closes after a
 few seconds and can be peeked at by tapping the friend) is the cheapest working-
 memory axis available and is _not_ written up here only because we agreed on
 these three first. It stays on the list.
+
+## Why #4 (a different game entirely)
+
+The drawing game is the one game with **no adaptive axis at all** — nothing to
+get better at, nothing measured, and nothing the child makes survives the next
+tap on 🗑️. Rebuilding it on a pixel grid gives it a precision ladder (16 → 32 → 64) and, more importantly, turns everything the child paints into a **sprite**
+that the other games can use. Half of that design is the studio; the other half
+is the brainstorm about how a drawing made in the morning shows up inside
+another game in the evening.
