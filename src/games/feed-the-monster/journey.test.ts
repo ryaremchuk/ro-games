@@ -5,6 +5,7 @@ import {
   BIG_BITE,
   BIG_BITE_CHANCE,
   BIG_BITE_STUCK_SPITS,
+  DUO_GROW_STEPS,
   EPISODES,
   FRIENDS_PER_EPISODE,
   FULL_SCALE,
@@ -12,6 +13,8 @@ import {
   NORMAL_BITE,
   auraIntensity,
   darken,
+  duoComplete,
+  duoFeedStep,
   episodeFor,
   feedStep,
   friendColor,
@@ -103,6 +106,38 @@ describe('journey state machine', () => {
     // Stuck: always a big bite, dice be damned (breaks the +1/−1 treadmill).
     expect(growAmount({ friendSpitBacks: BIG_BITE_STUCK_SPITS, rng: never })).toBe(BIG_BITE)
     expect(growAmount({ friendSpitBacks: BIG_BITE_STUCK_SPITS + 3, rng: never })).toBe(BIG_BITE)
+  })
+
+  it('a duo grows both friends over DUO_GROW_STEPS, then graduates two at once', () => {
+    // Three synchronized steps, then done.
+    let step = 0
+    for (let i = 1; i < DUO_GROW_STEPS; i++) {
+      const r = duoFeedStep(step)
+      expect(r.done).toBe(false)
+      expect(r.next).toBe(i)
+      step = r.next
+    }
+    const last = duoFeedStep(step)
+    expect(last.done).toBe(true)
+
+    // Completing a duo fills two episode slots.
+    const mid = duoComplete({ episode: 0, friendsFed: 1, growthStep: 0 })
+    expect(mid.outcome).toBe('friend-grown')
+    expect(mid.next).toEqual({ episode: 0, friendsFed: 3, growthStep: 0 })
+
+    // A duo that fills the quota completes the episode (friendsFed 3 + 2 = 5).
+    const party = duoComplete({ episode: 0, friendsFed: 3, growthStep: 0 })
+    expect(party.outcome).toBe('episode-complete')
+    expect(party.next).toEqual({ episode: 1, friendsFed: 0, growthStep: 0 })
+  })
+
+  it('duo growth reaches the same full size as a solo friend, in fewer steps', () => {
+    expect(scaleForStep(0, DUO_GROW_STEPS)).toBe(BASE_SCALE)
+    expect(scaleForStep(DUO_GROW_STEPS, DUO_GROW_STEPS)).toBe(FULL_SCALE)
+    expect(auraIntensity(DUO_GROW_STEPS, DUO_GROW_STEPS)).toBe(1)
+    for (let s = 1; s <= DUO_GROW_STEPS; s++) {
+      expect(scaleForStep(s, DUO_GROW_STEPS)).toBeGreaterThan(scaleForStep(s - 1, DUO_GROW_STEPS))
+    }
   })
 
   it('shrinks one step per wrong feed and never below the start', () => {

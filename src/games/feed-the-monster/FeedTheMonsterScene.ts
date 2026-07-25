@@ -5,13 +5,16 @@ import { onViewportResize, safeAreaInset, viewportSize } from '../../shared/view
 import {
   SKILL_MAX,
   SKILL_START,
+  SPIT_BACKS_BEFORE_EASE,
+  TASK_REGISTRY,
   generateRound,
   isRoundComplete,
   requestTotal,
+  shouldInjectDuo,
   updateSkill,
   wantsFood,
 } from './logic'
-import type { FoodRequest, Round, TaskKind } from './logic'
+import type { DuoContext, Food, FoodRequest, Round, TaskKind } from './logic'
 import {
   BIG_BITE,
   FRIENDS_PER_EPISODE,
@@ -36,6 +39,8 @@ import { RequestBubble } from './requestBubble'
 import { MonsterRig } from './monsterRig'
 import { JourneyStage } from './journeyStage'
 import { Tray } from './tray'
+import { DuoMode } from './duoMode'
+import type { FeedMouth } from './duoMode'
 
 /** Registry id — also the key the shared progress store files this under. */
 const GAME_ID = 'feed-the-monster'
@@ -126,8 +131,25 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    * The task-request bubble (top panel + tiles/pips/sockets/bans/ring/✓ + the
    * audio cue). Owns its own display objects; reads live scene state through
    * the passed `this`. See ./requestBubble.
+   * @internal Exposed for DuoMode (it stands the solo panel down via setHidden).
    */
-  private readonly bubbleUi = new RequestBubble(this)
+  readonly bubbleUi = new RequestBubble(this)
+
+  /**
+   * The duo BONUS round controller — two friends fed at once from one tray, on
+   * its own data+chance injection axis (never the difficulty meter). Inactive
+   * unless a duo is on stage; the solo round flow above is left untouched.
+   * See ./duoMode.
+   */
+  readonly duoMode = new DuoMode(this)
+  /** Solo rounds since the last duo (anti-drought ramp); large so the first is
+   * eligible once the child is competent. Reset when a duo starts. */
+  private roundsSinceLastDuo = 99
+  /** Did the last completed round ease the meter (≥2 spit-backs)? Gates duos —
+   * we never pile two friends on a struggling child. */
+  private lastRoundEased = false
+  /** Dev overlay: force the next friend-boundary round to be a duo. */
+  private forceDuoNext = false
 
   /**
    * The food tray (plates + draggable foods, their build/layout/animation and
@@ -220,8 +242,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.time.addEvent({
       delay: 130,
       loop: true,
-      callback: this.monsterRig.tickAura,
-      callbackScope: this.monsterRig,
+      callback: this.tickAuras,
+      callbackScope: this,
     })
 
     const teardown = (): void => {
@@ -275,10 +297,21 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         growthScale: this.monsterRig.growthScale,
         aura: auraIntensity(this.journey.growthStep),
         miniCount: this.stage.miniCount,
+        duoActive: this.duoMode.active,
+        duo: this.duoMode.active ? this.duoMode.snapshot() : null,
       }),
       forceKind: (kind) => {
-        if (this.transitioning || !this.round) return false
+        if (this.transitioning || this.duoMode.active || !this.round) return false
         this.buildFreshRound({ forceKind: kind, previous: this.previousRequest })
+        return true
+      },
+      forceDuo: () => {
+        // Needs a live solo round (never during the pre-first-round delay — the
+        // scheduled startRound(1) would clobber the duo) and ≥2 free slots.
+        if (this.transitioning || this.duoMode.active || !this.round) return false
+        if (FRIENDS_PER_EPISODE - this.journey.friendsFed < 2) return false
+        this.roundsSinceLastDuo = 0
+        this.duoMode.start()
         return true
       },
       forceJourney: (partial) => {
@@ -299,8 +332,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       devFriends: (delta) => this.devNudgeJourney({ friendsFed: delta }),
       devEpisode: (delta) => this.devNudgeJourney({ episode: delta }),
       devRegenerate: () => {
-        if (this.transitioning || !this.round) return
-        this.buildFreshRound({ previous: this.previousRequest, recentKinds: this.recentKinds })
+        if (this.transitioning || this.duoMode.active || !this.round) return
+        // Dev: re-deal a TRULY RANDOM task across EVERY kind, not gated by the
+        // current meter — so tapping ↻ cycles through all types an adult wants
+        // to eyeball (the child never sees this overlay).
+        const kinds = TASK_REGISTRY.map((def) => def.kind)
+        const kind = kinds[Math.floor(Math.random() * kinds.length)]
+        this.buildFreshRound({ forceKind: kind, previous: this.previousRequest })
       },
     }
     this.testApi = api
@@ -562,8 +600,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       this.bgImage.setVisible(false)
     }
 
-    const mp = this.monsterPos()
-    this.monsterRig.container.setPosition(mp.x, mp.y)
+    // A duo positions its two friends (+ their bubbles); a solo round its one.
+    if (this.duoMode.active) {
+      this.duoMode.placeFriends()
+    } else {
+      const mp = this.monsterPos()
+      this.monsterRig.container.setPosition(mp.x, mp.y)
+    }
     this.bubbleUi.reposition()
 
     this.stage.minis.forEach((mini, i) => {
@@ -601,6 +644,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.eaten = []
     this.spitBacks = 0
     this.transitioning = false
+    this.roundsSinceLastDuo++
+    // A duo bonus only ever begins at a friend boundary (a fresh friend about to
+    // start), on its own data+chance axis — never mid-growth of a solo friend.
+    if (this.journey.growthStep === 0 && this.tryInjectDuo()) return
     const round = generateRound({
       round: n,
       skill: this.skill,
@@ -618,7 +665,75 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.time.delayedCall(450, () => this.bubbleUi.playRequestCue(round.request))
   }
 
+  /**
+   * The second axis: weigh live game DATA (skill, recent struggle, episode slots
+   * left) + chance and, if it fires, hand the "next friend" to the duo bonus
+   * controller instead. Returns true when a duo took over the round.
+   */
+  private tryInjectDuo(): boolean {
+    const slotsLeft = FRIENDS_PER_EPISODE - this.journey.friendsFed
+    if (slotsLeft < 2) {
+      this.forceDuoNext = false
+      return false
+    }
+    const ctx: DuoContext = {
+      skill: this.skill,
+      roundsSinceLastDuo: this.roundsSinceLastDuo,
+      struggling: this.lastRoundEased,
+      slotsLeft,
+    }
+    if (!this.forceDuoNext && !shouldInjectDuo(ctx, Math.random)) return false
+    this.forceDuoNext = false
+    this.roundsSinceLastDuo = 0
+    this.duoMode.start()
+    return true
+  }
+
+  /** @internal Round-generation context DuoMode feeds to generateDuoRound. */
+  duoGenContext(): { round: number; skill: number; foods: readonly Food[] } {
+    return { round: this.roundNumber, skill: this.skill, foods: this.episode.foods }
+  }
+
+  /** @internal Bank a completed duo round into the adaptive meter, exactly like
+   * a solo round — a duo still teaches the difficulty engine. */
+  bankDuoRound(spitBacks: number, ms: number): void {
+    this.applyMeter(spitBacks, ms)
+  }
+
+  /** @internal Resume solo play after a duo pair has walked off. */
+  resumePlay(): void {
+    this.startRound(this.roundNumber + 1)
+  }
+
+  /** One adaptive-meter step for a completed round (solo or duo), saved. */
+  private applyMeter(spitBacks: number, ms: number): void {
+    this.skill = updateSkill(this.skill, { spitBacks, ms }, this.skillPeak)
+    this.skillPeak = Math.max(this.skillPeak, this.skill)
+    this.lastRoundEased = spitBacks >= SPIT_BACKS_BEFORE_EASE
+    saveSkill(GAME_ID, { cognitive: this.skill })
+  }
+
   // ─── Feeding ─────────────────────────────────────────────────────────────
+
+  /**
+   * The feed drop target(s) this round: one mouth in a normal round, two in a
+   * duo bonus round. The tray's drag magnetics + drop routing iterate these, so
+   * it never has to know whether one friend or two are on stage.
+   * @internal Exposed for Tray (its drag/dragend read these).
+   */
+  feedMouths(): FeedMouth[] {
+    if (this.duoMode.active) return this.duoMode.mouths()
+    const world = this.monsterRig.mouthWorld()
+    return [
+      {
+        x: world.x,
+        y: world.y,
+        isOpen: () => this.monsterRig.mouthOpen,
+        setOpen: (target, ms) => this.monsterRig.setMouthOpen(target, ms),
+        accept: (img) => this.feed(img),
+      },
+    ]
+  }
 
   /**
    * A food dropped over the mouth is eaten: it flies into the mouth, then
@@ -765,13 +880,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
     // Adaptive nudge: spit-backs and round time steer the cognitive meter,
     // saved every round so the next session resumes near this one.
-    this.skill = updateSkill(
-      this.skill,
-      { spitBacks: this.spitBacks, ms: this.time.now - this.roundStartAt },
-      this.skillPeak,
-    )
-    this.skillPeak = Math.max(this.skillPeak, this.skill)
-    saveSkill(GAME_ID, { cognitive: this.skill })
+    this.applyMeter(this.spitBacks, this.time.now - this.roundStartAt)
 
     // The journey advances on care performed: this fed round grows the friend
     // one visible step — or two on a "big bite" (an invisible catch-up when the
@@ -847,7 +956,15 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   update(): void {
     // 100% monster pupil tracking — delegated to the rig (the lineup minis
-    // deliberately do NOT track; they idle-glance on their own timers).
+    // deliberately do NOT track; they idle-glance on their own timers). In a
+    // duo, the right friend's rig tracks too (the left one IS monsterRig).
     this.monsterRig.update()
+    if (this.duoMode.active) this.duoMode.update()
+  }
+
+  /** Ambient growth sparkles for the walker (and the duo's right friend). */
+  private tickAuras = (): void => {
+    this.monsterRig.tickAura()
+    if (this.duoMode.active) this.duoMode.tickAura()
   }
 }

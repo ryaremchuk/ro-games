@@ -203,8 +203,9 @@ export class JourneyStage {
     })
   }
 
-  /** A brand-new small friend hops in from the side, then play resumes. */
-  private nextFriendEnters(onResume: () => void): void {
+  /** A brand-new small friend hops in from the side, then play resumes.
+   * @internal Exposed for DuoMode (its finish reuses the solo hand-off). */
+  nextFriendEnters(onResume: () => void): void {
     this.scene.growth = scaleForStep(this.scene.journey.growthStep)
     this.scene.monsterRig.build()
 
@@ -229,8 +230,9 @@ export class JourneyStage {
    * with confetti, stars and a little melody. Played every time a friend joins
    * (light) and again, grander, when the fifth completes the episode. Returns
    * the wave's duration in ms so the caller can time what comes next.
+   * @internal Exposed for DuoMode (a completed duo runs the same welcome dance).
    */
-  private celebrateLineup(grand: boolean): number {
+  celebrateLineup(grand: boolean): number {
     const cx = this.scene.scale.width / 2
     const repeat = grand ? 3 : 1
     const waves = grand ? [0, 1] : [0]
@@ -273,8 +275,9 @@ export class JourneyStage {
     return lastDelay + 260 * 2 * (repeat + 1)
   }
 
-  /** Soft white fade → new palette, food pool, fresh lineup, first friend. */
-  private episodeTransition(onResume: () => void): void {
+  /** Soft white fade → new palette, food pool, fresh lineup, first friend.
+   * @internal Exposed for DuoMode (a duo that fills the episode ends it too). */
+  episodeTransition(onResume: () => void): void {
     const veil = this.scene.add
       .rectangle(0, 0, this.scene.scale.width, this.scene.scale.height, 0xffffff)
       .setOrigin(0)

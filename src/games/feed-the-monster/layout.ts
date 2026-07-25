@@ -108,6 +108,22 @@ export function monsterPos(m: LayoutMetrics): XY {
   return { x: m.w / 2, y: Math.max(y, headroom) }
 }
 
+// The two duo friends stand this fraction of the width to each side of centre —
+// far enough apart that even at their (slightly smaller) full size the pair
+// never overlaps on a narrow 4:3 iPad.
+const DUO_X_FRAC = 0.24
+
+/**
+ * Home position for one of a duo's two side-by-side friends (`side` −1 = left,
+ * +1 = right) at the given pair `scale`. Same vertical rules as monsterPos (feet
+ * on heroBaseline, head kept clear of the top panel), mirrored left/right.
+ */
+export function duoMonsterPos(m: LayoutMetrics, side: -1 | 1, scale: number): XY {
+  const y = heroBaseline(m) - m.bodyR * scale * 0.55
+  const headroom = px(m, PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) + m.bodyR * scale * 1.35
+  return { x: m.w / 2 + side * m.w * DUO_X_FRAC, y: Math.max(y, headroom) }
+}
+
 export function miniSlot(m: LayoutMetrics, index: number): XY {
   // dx/dy pile offsets (bodyR units): all friends huddle on one level, each
   // shifted out far enough to partially overlap its neighbour (index 3 sits

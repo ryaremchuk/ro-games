@@ -107,7 +107,16 @@ export class RequestBubble {
     this.bubble.setPosition(this.scene.scale.width / 2, this.px(layout.PANEL_CENTER_Y_CSS))
   }
 
+  /** Hide/show the whole top task panel — a duo round shows its own per-friend
+   * bubbles instead, so the solo panel stands down while a duo is on stage. */
+  setHidden(hidden: boolean): void {
+    this.bubble.setVisible(!hidden)
+  }
+
   showRequest(request: FoodRequest): void {
+    // A duo round stood this panel down (setHidden); showing a solo request
+    // brings it back — content-first, so it never flashes a stale ask.
+    this.bubble.setVisible(true)
     for (const pic of this.bubblePics) {
       this.scene.tweens.killTweensOf(pic)
       pic.destroy()
