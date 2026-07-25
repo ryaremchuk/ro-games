@@ -12,6 +12,7 @@ import { EPISODES, FRIENDS_PER_EPISODE, GROW_STEPS } from './journey'
  *   • Friends      — add/remove grown friends in the lineup
  *   • Episode      — jump to the next/previous theme
  *   • Regenerate   — re-deal the current round as a fresh task
+ *   • Big bite     — dress the current round as a big bite on demand
  *
  * Not for the child: it's an adult debugging tool, so this uses plain text
  * (unlike every child-facing surface). The scene installs its hook
@@ -27,6 +28,7 @@ interface DevSnapshot {
   friendsFed: number
   growthStep: number
   duoActive: boolean
+  bigBite: boolean
 }
 
 function readSnapshot(): DevSnapshot | null {
@@ -41,6 +43,7 @@ function readSnapshot(): DevSnapshot | null {
     friendsFed: s.journey.friendsFed,
     growthStep: s.journey.growthStep,
     duoActive: s.duoActive,
+    bigBite: s.bigBite,
   }
 }
 
@@ -105,6 +108,18 @@ export default function FeedDevPanel() {
 
       <button type="button" style={styles.duo} onClick={() => act((a) => a.forceDuo())}>
         ✌ Duo bonus
+      </button>
+
+      <button
+        type="button"
+        style={{
+          ...styles.duo,
+          background: snap?.bigBite ? '#ffc233' : 'rgba(255, 255, 255, 0.14)',
+          color: snap?.bigBite ? '#1a1622' : '#fff',
+        }}
+        onClick={() => act((a) => a.devBigBite(!snap?.bigBite))}
+      >
+        ★ Big bite {snap?.bigBite ? 'ON' : 'off'}
       </button>
 
       <div style={styles.readout}>

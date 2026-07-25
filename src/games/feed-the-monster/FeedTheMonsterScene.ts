@@ -19,11 +19,13 @@ import {
   BIG_BITE,
   FRIENDS_PER_EPISODE,
   GROW_STEPS,
+  NORMAL_BITE,
   auraIntensity,
   episodeFor,
   feedStep,
   friendColor,
   growAmount,
+  isStuck,
   journeyFromData,
   journeyToData,
   scaleForStep,
@@ -90,10 +92,18 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   /**
    * Wrong feeds accumulated over the CURRENT friend's whole tenure (reset when
    * a fresh friend hops in). Once it crosses journey.BIG_BITE_STUCK_SPITS the
-   * next correct round becomes a big bite (+2) — an invisible catch-up so a
-   * struggling toddler never gets stuck on the +1/−1 treadmill.
+   * round becomes a big bite (+2) — a catch-up so a struggling toddler never
+   * gets stuck on the +1/−1 treadmill. It used to fire silently on completion;
+   * now it fires the moment the debt is due, and is SHOWN (see setBigBite).
    */
   private friendSpitBacks = 0
+  /**
+   * Is the round being played right now a BIG BITE (+2 growth)? Rolled at round
+   * START — not on completion — so the child is told about it while it still
+   * matters: the friend smacks its lips, the tray lights up gold and the food
+   * grows (see dressBigBite). A round that turns rough upgrades mid-play.
+   */
+  private bigBite = false
   /**
    * RNG for the random half of the big bite (the stuck catch-up bypasses it).
    * Defaults to Math.random; e2e pins it via setRandomBigBite so growth
@@ -297,6 +307,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         growthScale: this.monsterRig.growthScale,
         aura: auraIntensity(this.journey.growthStep),
         miniCount: this.stage.miniCount,
+        bigBite: this.bigBite,
+        foodBoost: this.tray.foodBoost,
         duoActive: this.duoMode.active,
         duo: this.duoMode.active ? this.duoMode.snapshot() : null,
       }),
@@ -323,6 +335,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         // enabled → real dice; disabled → rng()=1 never clears BIG_BITE_CHANCE,
         // so only the stuck catch-up can big-bite. Keeps e2e growth exact.
         this.growthRng = enabled ? Math.random : () => 1
+        // The dice are now rolled at round START, so the live round may already
+        // have won one before the spec got to speak. Take it back — unless the
+        // catch-up owns it, which this switch deliberately never touches.
+        if (!enabled && !isStuck(this.friendSpitBacks)) this.setBigBite(false)
       },
 
       // Dev cheats behind the `?dev` overlay (see FeedDevPanel): nudge one
@@ -331,6 +347,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       devHeroLevel: (delta) => this.devNudgeJourney({ growthStep: delta }),
       devFriends: (delta) => this.devNudgeJourney({ friendsFed: delta }),
       devEpisode: (delta) => this.devNudgeJourney({ episode: delta }),
+      devBigBite: (on) => {
+        if (this.transitioning || this.duoMode.active || !this.round) return
+        this.setBigBite(on)
+      },
       devRegenerate: () => {
         if (this.transitioning || this.duoMode.active || !this.round) return
         // Dev: re-deal a TRULY RANDOM task across EVERY kind, not gated by the
@@ -357,6 +377,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private applyJourney(next: JourneyState): void {
     this.journey = next
     this.friendSpitBacks = 0
+    this.setBigBite(false) // a rebuilt world deals a fresh, undressed round
     saveData(GAME_ID, journeyToData(this.journey))
 
     this.episode = episodeFor(this.journey)
@@ -624,9 +645,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
 
     for (let i = 0; i < this.tray.plates.length; i++) {
-      const slot = this.slotPos(i)
-      this.tray.dressPlate(this.tray.plates[i]) // episode may have changed the marker
-      this.tray.plates[i].setPosition(slot.x, slot.y + this.px(14))
+      this.tray.placeSlot(i, this.slotPos(i)) // re-anchors the glow + reskins the plate
     }
     for (const food of this.tray.foods) {
       if (food === this.tray.dragged) continue
@@ -645,9 +664,21 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.spitBacks = 0
     this.transitioning = false
     this.roundsSinceLastDuo++
+    // A duo grows on its own synchronized curve (journey.duoFeedStep), so a big
+    // bite never applies to one — clear the dressing before handing the round over.
+    this.setBigBite(false)
     // A duo bonus only ever begins at a friend boundary (a fresh friend about to
     // start), on its own data+chance axis — never mid-growth of a solo friend.
     if (this.journey.growthStep === 0 && this.tryInjectDuo()) return
+
+    // Roll the big bite BEFORE the tray is built, so a big-bite round's food
+    // drops in already boosted and the whole round reads as special from its
+    // first frame. (It used to be rolled on completion, where nothing could
+    // show it.) The stuck half is re-checked live in spitBack.
+    this.setBigBite(
+      growAmount({ friendSpitBacks: this.friendSpitBacks, rng: this.growthRng }) === BIG_BITE,
+    )
+
     const round = generateRound({
       round: n,
       skill: this.skill,
@@ -687,6 +718,37 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.roundsSinceLastDuo = 0
     this.duoMode.start()
     return true
+  }
+
+  // ─── Big bite ──────────────────────────────────────────────────────────────
+
+  /**
+   * Flip the current round's big-bite state. The FLAG moves at once (so a round
+   * completing in the next frame still pays the +2), while the presentation can
+   * be deferred by `delayMs` — a mid-round upgrade waits for the spit-back
+   * reaction to finish so the two mouth animations never fight.
+   */
+  private setBigBite(on: boolean, delayMs = 0): void {
+    if (on === this.bigBite) return
+    this.bigBite = on
+    if (delayMs <= 0) {
+      this.dressBigBite(on)
+      return
+    }
+    this.time.delayedCall(delayMs, () => {
+      if (this.bigBite === on) this.dressBigBite(on)
+    })
+  }
+
+  /**
+   * The whole picture-only announcement, in three layers: the friend smacks its
+   * lips over a tummy rumble (the moment), the tray slots light up gold with a
+   * shimmer travelling along the row (the state), and every food grows (the
+   * instant read). Undressing just reverses all three.
+   */
+  private dressBigBite(on: boolean): void {
+    this.tray.setBigBite(on)
+    if (on) this.monsterRig.lickLips()
   }
 
   /** @internal Round-generation context DuoMode feeds to generateDuoRound. */
@@ -813,6 +875,12 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // (per round) and the big-bite catch-up signal (per friend).
     this.spitBacks++
     this.friendSpitBacks++
+    // The catch-up, live: enough wrong feeds on this friend and the round
+    // UPGRADES to a big bite mid-play — the friend visibly gets hungrier and the
+    // tray lights up, so the child sees the game come to meet them instead of
+    // grinding the +1/−1 treadmill. Deferred past the "blegh" so the two mouth
+    // animations don't fight; the flag itself flips now.
+    if (isStuck(this.friendSpitBacks)) this.setBigBite(true, 700)
     playTone(220, 220, 'sine', 0.07)
     this.time.delayedCall(110, () => playTone(165, 180, 'sine', 0.06))
     this.funnyUntil = this.time.now + 700
@@ -883,12 +951,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.applyMeter(this.spitBacks, this.time.now - this.roundStartAt)
 
     // The journey advances on care performed: this fed round grows the friend
-    // one visible step — or two on a "big bite" (an invisible catch-up when the
-    // child has struggled on this friend, plus a rare random sprinkle) — or
-    // crowns it / completes the episode.
-    const amount = growAmount({ friendSpitBacks: this.friendSpitBacks, rng: this.growthRng })
-    const bigBite = amount === BIG_BITE
-    const { next, outcome } = feedStep(this.journey, amount)
+    // one visible step — or two on a "big bite" — or crowns it / completes the
+    // episode. The big bite was decided (and shown to the child) back when the
+    // round started, or upgraded live in spitBack; here it is only cashed in.
+    const bigBite = this.bigBite
+    const { next, outcome } = feedStep(this.journey, bigBite ? BIG_BITE : NORMAL_BITE)
     this.journey = next
     saveData(GAME_ID, journeyToData(this.journey))
     // A big bite that fired because the child was stuck has paid off the debt —

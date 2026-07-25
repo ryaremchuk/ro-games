@@ -520,6 +520,51 @@ export class MonsterRig {
     }
   }
 
+  /**
+   * "I am EXTRA hungry" — the beat that announces a big-bite round: two lip
+   * smacks and wide, eager eyes, over a low tummy rumble.
+   *
+   * Built ONLY out of primitives the rig already owns (the mouth-open ramp and
+   * the eye containers' scale) — no tongue sprite, no new face-anchored part.
+   * Anything hung off a face socket has to sit right on ten different animals at
+   * every growth scale, which is exactly the class of layout bug the worn
+   * accessories were ripped out for (see journey.auraIntensity).
+   */
+  lickLips(): void {
+    if (this.scene.transitioning) return
+
+    // Two smacks: open wide, almost shut, open again, settle closed.
+    const smack = [
+      { at: 0, open: 0.9, ms: 150 },
+      { at: 190, open: 0.15, ms: 120 },
+      { at: 340, open: 0.8, ms: 130 },
+      { at: 510, open: 0, ms: 170 },
+    ]
+    for (const beat of smack) {
+      if (beat.at === 0) this.setMouthOpen(beat.open, beat.ms)
+      else this.scene.time.delayedCall(beat.at, () => this.setMouthOpen(beat.open, beat.ms))
+    }
+
+    // Eager wide eyes — the mirror image of squintEyes' disgust.
+    for (const eye of [this.eyeL, this.eyeR]) {
+      this.scene.tweens.killTweensOf(eye)
+      this.scene.tweens.add({
+        targets: eye,
+        scaleX: 1.16,
+        scaleY: 1.16,
+        duration: 180,
+        yoyo: true,
+        hold: 380,
+        ease: 'Quad.easeOut',
+        onComplete: () => eye.setScale(1),
+      })
+    }
+
+    // Tummy rumble: a low two-note growl under the smacks.
+    playTone(104, 260, 'sawtooth', 0.06)
+    this.scene.time.delayedCall(200, () => playTone(82, 300, 'sawtooth', 0.05))
+  }
+
   private giggle(): void {
     // Never during round transitions: killTweensOf would sever the
     // walk-aside/party tween chain that carries the friend sequence.

@@ -253,6 +253,71 @@ test('feed: a fed round visibly grows the friend; a wrong feed deflates it', asy
   expect(after.aura).toBeGreaterThan(shrunk.aura)
 })
 
+test('feed: a big-bite round announces itself before it is played, then pays double', async ({
+  page,
+}) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  // Silence the dice so the only big bite in this test is the one we dress.
+  await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
+  await forceJourneySettled(page, { growthStep: 0 })
+
+  const plain = await readState(page)
+  expect(plain.bigBite).toBe(false)
+  expect(plain.foodBoost).toBe(1)
+
+  // Dress the LIVE round — the whole point of the feature is that the child is
+  // told before feeding a single item, not congratulated afterwards.
+  await page.evaluate(() => window.__feedTheMonster!.devBigBite(true))
+  const dressed = await pollState(
+    page,
+    'tray dressed for a big bite',
+    (s) => s.bigBite && s.foodBoost > 1,
+  )
+  expect(dressed.round, 'the same round is dressed, not a new one dealt').toBe(plain.round)
+  expect(dressed.eaten, 'announced before any feeding').toHaveLength(0)
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-big-bite.png' })
+
+  // …and it really is worth two growth steps.
+  await feedRound(page)
+  expect((await readState(page)).journey.growthStep).toBe(2)
+})
+
+test('feed: struggling upgrades the round to a big bite mid-play', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
+  await forceJourneySettled(page, { growthStep: 2 })
+
+  // Two wrong feeds deflate the friend 2 → 0. That is the treadmill the catch-up
+  // exists to break — and now the child SEES it break.
+  for (let i = 0; i < 2; i++) {
+    const s = await waitTraySettled(page)
+    const before = s.spitBacks
+    await dragToMouth(
+      page,
+      s.foods.find((f) => !f.correct)!,
+    )
+    await pollState(page, `wrong feed ${i + 1} spat back`, (now) => now.spitBacks > before)
+  }
+
+  const upgraded = await pollState(
+    page,
+    'round upgraded to a big bite mid-play',
+    (s) => s.bigBite && s.foodBoost > 1,
+  )
+  expect(upgraded.transitioning, 'upgraded while the round is still being played').toBe(false)
+  expect(upgraded.journey.growthStep).toBe(0)
+
+  // Finishing pays +2, so the two slips are fully recovered — not a net loss.
+  await feedRound(page)
+  expect((await readState(page)).journey.growthStep).toBe(2)
+})
+
 test('feed: a fully grown friend joins the lineup and a new small friend arrives', async ({
   page,
 }) => {
