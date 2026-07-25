@@ -29,6 +29,7 @@ though the design conversations happen in Ukrainian.
 | 2   | [Kitchen: build a dish](feed-the-monster-kitchen.md) | sequencing, part–whole composition     | draft  |
 | 3   | [The thief](feed-the-monster-thief.md)               | sustained attention, go/no-go          | draft  |
 | 4   | [Pixel Studio](drawing-pixel-studio.md)              | fine motor precision + made-by-me art  | draft  |
+| 5   | [Drawn food](feed-the-monster-drawn-food.md)         | production instead of selection        | draft  |
 
 ## Why these three
 
@@ -53,11 +54,20 @@ few seconds and can be peeked at by tapping the friend) is the cheapest working-
 memory axis available and is _not_ written up here only because we agreed on
 these three first. It stays on the list.
 
-## Why #4 (a different game entirely)
+## Why #4 and #5 (a pair)
 
 The drawing game is the one game with **no adaptive axis at all** — nothing to
 get better at, nothing measured, and nothing the child makes survives the next
 tap on 🗑️. Rebuilding it on a pixel grid gives it a precision ladder (16 → 32 → 64) and, more importantly, turns everything the child paints into a **sprite**
-that the other games can use. Half of that design is the studio; the other half
-is the brainstorm about how a drawing made in the morning shows up inside
-another game in the evening.
+that the other games can use.
+
+**#5 is the reason #4 matters.** The studio on its own is a nicer drawing game;
+the studio plus one commission is a loop the app has never had — the game asks
+for something, the child makes it, and the thing they made is used in front of
+them within seconds. It is also the only feature on this queue that adds a
+**productive** task: all eight existing Feed the Monster task kinds ask the child
+to _pick_ the answer, and "draw me something red" asks them to produce one.
+
+Build order is therefore fixed: #4 first, but only as far as it takes to make the
+pad and the art store real, then #5 immediately — before any of the decorative
+reuse slots in #4's tier 1.

@@ -93,6 +93,20 @@ to be one big obvious button.
 
 ## Part 1 — the studio
 
+### It is a component first, a game second
+
+**Decided.** The pad is built as `shared/PixelPad.tsx` —
+`{ size, askColor?, template?, onDone(drawing | null) }` — and the `/drawing`
+route is a thin wrapper that adds the grid-size buttons and the gallery around
+it. Everything else in this app that ever wants a drawing mounts the same
+component as an overlay.
+
+This is not speculative generality: the first consumer
+([drawn food in Feed the Monster](feed-the-monster-drawn-food.md)) needs the pad
+to open **over a running Phaser scene**, with no route change and no lost game
+state. Building the pad inside the route first would mean pulling it back out
+immediately.
+
 ### Layout
 
 A square canvas, centred, as large as the shorter viewport axis allows, with a
@@ -234,9 +248,12 @@ studio.
 
 Commission candidates, cheapest first:
 
-1. **Feed the Monster — a food.** 16×16, eaten immediately, then joins the tray
-   pool for that episode. The monster's reaction to a home-made food should be
-   extra big.
+1. **Feed the Monster — a food.** ✅ **Decided as the first one to build**, and
+   written up in full as its own design:
+   [Feed the Monster: the food the child drew](feed-the-monster-drawn-food.md).
+   16×16, the _colour_ is the ask (so the sprite is tagged by construction),
+   eaten immediately with the celebration turned up, then it lives in the food
+   rotation and the friend later asks for it by name.
 2. **Whack-a-Silly — a critter.** 32×32, pops from a hole among the others.
 3. **Balloon Pop — a balloon print.** 16×16, decorative but commissioned so it
    feels answered.
@@ -292,8 +309,18 @@ interface Drawing {
   createdAt: number
   /** Set only for commissioned art; absent for free play. */
   role?: 'ftm-food' | 'whack-critter' | 'balloon-print' | ...
+  /**
+   * What the commission asked for, when the ask carried a parameter — e.g. the
+   * FoodColor for an `ftm-food`. This is the whole trick: the tag is true
+   * because we asked for it, not because we recognised anything.
+   */
+  tag?: string
 }
 ```
+
+The store is queried by `(role, tag)`, newest first, which is enough for every
+reuse path we have designed: "the newest thing the child drew" (decorative),
+"the newest red food" (commissioned), "everything" (the gallery).
 
 Sizes: 16×16 = 256 B raw → ~344 B base64; 64×64 = 4 KB → ~5.5 KB. A 100-drawing
 gallery is well under a megabyte, so `localStorage` is fine (same store family
@@ -308,17 +335,18 @@ it looks.
 
 ## Integration
 
-| File                                    | Change                                                                                                                                     |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/games/drawing/DrawingGame.tsx`     | Rebuilt as the studio shell (canvas + rail). The freehand implementation is replaced, not extended — see open question 1.                  |
-| `src/games/drawing/grid.ts` _(new)_     | Pure: `Grid` type, `paintCell`, `line` (Bresenham), `strokeUndo`, `isBlank`, `encode`/`decode`. Fully unit-tested, no DOM.                 |
-| `src/games/drawing/palette.ts` _(new)_  | The 15 colours + paper. Exported, because other games will render these sprites.                                                           |
-| `src/games/drawing/layout.ts` _(new)_   | Proportional canvas/rail geometry, unit-tested at 4:3 and ~2.2:1.                                                                          |
-| `src/games/drawing/testHook.ts` _(new)_ | `{ grid, size, color, eraser, cellRects }` so e2e can paint real cells with real pointer drags.                                            |
-| `src/shared/artStore.ts` _(new)_        | The gallery: save/list/load/delete `Drawing`s in `localStorage`, subscribe on change. Mirrors `progress.ts` conventions and its fallbacks. |
-| `src/shared/drawingTexture.ts` _(new)_  | `Drawing → HTMLCanvasElement` and `registerDrawingTexture(scene, drawing)`. The one place every consuming game goes through.               |
-| `src/games/registry.tsx`                | Unchanged for v1 (`drawing` stays non-leveled). The precision meter is saved via `progress.ts` `skill`, which needs no registry change.    |
-| Consuming games                         | One slot each, added one at a time — nothing lands in a game until the studio and the store are shipped and stable.                        |
+| File                                    | Change                                                                                                                                   |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/shared/PixelPad.tsx` _(new)_       | The pad itself: `{ size, askColor?, template?, onDone }`. Shared, because it opens over other games as an overlay (see above).           |
+| `src/games/drawing/DrawingGame.tsx`     | Becomes the studio shell around `PixelPad` (grid-size buttons, gallery entry). The freehand implementation is replaced — see question 1. |
+| `src/games/drawing/grid.ts` _(new)_     | Pure: `Grid` type, `paintCell`, `line` (Bresenham), `strokeUndo`, `isBlank`, `encode`/`decode`. Fully unit-tested, no DOM.               |
+| `src/games/drawing/palette.ts` _(new)_  | The 15 colours + paper. Exported, because other games will render these sprites.                                                         |
+| `src/games/drawing/layout.ts` _(new)_   | Proportional canvas/rail geometry, unit-tested at 4:3 and ~2.2:1.                                                                        |
+| `src/games/drawing/testHook.ts` _(new)_ | `{ grid, size, color, eraser, cellRects }` so e2e can paint real cells with real pointer drags.                                          |
+| `src/shared/artStore.ts` _(new)_        | The gallery: save/list/load/delete `Drawing`s in `localStorage`, query by `(role, tag)`, subscribe on change. Mirrors `progress.ts`.     |
+| `src/shared/drawingTexture.ts` _(new)_  | `Drawing → HTMLCanvasElement` and `registerDrawingTexture(scene, drawing)`. The one place every consuming game goes through.             |
+| `src/games/registry.tsx`                | Unchanged for v1 (`drawing` stays non-leveled). The precision meter is saved via `progress.ts` `skill`, which needs no registry change.  |
+| Consuming games                         | One slot each, added one at a time — nothing lands in a game until the studio and the store are shipped and stable.                      |
 
 ## Art
 
@@ -354,20 +382,22 @@ dogfooding test of the format.
    is the mode the child already knows, and paper does not have an undo button.
    A two-tile split (🖍️ freehand / ▦ pixels) as two separate launcher entries is
    the compromise if we want both.
-2. **Which reuse ships first** — tier 1 decorative everywhere (broad, shallow,
-   cheap) or one full tier 2 commission loop (narrow, deep, much stronger
-   payoff)? Recommendation: one commission, in Feed the Monster, because "draw a
-   food → the monster eats it now" is the moment that sells the whole idea.
+2. ~~**Which reuse ships first?**~~ **Settled: the Feed the Monster commission**
+   — "draw a food → the monster eats it now" is the moment that sells the whole
+   idea. Written up as [drawn food](feed-the-monster-drawn-food.md); the
+   decorative tier-1 slots come after it, one at a time.
 3. **Where does the gallery live?** Inside the drawing game only, or as a fourth
    launcher tile ("the fridge door")?
-4. **How does a commission reach the child?** Pushed (the studio opens with an
-   ask already on it), pulled (the monster's plate is empty and tapping it jumps
-   to the studio), or both?
+4. ~~**How does a commission reach the child?**~~ **Settled for the first
+   consumer: pushed** — the pad opens over the game with the ask already on it,
+   at a journey beat the game picks. A pull affordance (tap the empty plate) can
+   come later if the child ever dismisses one and wants back in.
 5. **Palette size** — 15 colours is a lot of rail; 8 (today's set) is fast to
    scan but limits what a drawing can be. Also: do we include a skin-tone and a
    "shadow" pair, which are what make pixel art read?
-6. **Do commissioned drawings persist into the game forever**, or only for that
-   session? Forever is more meaningful and slowly fills the monster's tray with
-   blobs; per-session is safer and less special.
+6. ~~**Do commissioned drawings persist forever?**~~ **Settled: forever, but
+   capped** — six food slots, one per colour, newest per colour wins and the
+   retired one stays in the gallery. The cap is what stops the tray degrading
+   into blobs.
 7. **Parental controls** — is there any need to delete/hide a drawing, and if so
    where does that live so a 4-year-old does not find it?
