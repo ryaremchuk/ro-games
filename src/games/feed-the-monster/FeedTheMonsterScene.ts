@@ -13,12 +13,14 @@ import {
 } from './logic'
 import type { FoodRequest, Round, TaskKind } from './logic'
 import {
+  BIG_BITE,
   FRIENDS_PER_EPISODE,
   GROW_STEPS,
   auraIntensity,
   episodeFor,
   feedStep,
   friendColor,
+  growAmount,
   journeyFromData,
   journeyToData,
   scaleForStep,
@@ -80,6 +82,19 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private skillPeak = SKILL_START
   private roundStartAt = 0
   private spitBacks = 0
+  /**
+   * Wrong feeds accumulated over the CURRENT friend's whole tenure (reset when
+   * a fresh friend hops in). Once it crosses journey.BIG_BITE_STUCK_SPITS the
+   * next correct round becomes a big bite (+2) — an invisible catch-up so a
+   * struggling toddler never gets stuck on the +1/−1 treadmill.
+   */
+  private friendSpitBacks = 0
+  /**
+   * RNG for the random half of the big bite (the stuck catch-up bypasses it).
+   * Defaults to Math.random; e2e pins it via setRandomBigBite so growth
+   * assertions stay deterministic. See growAmount / logic's forceKind pattern.
+   */
+  private growthRng: () => number = Math.random
   private recentKinds: TaskKind[] = []
 
   // The visible long-term journey: growing friends, episodes (journey.ts).
@@ -271,6 +286,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         this.applyJourney(journeyFromData({ ...journeyToData(this.journey), ...partial }))
         return true
       },
+      setRandomBigBite: (enabled) => {
+        // enabled → real dice; disabled → rng()=1 never clears BIG_BITE_CHANCE,
+        // so only the stuck catch-up can big-bite. Keeps e2e growth exact.
+        this.growthRng = enabled ? Math.random : () => 1
+      },
 
       // Dev cheats behind the `?dev` overlay (see FeedDevPanel): nudge one
       // journey axis / re-deal a round for faster manual testing. Each no-ops
@@ -298,6 +318,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    */
   private applyJourney(next: JourneyState): void {
     this.journey = next
+    this.friendSpitBacks = 0
     saveData(GAME_ID, journeyToData(this.journey))
 
     this.episode = episodeFor(this.journey)
@@ -673,8 +694,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   private spitBack(img: Phaser.GameObjects.Image): void {
     // "Blegh" — funny face, head shake, food arcs back to its plate. Never
-    // lost, never punished — but it IS the meter's cognitive error signal.
+    // lost, never punished — but it IS the meter's cognitive error signal
+    // (per round) and the big-bite catch-up signal (per friend).
     this.spitBacks++
+    this.friendSpitBacks++
     playTone(220, 220, 'sine', 0.07)
     this.time.delayedCall(110, () => playTone(165, 180, 'sine', 0.06))
     this.funnyUntil = this.time.now + 700
@@ -750,14 +773,23 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.skillPeak = Math.max(this.skillPeak, this.skill)
     saveSkill(GAME_ID, { cognitive: this.skill })
 
-    // The journey advances on care performed: this fed round grows the
-    // friend one visible step — or crowns it / completes the episode.
-    const { next, outcome } = feedStep(this.journey)
+    // The journey advances on care performed: this fed round grows the friend
+    // one visible step — or two on a "big bite" (an invisible catch-up when the
+    // child has struggled on this friend, plus a rare random sprinkle) — or
+    // crowns it / completes the episode.
+    const amount = growAmount({ friendSpitBacks: this.friendSpitBacks, rng: this.growthRng })
+    const bigBite = amount === BIG_BITE
+    const { next, outcome } = feedStep(this.journey, amount)
     this.journey = next
     saveData(GAME_ID, journeyToData(this.journey))
+    // A big bite that fired because the child was stuck has paid off the debt —
+    // clear it so the boost is a one-off recovery, not a per-round crutch. When
+    // the friend changes below, the fresh friend starts clean regardless.
+    if (bigBite) this.friendSpitBacks = 0
 
     if (outcome === 'grew') {
-      // Visible growth pop: clearly bigger + a brighter aura.
+      // Visible growth pop: clearly bigger + a brighter aura (a big bite pops
+      // harder + rings a brighter sparkle so the "double" reads).
       this.growth = scaleForStep(this.journey.growthStep)
       this.tweens.add({
         targets: this.monsterRig.container,
@@ -769,8 +801,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       })
       this.time.delayedCall(200, () => {
         this.monsterRig.applyAura(true)
+        if (bigBite) {
+          const mp = this.monsterPos()
+          this.stars.explode(18, mp.x, mp.y - this.bodyR * this.growth)
+        }
+        const chime = bigBite ? [523, 659, 784, 1047] : [523, 659, 784]
         this.time.delayedCall(300, () =>
-          [523, 659, 784].forEach((freq, i) =>
+          chime.forEach((freq, i) =>
             this.time.delayedCall(i * 120, () => playTone(freq, 160, 'triangle', 0.1)),
           ),
         )
@@ -781,6 +818,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       })
       return
     }
+
+    // A fresh friend is hopping in — it starts its big-bite tally clean.
+    this.friendSpitBacks = 0
 
     // Fully grown: final size pop + the aura blazes to full on the CURRENT
     // friend before it walks aside to join the (glowing) lineup.

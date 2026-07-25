@@ -70,6 +70,13 @@ export interface FeedTestApi {
    * Returns false while a round transition is in flight.
    */
   forceJourney: (journey: Partial<JourneyState>) => boolean
+  /**
+   * Toggle the random "big bite" sprinkle (a fed round occasionally growing two
+   * steps instead of one). Off makes growth deterministic (+1, unless the child
+   * is stuck) so a spec can assert an exact growthStep after a feed. The
+   * adaptive stuck-catch-up is unaffected — only the dice are silenced.
+   */
+  setRandomBigBite: (enabled: boolean) => void
 
   // ─── `?dev` cheat overlay (FeedDevPanel) ─────────────────────────────────
   // Incremental nudges for manual testing; each rebuilds the world + round
