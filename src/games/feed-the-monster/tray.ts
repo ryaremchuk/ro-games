@@ -18,6 +18,7 @@ import { TRAY_SIZE } from './logic'
 import { artKey } from './art'
 import * as layout from './layout'
 import * as textures from './textures'
+import type { FeedMouth } from './duoMode'
 import type FeedTheMonsterScene from './FeedTheMonsterScene'
 
 // Mirrors the scene's FOOD_CSS: reskin sprites are normalized to this emoji
@@ -204,15 +205,20 @@ export class Tray {
         if (img !== this.dragged) return
         img.x = dragX
         img.y = dragY
-        // Magnetic snap assist + the mouth opens as food approaches.
-        const mouth = this.scene.monsterRig.mouthWorld()
-        const dist = Phaser.Math.Distance.Between(img.x, img.y, mouth.x, mouth.y)
-        if (dist < layout.snapRadius(this.scene.metrics())) {
-          img.x += (mouth.x - img.x) * 0.3
-          img.y += (mouth.y - img.y) * 0.3
-          if (this.scene.monsterRig.mouthOpen < 0.9) this.scene.monsterRig.setMouthOpen(1, 120)
-        } else if (this.scene.monsterRig.mouthOpen > 0.1) {
-          this.scene.monsterRig.setMouthOpen(0, 160)
+        // Magnetic snap assist toward the NEAREST open mouth (one in a solo
+        // round, two in a duo); that mouth opens as the food approaches, the
+        // others close.
+        const snap = layout.snapRadius(this.scene.metrics())
+        const mouths = this.scene.feedMouths()
+        const near = this.nearestMouth(img, mouths)
+        for (const mouth of mouths) {
+          if (mouth === near.mouth && near.dist < snap) {
+            img.x += (mouth.x - img.x) * 0.3
+            img.y += (mouth.y - img.y) * 0.3
+            if (mouth.isOpen() < 0.9) mouth.setOpen(1, 120)
+          } else if (mouth.isOpen() > 0.1) {
+            mouth.setOpen(0, 160)
+          }
         }
       },
     )
@@ -223,16 +229,34 @@ export class Tray {
         const img = obj as Phaser.GameObjects.Image
         if (img !== this.dragged) return
         this.dragged = null
-        const mouth = this.scene.monsterRig.mouthWorld()
-        const dist = Phaser.Math.Distance.Between(img.x, img.y, mouth.x, mouth.y)
-        if (dist < layout.snapRadius(this.scene.metrics()) && !this.scene.transitioning) {
-          this.scene.feed(img)
+        const snap = layout.snapRadius(this.scene.metrics())
+        const mouths = this.scene.feedMouths()
+        const near = this.nearestMouth(img, mouths)
+        if (near.mouth && near.dist < snap && !this.scene.transitioning) {
+          near.mouth.accept(img)
         } else {
-          this.scene.monsterRig.setMouthOpen(0, 160)
+          for (const mouth of mouths) mouth.setOpen(0, 160)
           this.returnToTray(img)
         }
       },
     )
+  }
+
+  /** The feed mouth closest to a dragged food, and its distance. */
+  private nearestMouth(
+    img: Phaser.GameObjects.Image,
+    mouths: readonly FeedMouth[],
+  ): { mouth: FeedMouth | null; dist: number } {
+    let mouth: FeedMouth | null = null
+    let dist = Infinity
+    for (const candidate of mouths) {
+      const d = Phaser.Math.Distance.Between(img.x, img.y, candidate.x, candidate.y)
+      if (d < dist) {
+        dist = d
+        mouth = candidate
+      }
+    }
+    return { mouth, dist }
   }
 
   // ─── Food motion ─────────────────────────────────────────────────────────

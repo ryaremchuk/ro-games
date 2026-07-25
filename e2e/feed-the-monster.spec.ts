@@ -105,20 +105,29 @@ async function forceJourneySettled(page: Page, journey: Partial<JourneyState>): 
   await waitTraySettled(page)
 }
 
-/** Real-pointer drag from a tray food to the monster's mouth. */
-async function dragToMouth(page: Page, from: { xCss: number; yCss: number }): Promise<void> {
-  const { mouth } = await readState(page)
+/** Real-pointer drag from a tray food to an arbitrary drop point (css px). */
+async function dragToPoint(
+  page: Page,
+  from: { xCss: number; yCss: number },
+  to: { x: number; y: number },
+): Promise<void> {
   await page.mouse.move(from.xCss, from.yCss)
   await page.mouse.down()
   const steps = 14
   for (let i = 1; i <= steps; i++) {
     await page.mouse.move(
-      from.xCss + ((mouth.xCss - from.xCss) * i) / steps,
-      from.yCss + ((mouth.yCss - from.yCss) * i) / steps,
+      from.xCss + ((to.x - from.xCss) * i) / steps,
+      from.yCss + ((to.y - from.yCss) * i) / steps,
     )
     await page.waitForTimeout(16)
   }
   await page.mouse.up()
+}
+
+/** Real-pointer drag from a tray food to the monster's mouth. */
+async function dragToMouth(page: Page, from: { xCss: number; yCss: number }): Promise<void> {
+  const { mouth } = await readState(page)
+  await dragToPoint(page, from, { x: mouth.xCss, y: mouth.yCss })
 }
 
 /**
@@ -332,3 +341,57 @@ for (const kind of ['dots', 'not', 'pattern', 'mix'] as const) {
     await feedRound(page)
   })
 }
+
+test('feed: a duo bonus stands up two friends fed from one tray by mouth', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  // Force a duo (bypasses the data+chance axis so the spec sees one on demand).
+  const started = await page.evaluate(() => window.__feedTheMonster!.forceDuo())
+  expect(started).toBe(true)
+  await pollState(
+    page,
+    'duo on stage',
+    (s) => s.duoActive && s.duo !== null && s.duo.sides.length === 2,
+  )
+  await waitTraySettled(page) // duo tray dropped in — grab resting foods, not mid-bounce
+
+  // Two distinct friends, each with its own food + mouth, one shared tray.
+  const s0 = await readState(page)
+  expect(s0.duo!.sides).toHaveLength(2)
+  expect(s0.duo!.sides[0].foodId).not.toBe(s0.duo!.sides[1].foodId)
+  expect(s0.duo!.sides[0].mouthCss.x).toBeLessThan(s0.duo!.sides[1].mouthCss.x) // left, right
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-duo.png' })
+
+  // The core new mechanic: a food dropped on a mouth feeds THAT friend only.
+  // Feed each side one correct food; the drop must register on that same side
+  // (its eaten grew) — or, for the second mouth, roll the round over, which also
+  // means the drop was accepted, not spat back. (Full 3-round growth + walk-off
+  // is covered by journey.test's duoFeedStep/duoComplete; feeding it live here
+  // would run ~130s on a loaded box.)
+  for (const index of [0, 1] as const) {
+    const s = await readState(page)
+    if (!s.duoActive || !s.duo) break
+    const before = s.duo.sides[index].eaten
+    const stepBefore = s.duo.step
+    const food = s.foods.find((f) => f.foodId === s.duo!.sides[index].foodId)
+    expect(food, `a tray food for mouth ${index} must exist`).toBeTruthy()
+    await dragToPoint(page, food!, {
+      x: s.duo.sides[index].mouthCss.x,
+      y: s.duo.sides[index].mouthCss.y,
+    })
+    // Resolving proves the drop landed on the correct friend (a wrong-mouth or
+    // spat-back drop would leave eaten and step unchanged → timeout).
+    await pollState(
+      page,
+      `mouth ${index} fed`,
+      (now) =>
+        !now.duoActive ||
+        (now.duo?.step ?? -1) !== stepBefore ||
+        (now.duo?.sides[index]?.eaten ?? 0) > before,
+      15_000,
+    )
+    if (index === 0) await waitTraySettled(page).catch(() => undefined)
+  }
+})

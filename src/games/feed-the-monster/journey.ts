@@ -34,10 +34,15 @@ export const BASE_SCALE = 0.7
 /** …and visibly outgrows the old monster's fixed 1.0 by the last step. */
 export const FULL_SCALE = 1.45
 
-/** Monster container scale for a growth step — ~12.5% bigger per step. */
-export function scaleForStep(step: number): number {
-  const clamped = Math.min(Math.max(step, 0), GROW_STEPS)
-  return BASE_SCALE + ((FULL_SCALE - BASE_SCALE) * clamped) / GROW_STEPS
+/**
+ * Monster container scale for a growth step, BASE_SCALE (newborn) → FULL_SCALE
+ * (grown). `steps` is how many feeds reach full — GROW_STEPS for a solo friend,
+ * DUO_GROW_STEPS for a duo pair — so both curves start small and end the same
+ * size, just over a different number of feeds.
+ */
+export function scaleForStep(step: number, steps: number = GROW_STEPS): number {
+  const clamped = Math.min(Math.max(step, 0), steps)
+  return BASE_SCALE + ((FULL_SCALE - BASE_SCALE) * clamped) / steps
 }
 
 export interface JourneyState {
@@ -142,6 +147,60 @@ export function shrinkStep(journey: JourneyState): JourneyState {
   return { ...journey, growthStep: Math.max(journey.growthStep - 1, 0) }
 }
 
+// ─── Duo bonus: two little friends fed at once, grown together ────────────────
+
+/**
+ * A duo BONUS round stands two small friends side by side and feeds both from
+ * one shared tray — each wants its own food (logic.generateDuoRound). Clearing
+ * the round grows BOTH one synchronized step; after DUO_GROW_STEPS they are full
+ * and walk to the lineup together as a pair. Two friends grown in three rounds
+ * (vs 2×GROW_STEPS solo) — a deliberate pace + variety burst, injected on its
+ * own data+chance axis (logic.shouldInjectDuo), NOT the difficulty meter.
+ */
+export const DUO_GROW_STEPS = 3
+
+/** How many episode slots a completed duo fills (it graduates two friends). */
+export const DUO_FRIENDS = 2
+
+/**
+ * Two friends share the stage, so a duo pair tops out a touch smaller than a
+ * solo friend's FULL_SCALE — big enough to read as "all grown up", small enough
+ * that the pair never crowds on a 4:3 iPad.
+ */
+export const DUO_FULL_SCALE = 1.2
+
+/** Duo pair container scale for a growth step (BASE → DUO_FULL over 3 feeds). */
+export function duoScaleForStep(step: number): number {
+  const clamped = Math.min(Math.max(step, 0), DUO_GROW_STEPS)
+  return BASE_SCALE + ((DUO_FULL_SCALE - BASE_SCALE) * clamped) / DUO_GROW_STEPS
+}
+
+/** Grow the duo pair one synchronized step; `done` once both are fully grown. */
+export function duoFeedStep(growthStep: number): { next: number; done: boolean } {
+  const grownTo = growthStep + 1
+  return { next: Math.min(grownTo, DUO_GROW_STEPS), done: grownTo >= DUO_GROW_STEPS }
+}
+
+/**
+ * A completed duo graduates BOTH friends: friendsFed advances by two. If that
+ * fills the episode's quota the episode completes (grand dance + next theme);
+ * otherwise the next (solo or duo) friend arrives. A duo is only ever injected
+ * with ≥2 slots left (logic.shouldInjectDuo), so friendsFed never overshoots.
+ */
+export function duoComplete(journey: JourneyState): { next: JourneyState; outcome: FeedOutcome } {
+  const friendsFed = journey.friendsFed + DUO_FRIENDS
+  if (friendsFed < FRIENDS_PER_EPISODE) {
+    return {
+      next: { episode: journey.episode, friendsFed, growthStep: 0 },
+      outcome: 'friend-grown',
+    }
+  }
+  return {
+    next: { episode: journey.episode + 1, friendsFed: 0, growthStep: 0 },
+    outcome: 'episode-complete',
+  }
+}
+
 // ─── Friend looks: colors + growth details ───────────────────────────────────
 
 /** Distinct friendly body hues; friends cycle through, never twins in a row. */
@@ -186,9 +245,9 @@ export const AURA_FLOOR = 0.12
  * AND on every lineup mini — a persistent, fiddly source of layout bugs. An
  * aura is centered on the body: nothing to anchor, nothing to collide.
  */
-export function auraIntensity(step: number): number {
-  const clamped = Math.min(Math.max(step, 0), GROW_STEPS)
-  return AURA_FLOOR + (1 - AURA_FLOOR) * (clamped / GROW_STEPS)
+export function auraIntensity(step: number, steps: number = GROW_STEPS): number {
+  const clamped = Math.min(Math.max(step, 0), steps)
+  return AURA_FLOOR + (1 - AURA_FLOOR) * (clamped / steps)
 }
 
 // ─── Episodes: food pool + visual theme ──────────────────────────────────────

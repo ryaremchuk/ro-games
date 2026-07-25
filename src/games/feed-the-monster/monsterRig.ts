@@ -16,7 +16,14 @@
  */
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { auraIntensity, darken } from './journey'
+import {
+  DUO_GROW_STEPS,
+  GROW_STEPS,
+  auraIntensity,
+  darken,
+  duoScaleForStep,
+  friendColor,
+} from './journey'
 import { artKey, friendSpec } from './art'
 import * as textures from './textures'
 import type { XY } from './layout'
@@ -89,12 +96,44 @@ export class MonsterRig {
 
   private readonly scene: FeedTheMonsterScene
 
+  /**
+   * Duo override: when set, this rig renders a SPECIFIC friend at a SPECIFIC
+   * home x and growth (used for the two side-by-side friends of a duo bonus
+   * round). When null (the default, the solo walker), the rig reads the scene's
+   * live single-friend journey + centre position exactly as before — so the
+   * solo path is byte-identical. The scene sets this before build().
+   * @internal Set by the scene for the duo's second rig.
+   */
+  duo: { friendIndex: number; homeX: number; step: number } | null = null
+
   constructor(scene: FeedTheMonsterScene) {
     this.scene = scene
   }
 
   private px(css: number): number {
     return css * this.scene.dpr
+  }
+
+  /** Roster index this rig draws — the duo override, else the current friend. */
+  private friendIndex(): number {
+    return this.duo ? this.duo.friendIndex : this.scene.journey.friendsFed
+  }
+
+  /** This rig's home x — the duo override, else screen centre (monsterPos). */
+  private homeX(): number {
+    return this.duo ? this.duo.homeX : this.scene.monsterPos().x
+  }
+
+  /** This rig's visible growth scale right now (duo pair scale, else solo). */
+  private currentScale(): number {
+    return this.duo ? duoScaleForStep(this.duo.step) : this.scene.growth
+  }
+
+  /** Aura growth step + total feeds-to-full for this rig (duo vs solo curve). */
+  private auraStepAndTotal(): { step: number; steps: number } {
+    return this.duo
+      ? { step: this.duo.step, steps: DUO_GROW_STEPS }
+      : { step: this.scene.journey.growthStep, steps: GROW_STEPS }
   }
 
   /** The friend's container (position/growth/squash), for the scene to tween. */
@@ -127,12 +166,12 @@ export class MonsterRig {
       this.monster.destroy()
     }
 
-    const color = this.scene.friendBodyColor()
-    const spec = friendSpec(this.scene.journey.episode, this.scene.journey.friendsFed)
+    const color = friendColor(this.scene.journey.episode, this.friendIndex())
+    const spec = friendSpec(this.scene.journey.episode, this.friendIndex())
     const artBody = this.scene.hasArt(spec.art)
     const r = this.scene.bodyR
     this.monster = this.scene.add.container(0, 0).setDepth(2)
-    this.monster.setScale(this.scene.growth)
+    this.monster.setScale(this.currentScale())
     // rig holds everything that breathes together (halo + body + face); the
     // shadow stays on monster so ground contact never pulses.
     this.rig = this.scene.add.container(0, 0)
@@ -314,8 +353,9 @@ export class MonsterRig {
    * The fully-grown finale passes GROW_STEPS so the just-completed friend blazes
    * at full before it walks aside to the (also glowing) lineup.
    */
-  applyAura(animated: boolean, step = this.scene.journey.growthStep): void {
-    const t = auraIntensity(step)
+  applyAura(animated: boolean, step?: number, steps?: number): void {
+    const src = this.auraStepAndTotal()
+    const t = auraIntensity(step ?? src.step, steps ?? src.steps)
     const alpha = 0.2 + 0.55 * t
     const scale = this.haloFull * (0.85 + 0.3 * t)
     if (animated) {
@@ -340,7 +380,8 @@ export class MonsterRig {
    */
   tickAura(): void {
     if (!this.monster || !this.monster.active) return
-    const t = auraIntensity(this.scene.journey.growthStep)
+    const src = this.auraStepAndTotal()
+    const t = auraIntensity(src.step, src.steps)
     let n = 0
     if (Math.random() < t) n++
     if (Math.random() < t * 0.6) n++
@@ -450,9 +491,9 @@ export class MonsterRig {
   // ─── Reactions ───────────────────────────────────────────────────────────
 
   shakeHead(): void {
-    const baseX = this.scene.monsterPos().x
+    const baseX = this.homeX()
     this.scene.tweens.killTweensOf(this.monster)
-    this.monster.setScale(this.scene.growth)
+    this.monster.setScale(this.currentScale())
     this.scene.tweens.add({
       targets: this.monster,
       x: baseX + this.px(8),
@@ -487,7 +528,7 @@ export class MonsterRig {
     playTone(784, 60, 'sine', 0.07)
     this.scene.time.delayedCall(80, () => playTone(880, 70, 'sine', 0.07))
     this.scene.tweens.killTweensOf(this.monster)
-    this.monster.setScale(this.scene.growth)
+    this.monster.setScale(this.currentScale())
     this.scene.tweens.add({
       targets: this.monster,
       rotation: 0.05,
@@ -505,14 +546,15 @@ export class MonsterRig {
     // sneeze tween chain and strand `sneezing` forever (no blinks all session).
     if (this.scene.sneezing || this.scene.transitioning) return
     this.scene.sneezing = true
+    const g = this.currentScale()
     playTone(660, 130, 'triangle', 0.07)
     for (const eye of [this.eyeL, this.eyeR]) {
       this.scene.tweens.add({ targets: eye, scaleY: 0.1, duration: 200, ease: 'Quad.easeOut' })
     }
     this.scene.tweens.add({
       targets: this.monster,
-      scaleX: this.scene.growth * 0.96,
-      scaleY: this.scene.growth * 1.1,
+      scaleX: g * 0.96,
+      scaleY: g * 1.1,
       duration: 280,
       ease: 'Quad.easeOut',
       onComplete: () => {
@@ -522,13 +564,13 @@ export class MonsterRig {
         this.scene.puffs.explode(12, nose.x, nose.y)
         this.scene.tweens.add({
           targets: this.monster,
-          scaleX: this.scene.growth * 1.14,
-          scaleY: this.scene.growth * 0.84,
+          scaleX: g * 1.14,
+          scaleY: g * 0.84,
           duration: 90,
           yoyo: true,
           ease: 'Quad.easeIn',
           onComplete: () => {
-            this.monster.setScale(this.scene.growth)
+            this.monster.setScale(g)
             for (const eye of [this.eyeL, this.eyeR]) eye.setScale(1)
             this.scene.sneezing = false
           },

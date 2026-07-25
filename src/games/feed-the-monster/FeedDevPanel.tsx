@@ -26,6 +26,7 @@ interface DevSnapshot {
   episodeId: string
   friendsFed: number
   growthStep: number
+  duoActive: boolean
 }
 
 function readSnapshot(): DevSnapshot | null {
@@ -39,6 +40,7 @@ function readSnapshot(): DevSnapshot | null {
     episodeId: s.episodeId,
     friendsFed: s.journey.friendsFed,
     growthStep: s.journey.growthStep,
+    duoActive: s.duoActive,
   }
 }
 
@@ -85,15 +87,39 @@ export default function FeedDevPanel() {
       />
 
       <button type="button" style={styles.regen} onClick={() => act((a) => a.devRegenerate())}>
-        ↻ Regenerate task
+        ↻ Random task (any kind)
+      </button>
+
+      <div style={styles.chips}>
+        {TASK_KINDS.map((kind) => (
+          <button
+            key={kind}
+            type="button"
+            style={styles.chip}
+            onClick={() => act((a) => a.forceKind(kind))}
+          >
+            {kind}
+          </button>
+        ))}
+      </div>
+
+      <button type="button" style={styles.duo} onClick={() => act((a) => a.forceDuo())}>
+        ✌ Duo bonus
       </button>
 
       <div style={styles.readout}>
-        {ready ? `round ${snap.round} · ${snap.taskKind ?? '—'}` : 'waiting for scene…'}
+        {ready
+          ? snap.duoActive
+            ? `round ${snap.round} · DUO`
+            : `round ${snap.round} · ${snap.taskKind ?? '—'}`
+          : 'waiting for scene…'}
       </div>
     </div>
   )
 }
+
+// Every task kind, for the one-tap jump chips (bypasses the meter gate).
+const TASK_KINDS = ['single', 'count', 'color', 'combo', 'dots', 'mix', 'not', 'pattern'] as const
 
 function Row({
   label,
@@ -180,6 +206,33 @@ const styles: Record<string, CSSProperties> = {
     background: '#4d96ff',
     color: '#fff',
     fontSize: 13,
+    fontWeight: 700,
+    cursor: 'pointer',
+    touchAction: 'manipulation',
+  },
+  chips: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, 1fr)',
+    gap: 4,
+  },
+  chip: {
+    height: 26,
+    border: 'none',
+    borderRadius: 6,
+    background: 'rgba(255, 255, 255, 0.14)',
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 600,
+    cursor: 'pointer',
+    touchAction: 'manipulation',
+  },
+  duo: {
+    height: 30,
+    border: 'none',
+    borderRadius: 8,
+    background: '#f4a259',
+    color: '#1a1622',
+    fontSize: 12,
     fontWeight: 700,
     cursor: 'pointer',
     touchAction: 'manipulation',
