@@ -24,7 +24,7 @@ export interface WhackHoleState {
 export interface WhackTestState {
   /** Successful go-critter bops (the score that drives the level). */
   bops: number
-  /** 1-based HUD level = levelForBops(bops). */
+  /** 1-based HUD level shown on the shared badge (shared/level.ts = stars + 1). */
   level: number
   /** Sleepers left to nap in peace (the go/no-go win). */
   spared: number

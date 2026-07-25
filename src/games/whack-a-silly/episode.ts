@@ -10,11 +10,15 @@
  *   grid teaches and training the child to scan a wider field.
  *
  * An EPISODE lasts a pseudo-random 5..10 bops (= stars). At its boundary the
- * SPATIAL meter advances by a VARIABLE step driven by how many go-critters
- * escaped during the episode (the miss signal): a clean run adds several holes
- * at once, a rough one eases a couple back — no-fail, never below the 4-hole
- * floor. The meter persists via shared/progress.ts `skill.spatial`; the episode
- * counter via `data.episode`.
+ * SPATIAL meter advances GENTLY (at most +1 per episode) driven by how many
+ * go-critters escaped during the episode (the miss signal): a clean run adds one
+ * hole, a rough one eases back — no-fail, never below the 4-hole floor. The
+ * meter is a CENTER, not the literal count: each episode samples its hole count
+ * from a ±1 jitter around the meter (leaning down at the ceiling) and never
+ * repeats the previous episode's count, so consecutive boards never feel
+ * identical — not even once the child has maxed the meter (see
+ * episodeHoleCount). The meter persists via shared/progress.ts `skill.spatial`;
+ * the episode counter via `data.episode`.
  *
  * The hole SIZE is deliberately NOT a variable here — the scene keeps one fixed
  * mound scale (the 3×3 size) so the child's touch target never moves; only the
@@ -43,22 +47,24 @@ export function holeCountFor(spatial: number): number {
   return MIN_HOLES + clampSpatial(spatial)
 }
 
-// ─── Spatial adaptive step (the "fast" formula) ───────────────────────────────
+// ─── Spatial adaptive step (gentle climb) ─────────────────────────────────────
 
 /**
- * How the spatial meter moves at an episode boundary, from the go-critter
- * escapes counted during that episode. Deliberately AGGRESSIVE (per the brief):
- * a clean episode can add up to +3 holes at once, a rough one drops up to −2 —
- * so the board chases the child's scanning ability far faster than a ±1 ramp.
+ * How the spatial meter (the hole-count CENTER) moves at an episode boundary,
+ * from the go-critter escapes counted during that episode. Deliberately GENTLE:
+ * a clean-ish episode nudges the center up ONE hole, and it can only ever climb
+ * +1 at a time — so the board grows over many episodes (minutes of play), not
+ * the ~2 it used to take. Easing is a touch faster than climbing (asymmetric,
+ * no-fail): a struggling child gets the field thinned promptly.
  *
- *   0 escapes → +3   (mastered — pile holes on)
- *   1 escape  → +2
- *   2 escapes → +1
- *   3 escapes →  0   (holding the edge)
+ *   0 escapes → +1   (clean — nudge the center up one)
+ *   1 escape  → +1
+ *   2 escapes →  0   (holding the edge)
+ *   3 escapes →  0
  *   4 escapes → −1
  *   5+escapes → −2   (struggling — thin the field, no-fail)
  */
-export const SPATIAL_STEP_BY_ESCAPES: readonly number[] = [3, 2, 1, 0, -1]
+export const SPATIAL_STEP_BY_ESCAPES: readonly number[] = [1, 1, 0, 0, -1]
 
 export function spatialDelta(escapes: number): number {
   const e = Math.max(0, Math.floor(escapes))
@@ -68,6 +74,44 @@ export function spatialDelta(escapes: number): number {
 /** Advance the spatial meter one episode; clamped, no-fail. */
 export function advanceSpatial(spatial: number, escapes: number): number {
   return clampSpatial(clampSpatial(spatial) + spatialDelta(escapes))
+}
+
+// ─── Per-episode hole count (center + jitter) ─────────────────────────────────
+
+/** Clamp a raw hole count into the legal [MIN_HOLES, MAX_HOLES] band. */
+function clampHoles(count: number): number {
+  return Math.min(MAX_HOLES, Math.max(MIN_HOLES, Math.round(count)))
+}
+
+/**
+ * The number of holes THIS episode actually shows. The spatial meter is only
+ * the adaptive CENTER; the real count breathes ±1 around it so consecutive
+ * episodes never feel identical — the fix for the old "climb to nine then hold
+ * at nine forever" monotony.
+ *
+ * - `0` is weighted (twice in the offset bag) so the meter's own value stays the
+ *   most likely count — the board still tracks the child's edge.
+ * - Near the ceiling the jitter leans DOWN (−2/−1/0), so the densest board is an
+ *   occasional spike, not the steady state.
+ * - `prevCount` (the previous episode's count) is dropped from the pool whenever
+ *   an alternative exists, guaranteeing "never the same count twice in a row".
+ *
+ * Deterministic for a given RNG, so a seeded test can pin the sequence.
+ */
+export function episodeHoleCount(
+  spatial: number,
+  prevCount: number | null = null,
+  rng: Rng = Math.random,
+): number {
+  const center = holeCountFor(spatial)
+  const offsets = center >= MAX_HOLES ? [0, 0, -1, -2] : [0, 0, -1, 1]
+  const counts = offsets.map((o) => clampHoles(center + o))
+  // Weighting is preserved among the survivors when we drop the repeat.
+  const pool =
+    prevCount !== null && counts.some((c) => c !== prevCount)
+      ? counts.filter((c) => c !== prevCount)
+      : counts
+  return pool[Math.floor(rng() * pool.length)]
 }
 
 // ─── Episode length ────────────────────────────────────────────────────────────

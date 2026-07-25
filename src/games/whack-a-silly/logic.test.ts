@@ -24,7 +24,6 @@ import {
   gapForSkill,
   initialWhackSkill,
   isConfettiBop,
-  levelForBops,
   phaseFor,
   planSpawn,
   registerCatch,
@@ -377,14 +376,7 @@ describe('spawn plan timing', () => {
   })
 })
 
-describe('levels', () => {
-  it('passes one level per bop, starting at 1', () => {
-    expect(levelForBops(0)).toBe(1)
-    expect(levelForBops(1)).toBe(2)
-    expect(levelForBops(9)).toBe(10)
-    expect(levelForBops(-5)).toBe(1) // defensive: never below level 1
-  })
-
+describe('confetti beat', () => {
   it('keeps the confetti on its own every-10 beat, decoupled from levels', () => {
     expect(isConfettiBop(CONFETTI_EVERY_BOPS - 1)).toBe(false)
     expect(isConfettiBop(CONFETTI_EVERY_BOPS)).toBe(true)

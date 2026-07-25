@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   BALLOON_COLORS,
   BALLOON_SHAPES,
-  CELEBRATION_EVERY_ROUNDS,
   DICE_LAYOUTS,
   FAST_ROUND_MS,
   MATCH_ESCAPES_BEFORE_EASE,
@@ -24,7 +23,6 @@ import {
   distractorValues,
   dotPositions,
   isSkyCelebration,
-  levelFor,
   maxTargetFor,
   nextColorIndex,
   pickTask,
@@ -480,20 +478,6 @@ describe('target progression', () => {
         prev = round.target
       }
     }
-  })
-})
-
-describe('levels', () => {
-  it('passes one level per solved round, starting at 1', () => {
-    expect(levelFor(0)).toBe(1)
-    expect(levelFor(1)).toBe(2)
-    expect(levelFor(7)).toBe(8)
-  })
-
-  it('moves independently of the rainbow beat (pure animation every 5)', () => {
-    expect(levelFor(CELEBRATION_EVERY_ROUNDS)).toBe(CELEBRATION_EVERY_ROUNDS + 1)
-    expect(isSkyCelebration(CELEBRATION_EVERY_ROUNDS)).toBe(true)
-    expect(isSkyCelebration(CELEBRATION_EVERY_ROUNDS - 1)).toBe(false)
   })
 })
 

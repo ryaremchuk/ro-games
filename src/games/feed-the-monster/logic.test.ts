@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   ACTIVE_POOL_SIZE,
   COLOR_HEX,
+  DUO_MIN_GAP,
+  DUO_MIN_SKILL,
   FAST_ROUND_MS,
   FOODS,
   KIND_HISTORY,
@@ -17,12 +19,13 @@ import {
   countTargetRange,
   dotsTargetRange,
   foodById,
+  generateDuoRound,
   generateRound,
   grayedBubbleItems,
   isRoundComplete,
-  levelForRound,
   pickTaskKind,
   requestTotal,
+  shouldInjectDuo,
   unlockedKinds,
   updateSkill,
   wantsFood,
@@ -496,10 +499,70 @@ describe('dynamic generation', () => {
   })
 })
 
-describe('levels', () => {
-  it('passes one level per fed round', () => {
-    expect(levelForRound(1)).toBe(1)
-    expect(levelForRound(7)).toBe(7)
-    expect(levelForRound(0)).toBe(1) // defensive: never below level 1
+describe('duo bonus round', () => {
+  it('builds two distinct foods and a shared tray that satisfies both mouths', () => {
+    for (const seed of SEEDS) {
+      for (const skill of SKILLS) {
+        const rng = mulberry32(seed * 31 + skill)
+        const duo = generateDuoRound({ round: seed, skill }, rng)
+        const leftFood = duo.left.entries[0].foodId
+        const rightFood = duo.right.entries[0].foodId
+
+        // Distinct foods → every tray item belongs to at most one mouth.
+        expect(leftFood).not.toBe(rightFood)
+        expect(duo.tray).toHaveLength(TRAY_SIZE)
+
+        // Each side is independently satisfiable from the shared tray, and no
+        // tray food is wanted by BOTH mouths (no ambiguous drop).
+        expect(simulateFeed(duo.left, duo.tray)).toBe(true)
+        expect(simulateFeed(duo.right, duo.tray)).toBe(true)
+        for (const id of duo.tray) {
+          const wantedByLeft = wantsFood(duo.left, [], id)
+          const wantedByRight = wantsFood(duo.right, [], id)
+          expect(wantedByLeft && wantedByRight).toBe(false)
+        }
+      }
+    }
+  })
+
+  it('keeps duo counts small (the sorting is the challenge, not big numbers)', () => {
+    for (const seed of SEEDS) {
+      for (const skill of SKILLS) {
+        const duo = generateDuoRound({ round: seed, skill }, mulberry32(seed + skill * 7))
+        for (const side of [duo.left, duo.right]) {
+          expect(side.entries[0].count).toBeGreaterThanOrEqual(1)
+          expect(side.entries[0].count).toBeLessThanOrEqual(3)
+        }
+      }
+    }
+  })
+
+  describe('injection axis (data + chance)', () => {
+    const base = { skill: SKILL_MAX, roundsSinceLastDuo: 99, struggling: false, slotsLeft: 5 }
+    const never = () => 0.99
+    const always = () => 0
+
+    it('gates on episode slots, competence, struggle and spacing', () => {
+      // Eligible + a winning roll → yes.
+      expect(shouldInjectDuo(base, always)).toBe(true)
+      // A duo needs two free slots.
+      expect(shouldInjectDuo({ ...base, slotsLeft: 1 }, always)).toBe(false)
+      // Too early on the meter — let the basics land first.
+      expect(shouldInjectDuo({ ...base, skill: DUO_MIN_SKILL - 1 }, always)).toBe(false)
+      // Don't pile two goals on a struggling child.
+      expect(shouldInjectDuo({ ...base, struggling: true }, always)).toBe(false)
+      // Never back-to-back.
+      expect(shouldInjectDuo({ ...base, roundsSinceLastDuo: DUO_MIN_GAP - 1 }, always)).toBe(false)
+    })
+
+    it('is chance-gated even when fully eligible (anti-drought ramp)', () => {
+      expect(shouldInjectDuo(base, never)).toBe(false) // eligible, but the roll loses
+      // Just past the gap the chance is low; far past it, high — so a losing
+      // roll at the gap can still be a winning roll much later.
+      const nearGap = { ...base, roundsSinceLastDuo: DUO_MIN_GAP }
+      const roll = () => 0.5
+      expect(shouldInjectDuo(nearGap, roll)).toBe(false)
+      expect(shouldInjectDuo({ ...base, roundsSinceLastDuo: 99 }, roll)).toBe(true)
+    })
   })
 })

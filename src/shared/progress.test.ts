@@ -7,6 +7,7 @@ import {
   saveData,
   saveSkill,
   sessionStart,
+  subscribeProgress,
   WARMUP_DROP,
 } from './progress'
 
@@ -126,5 +127,31 @@ describe('progress storage', () => {
     addStars('g')
     addStars('g')
     expect(getStars('g')).toBe(2)
+  })
+})
+
+describe('subscribeProgress', () => {
+  it('notifies on a game save and stops after unsubscribe', () => {
+    const seen = vi.fn()
+    const unsubscribe = subscribeProgress('g', seen)
+
+    addStars('g')
+    saveSkill('g', { motor: 3 })
+    saveData('g', { episode: 1 })
+    expect(seen).toHaveBeenCalledTimes(3)
+
+    unsubscribe()
+    addStars('g')
+    expect(seen).toHaveBeenCalledTimes(3)
+  })
+
+  it('only fires for the game that changed', () => {
+    const seen = vi.fn()
+    const unsubscribe = subscribeProgress('g', seen)
+
+    addStars('other')
+    expect(seen).not.toHaveBeenCalled()
+
+    unsubscribe()
   })
 })

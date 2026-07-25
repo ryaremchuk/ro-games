@@ -1,84 +1,79 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { clearLevel, getLevel, initLevel, reportLevel, subscribeLevel } from './level'
+import { levelFor, setLevelHidden, subscribeLevel, visibleLevel } from './level'
 import { addStars, resetProgressMemory } from './progress'
 
 afterEach(() => {
-  clearLevel()
+  setLevelHidden(false)
   resetProgressMemory()
   localStorage.clear()
 })
 
-describe('shared level store', () => {
-  it('starts hidden and carries reported levels', () => {
-    clearLevel()
-    expect(getLevel()).toBeNull()
-    reportLevel(1)
-    expect(getLevel()).toBe(1)
-    reportLevel(7)
-    expect(getLevel()).toBe(7)
-    clearLevel()
-    expect(getLevel()).toBeNull()
+describe('shared level', () => {
+  it('is the single formula level = stars + 1 (fresh game is level 1)', () => {
+    expect(levelFor('demo')).toBe(1)
+    addStars('demo') // one level passed
+    expect(levelFor('demo')).toBe(2)
+    addStars('demo', 8) // eight more
+    expect(levelFor('demo')).toBe(10)
   })
 
-  it('normalizes bad input to a sane 1-based integer', () => {
-    reportLevel(0)
-    expect(getLevel()).toBe(1)
-    reportLevel(-3)
-    expect(getLevel()).toBe(1)
-    reportLevel(2.9)
-    expect(getLevel()).toBe(2)
+  it('is per-game — one game does not move another', () => {
+    addStars('a', 3)
+    expect(levelFor('a')).toBe(4)
+    expect(levelFor('b')).toBe(1)
   })
 
-  it('notifies subscribers only on actual changes', () => {
-    const seen = vi.fn()
-    const unsubscribe = subscribeLevel(seen)
-
-    reportLevel(2)
-    reportLevel(2) // no-op
-    reportLevel(3)
-    clearLevel()
-    clearLevel() // no-op
-
-    expect(seen.mock.calls.map(([level]) => level)).toEqual([2, 3, null])
-    unsubscribe()
-    reportLevel(9)
-    expect(seen).toHaveBeenCalledTimes(3)
+  it('is the SAME number the launcher tile and the in-game badge read', () => {
+    // Both surfaces derive from levelFor, so they can never disagree: whatever
+    // the tile shows (levelFor) equals the visible badge (visibleLevel).
+    addStars('demo', 89)
+    expect(levelFor('demo')).toBe(90)
+    expect(visibleLevel('demo')).toBe(90)
   })
 
-  it('resumes the badge from the saved star trophy (persists across sessions)', () => {
-    // Prior sessions banked 10 stars = 10 levels passed.
-    addStars('demo', 10)
-
-    initLevel('demo')
-    reportLevel(1) // fresh session starts at session-level 1
-    expect(getLevel()).toBe(11) // 10 baseline + 1
-
-    reportLevel(3) // passed two more levels this session
-    expect(getLevel()).toBe(13)
-  })
-
-  it('snapshots the baseline so a star banked mid-session is not double-counted', () => {
+  it('hides the badge when suppressed, and restores it', () => {
     addStars('demo', 4)
-    initLevel('demo')
-    reportLevel(1)
-    expect(getLevel()).toBe(5)
-
-    // A star banked now (level passed) grows the trophy...
-    addStars('demo')
-    // ...but the badge tracks the SESSION level against the startup snapshot,
-    // so the next reported level is 6, not 7.
-    reportLevel(2)
-    expect(getLevel()).toBe(6)
+    expect(visibleLevel('demo')).toBe(5)
+    setLevelHidden(true)
+    expect(visibleLevel('demo')).toBeNull()
+    setLevelHidden(false)
+    expect(visibleLevel('demo')).toBe(5)
   })
 
-  it('drops the baseline on clear so the next game starts clean', () => {
-    addStars('demo', 5)
-    initLevel('demo')
-    reportLevel(1)
-    expect(getLevel()).toBe(6)
+  it('notifies subscribers when the game banks a star', () => {
+    const seen = vi.fn()
+    const unsubscribe = subscribeLevel('demo', seen)
 
-    clearLevel() // game unmounts
-    reportLevel(1) // a game that never called initLevel
-    expect(getLevel()).toBe(1)
+    addStars('demo')
+    expect(seen).toHaveBeenCalledTimes(1)
+    expect(visibleLevel('demo')).toBe(2)
+
+    unsubscribe()
+    addStars('demo')
+    expect(seen).toHaveBeenCalledTimes(1) // no longer listening
+  })
+
+  it('notifies subscribers when the badge is hidden or shown', () => {
+    const seen = vi.fn()
+    const unsubscribe = subscribeLevel('demo', seen)
+
+    setLevelHidden(true)
+    setLevelHidden(true) // no-op, same value
+    setLevelHidden(false)
+    expect(seen).toHaveBeenCalledTimes(2)
+
+    unsubscribe()
+    setLevelHidden(true)
+    expect(seen).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not cross-notify between games', () => {
+    const seenA = vi.fn()
+    const unsubscribe = subscribeLevel('a', seenA)
+
+    addStars('b') // a different game
+    expect(seenA).not.toHaveBeenCalled()
+
+    unsubscribe()
   })
 })

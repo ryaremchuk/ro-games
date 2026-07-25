@@ -1,74 +1,67 @@
 /**
- * Shared game-level store. Every game reports its current SESSION level here
- * (1-based, resets each visit); GameFrame renders the standardized level badge
- * (the ⭐ next to the home button).
+ * The single source of truth for a game's visible "level".
  *
- * Games own their level RULES (what counts as leveling up lives in each game's
- * logic.ts); this module only carries the current value to the badge — and
- * adds the persisted baseline so the number the child sees survives restarts.
+ * ONE formula, ONE store, read by BOTH surfaces — the in-game badge (GameFrame)
+ * and the launcher tile (HomePage) — so the number can never disagree:
  *
- * PERSISTENCE. Every level a child passes banks exactly one reward star (see
- * each game's logic.ts + shared/progress.ts), so the total stars ever earned
- * equals the levels passed in prior sessions. A game calls initLevel(gameId)
- * at startup to load that total as the baseline; the badge then shows
- * `baseline + sessionLevel`, i.e. the count keeps climbing across sessions
- * instead of restarting at 1. The baseline is a snapshot taken at startup, so
- * stars banked mid-session grow the trophy without double-counting the badge.
+ *     level(gameId) = stars(gameId) + 1
+ *
+ * Every game banks exactly one reward star per level passed (shared/progress.ts
+ * — addStars on each celebration beat), so `stars` is "levels completed" and
+ * the level is the one the child is CURRENTLY on: a fresh game is level 1, and
+ * the number climbs by one the instant a level is passed. It is derived live
+ * from the observable star store (subscribeProgress), so both surfaces update
+ * together with no per-game reporting — a game just plays and banks stars.
  *
  * Pure module state + subscribers — no DOM, no React — so it is unit-testable
  * and callable from React components and Phaser scenes alike.
  */
 
-import { getStars } from './progress'
+import { getStars, subscribeProgress } from './progress'
 
-export type LevelListener = (level: number | null) => void
-
-let currentLevel: number | null = null
 /**
- * Levels passed in PRIOR sessions, snapshotted from the persistent star
- * trophy at startup (initLevel). 0 until a game calls initLevel().
+ * The level a game is currently on: levels completed (banked stars) + 1. Fresh
+ * game → 1. This is the ONLY definition of "level"; every surface reads it.
  */
-let baseline = 0
-const listeners = new Set<LevelListener>()
-
-function emit(): void {
-  for (const listener of listeners) listener(currentLevel)
-}
-
-/** Current level (baseline + session level), or null when no game reported one. */
-export function getLevel(): number | null {
-  return currentLevel
+export function levelFor(gameId: string): number {
+  return getStars(gameId) + 1
 }
 
 /**
- * Seed the badge from a game's saved progress so a returning child continues
- * their level count instead of restarting at 1. Call once at game startup,
- * BEFORE the first reportLevel(). The baseline is snapshotted here (not read
- * live), so stars banked later this session grow the trophy without inflating
- * the badge twice.
+ * Badge suppression for special non-play modes (e.g. slingshot's authoring
+ * editor). Global, reset to visible whenever a game mounts (see GameFrame), so
+ * one game leaving it hidden can never leak the badge state into the next.
  */
-export function initLevel(gameId: string): void {
-  baseline = getStars(gameId)
+let hidden = false
+const hiddenListeners = new Set<() => void>()
+
+/** Hide/show the badge for the current game. Emits only on an actual change. */
+export function setLevelHidden(value: boolean): void {
+  if (value === hidden) return
+  hidden = value
+  for (const listener of hiddenListeners) listener()
 }
 
-/** Report the game's current SESSION level (1-based). No-op if unchanged. */
-export function reportLevel(level: number): void {
-  const next = baseline + Math.max(1, Math.floor(level))
-  if (next === currentLevel) return
-  currentLevel = next
-  emit()
+/**
+ * The number to render on the badge for a game, or null when the badge should
+ * be hidden (suppressed mode). Both inputs — the star count and the hidden flag
+ * — are covered by subscribeLevel below.
+ */
+export function visibleLevel(gameId: string): number | null {
+  return hidden ? null : levelFor(gameId)
 }
 
-/** Hide the badge and drop the baseline — called when a game unmounts. */
-export function clearLevel(): void {
-  baseline = 0
-  if (currentLevel === null) return
-  currentLevel = null
-  emit()
-}
-
-/** Subscribe to level changes; returns the unsubscribe function. */
-export function subscribeLevel(listener: LevelListener): () => void {
-  listeners.add(listener)
-  return () => listeners.delete(listener)
+/**
+ * Subscribe to everything the badge depends on for a game: its star count and
+ * the hidden flag. Returns the unsubscribe function. Shaped for
+ * useSyncExternalStore (the callback takes no args; the consumer re-reads
+ * visibleLevel()).
+ */
+export function subscribeLevel(gameId: string, listener: () => void): () => void {
+  const unsubscribeProgress = subscribeProgress(gameId, listener)
+  hiddenListeners.add(listener)
+  return () => {
+    unsubscribeProgress()
+    hiddenListeners.delete(listener)
+  }
 }

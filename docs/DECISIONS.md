@@ -120,20 +120,21 @@ should re-teach gently.
   round — speed must not pile onto struggle. Games with one real skill (Odd
   One Out's category ladder) persist a single axis; the store is
   axis-name-agnostic.
-- **Stars are the persistent trophy — and the level badge resumes from them.**
-  One uniform rule across every game: passing a level (each game's own unit —
-  a solved round, a bopped critter, a cleared board, a freed piggy level) ticks
-  the badge +1 AND banks one forever-star on the launcher tile. The badge used
-  to reset to 1 each visit; now `shared/level.initLevel(gameId)` seeds it from
-  the saved star total at startup, so the number the child sees keeps climbing
-  across sessions instead of restarting (1 star → play 10 levels → 11 → close
-  the app → come back → still 11, and up from there). This works precisely
-  because "stars earned" and "levels passed" are the same count — one star per
-  level in every game — so the star trophy IS the badge's baseline. The
-  baseline is **snapshotted at startup**, not read live, so a star banked
-  mid-session grows the trophy without double-counting the badge. Stars never
-  reset and big counts are deliberate. Celebrations (rainbow, sparkles,
-  confetti) are pure animations on their own per-game beats
+- **Stars are the persistent trophy — and the level IS the stars, derived, one
+  source.** One uniform rule across every game: passing a level (each game's own
+  unit — a solved round, a bopped critter, a cleared board, a freed piggy level)
+  banks one forever-star via `addStars()`. The visible level is not stored
+  anywhere separately — `shared/level.ts` derives `levelFor(gameId) = stars + 1`
+  and BOTH surfaces (the in-game badge and the launcher tile) read that one
+  expression, so the number is identical everywhere and keeps climbing across
+  sessions (1 star → play 10 levels → level 11 → close → come back → still 11,
+  up from there). An earlier design split this into two computations — the tile
+  showed `stars`, the badge showed a startup-snapshotted `baseline + session
+level` — which drifted apart (tile 90, badge 89). Collapsing to a single
+  derived value fixed that by construction: there is now nothing to disagree.
+  The star store is observable (`subscribeProgress`), so banking a star updates
+  the badge live. Stars never reset and big counts are deliberate. Celebrations
+  (rainbow, sparkles, confetti) are pure animations on their own per-game beats
   (`CELEBRATION_EVERY_*` constants) — they gate nothing, and games without one
   don't get one. Rewarding effort rather than skill keeps the economy fair: a
   child at the skill ceiling earns stars at the same rate as one still

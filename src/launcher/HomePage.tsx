@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import type React from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { games } from '../games/registry'
-import { getStars } from '../shared/progress'
+import { levelFor } from '../shared/level'
 import './HomePage.css'
 
 // Every launcher image as a hashed, base-aware URL — same idiom the games use
@@ -134,22 +134,25 @@ export default function HomePage() {
 
       <div className="home-grid" style={{ '--rows': rows } as React.CSSProperties}>
         {games.map((game) => {
-          // Persistent reward stars (shared/progress.ts) — the one number
-          // that only ever grows; fresh on every visit since navigating
-          // back home remounts this page.
-          const stars = getStars(game.id)
+          // The SAME level the in-game badge shows (shared/level.ts —
+          // level = stars + 1). Shown once the child has passed a level
+          // (level > 1) so a fresh launcher stays uncluttered; free-play
+          // games (no `leveled`) never carry it. Fresh on every visit since
+          // navigating back home remounts this page.
+          const level = game.leveled ? levelFor(game.id) : 1
+          const showLevel = game.leveled && level > 1
           return (
             <Link
               key={game.id}
               to={game.path}
               className="home-tile"
-              aria-label={stars > 0 ? `${game.title}, ${stars} stars earned` : game.title}
+              aria-label={showLevel ? `${game.title}, level ${level}` : game.title}
             >
               <img className="home-tile-cover" src={art(`cover-${game.id}`)} alt="" aria-hidden />
-              {stars > 0 && (
+              {showLevel && (
                 <span className="home-tile-stars" aria-hidden>
                   <span className="home-tile-stars-icon">⭐</span>
-                  {stars}
+                  {level}
                 </span>
               )}
             </Link>

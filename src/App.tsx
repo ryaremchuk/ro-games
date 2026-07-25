@@ -29,7 +29,7 @@ export default function App() {
               key={game.id}
               path={game.path}
               element={
-                <GameFrame title={game.title}>
+                <GameFrame title={game.title} gameId={game.leveled ? game.id : undefined}>
                   {/* Per-route Suspense: router navigations run in a transition,
                       which keeps the previous screen visible instead of showing
                       a shared top-level fallback. A boundary that mounts WITH

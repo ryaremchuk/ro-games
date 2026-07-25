@@ -611,6 +611,109 @@ export function generateRound(context: RoundContext, rng: Rng = Math.random): Ro
   return { round: context.round, taskKind, request, tray: generateTray(request, pool, rng) }
 }
 
+// ─── Duo bonus round (the second axis: data + chance) ─────────────────────────
+//
+// A duo round stands TWO little friends side by side, each wanting its own food,
+// fed from ONE shared tray (see journey.DUO_GROW_STEPS). It is picked by its own
+// axis — data (skill / struggle / episode slots left) + chance — layered on top
+// of the meter-driven single-monster rounds, never by the meter itself.
+
+/** One duo friend's request: a count of a single, distinct food (feed THIS to
+ * the bunny, THAT to the frog). Kept simple on purpose — the challenge of a duo
+ * is SORTING between two mouths, not a compound task per mouth. */
+export interface DuoRound {
+  round: number
+  kind: 'duo'
+  left: CountRequest
+  right: CountRequest
+  /** One shared tray that satisfies both sides, plus distractors. */
+  tray: string[]
+}
+
+/** Per-side count for a duo — small (the duo is only three rounds, and the
+ * sorting between two mouths is the point, not big numbers). */
+export function duoSideCount(skill: number): { min: number; max: number } {
+  return clampSkill(skill) < 6 ? { min: 1, max: 2 } : { min: 2, max: 3 }
+}
+
+function duoSideRequest(foodId: string, skill: number, rng: Rng): CountRequest {
+  const { min, max } = duoSideCount(skill)
+  return { kind: 'count', entries: [{ foodId, count: randInt(rng, min, max) }] }
+}
+
+/**
+ * Build a duo round: two DISTINCT foods (one per friend) so every tray item
+ * belongs unambiguously to one mouth, small counts, and a shared tray that holds
+ * exactly both requests plus other-food distractors (never either wanted food).
+ */
+export function generateDuoRound(
+  context: { round: number; skill: number; foods?: readonly Food[] },
+  rng: Rng = Math.random,
+): DuoRound {
+  const skill = clampSkill(context.skill)
+  const pool = activePoolForRound(context.round, context.foods ?? FOODS)
+  const leftFood = pickOne(rng, pool)
+  const rightFood = pickOne(
+    rng,
+    pool.filter((f) => f.id !== leftFood.id),
+  )
+  const left = duoSideRequest(leftFood.id, skill, rng)
+  const right = duoSideRequest(rightFood.id, skill, rng)
+
+  const tray: string[] = []
+  for (const entry of [...left.entries, ...right.entries]) {
+    for (let i = 0; i < entry.count; i++) tray.push(entry.foodId)
+  }
+  const wanted = new Set([leftFood.id, rightFood.id])
+  const distractors = pool.filter((f) => !wanted.has(f.id))
+  while (tray.length < TRAY_SIZE) tray.push(pickOne(rng, distractors).id)
+  return { round: context.round, kind: 'duo', left, right, tray: shuffle(rng, tray) }
+}
+
+// Injection axis dials — tuned so a duo lands roughly once an episode, sooner
+// and more often for a child who is cruising, never for one who is struggling.
+/** Below this meter value the child is still learning the basics — no duos yet. */
+export const DUO_MIN_SKILL = 2
+/** Never two duos within this many rounds (no back-to-back bonus). */
+export const DUO_MIN_GAP = 3
+/** Base injection chance once eligible… */
+export const DUO_BASE_CHANCE = 0.18
+/** …rising each further round since the last duo (anti-drought)… */
+export const DUO_RAMP = 0.09
+/** …capped here. */
+export const DUO_MAX_CHANCE = 0.7
+
+/** Everything the duo axis weighs — the game's DATA, not the round number. */
+export interface DuoContext {
+  /** Adaptive meter (competence gate). */
+  skill: number
+  /** Rounds since the last duo (large if never) — drives the anti-drought ramp. */
+  roundsSinceLastDuo: number
+  /** Did the last round ease the meter (≥2 spit-backs)? Then don't pile on. */
+  struggling: boolean
+  /** Episode slots left (FRIENDS_PER_EPISODE − friendsFed); a duo fills two. */
+  slotsLeft: number
+}
+
+/**
+ * The new axis: should the NEXT round be a two-friend duo bonus? Gated on
+ * competence (skill up, not currently struggling) and pacing (≥2 slots left,
+ * never back-to-back), then a chance that ramps the longer it's been — so a duo
+ * reads as an earned, well-spaced treat, not a random difficulty spike. Pure +
+ * seedable; the scene feeds it live data and Math.random.
+ */
+export function shouldInjectDuo(ctx: DuoContext, rng: Rng): boolean {
+  if (ctx.slotsLeft < 2) return false
+  if (clampSkill(ctx.skill) < DUO_MIN_SKILL) return false
+  if (ctx.struggling) return false
+  if (ctx.roundsSinceLastDuo < DUO_MIN_GAP) return false
+  const chance = Math.min(
+    DUO_MAX_CHANCE,
+    DUO_BASE_CHANCE + DUO_RAMP * (ctx.roundsSinceLastDuo - DUO_MIN_GAP),
+  )
+  return rng() < chance
+}
+
 // ─── Feeding rules ───────────────────────────────────────────────────────────
 
 function eatenCountOf(eaten: readonly string[], foodId: string): number {
@@ -735,13 +838,4 @@ export function grayedBubbleItems(request: FoodRequest, eaten: readonly string[]
     case 'pattern':
       return [...request.sequence.map(() => false), isRoundComplete(request, eaten)]
   }
-}
-
-// ─── Levels (reward rhythm, decoupled from the meter) ────────────────────────
-// Celebration beats live on the journey (friend grown / dance party) — see
-// journey.ts. Levels stay per-round: steady badge + star rhythm.
-
-/** 1-based HUD level = the current round: every fed round passes a level. */
-export function levelForRound(round: number): number {
-  return Math.max(round, 1)
 }

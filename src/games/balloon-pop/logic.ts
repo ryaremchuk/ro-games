@@ -218,16 +218,6 @@ export function distractorValues(target: number, stage: Stage): number[] {
 /** Every 5 correct rounds: rainbow-and-stars sky celebration (+ one star). */
 export const CELEBRATION_EVERY_ROUNDS = 5
 
-/**
- * 1-based level shown on the HUD badge: every solved round passes a level.
- * Levels are a REWARD rhythm, deliberately independent of the adaptive skill
- * meters AND of the rainbow (which is pure animation on its every-5 beat):
- * the badge always moves forward, one step per round.
- */
-export function levelFor(roundsCompleted: number): number {
-  return roundsCompleted + 1
-}
-
 // ─── Task registry ───────────────────────────────────────────────────────────
 
 export type BalloonKind = 'dots' | 'numeral'
