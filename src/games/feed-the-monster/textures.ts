@@ -178,6 +178,11 @@ const THIEF_H_CSS = 108
  * The three thief frames on one shared canvas and one shared anchor:
  * `ftm-thief-fly-up` / `-fly-down` (alternate for flight) and `-perch` (standing,
  * head down, beak forward mid-peck).
+ *
+ * FALLBACK ONLY now: `art/thief-*.png` ship, so thiefMode.frameKey picks the
+ * sprites through the usual hasArt() contract and these shapes are what a player
+ * sees before the art loads. Keep the three poses and the shared anchor in step
+ * with the sprites — the same display box is force-fit onto whichever wins.
  */
 function buildThiefFrames(scene: Phaser.Scene, px: (css: number) => number): void {
   const w = px(THIEF_W_CSS)

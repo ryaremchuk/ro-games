@@ -59,9 +59,6 @@ type Phase = 'telegraph' | 'approach' | 'peck' | 'leaving'
 
 /** Wing-flap frame interval while gliding. */
 const FLAP_MS = 150
-/** Visitor footprint in CSS px. Comfortably bigger than a food, on purpose. */
-const VISITOR_W_CSS = 124
-const VISITOR_H_CSS = 104
 /** How far off screen (right) and above the plate the glide starts, in CSS px. */
 const ENTRY_X_CSS = 120
 const ENTRY_RISE_CSS = 200
@@ -110,13 +107,18 @@ const SHADOW_ALPHA_LOW = 0.34
 const SHADOW_ALPHA_HIGH = 0.05
 
 /**
- * Where the claws are, as an offset from the bird's centre in CSS px — read off
- * the art (textures.ts): the body centre sits at 0.54 h and the legs run from
- * 0.7 to 1.5 bodyR below it, so ~34 CSS px down hangs the food under the belly,
- * and ~6 back from centre puts it at the legs rather than out on the beak.
+ * Where the claws are, as an offset from the bird's centre in CSS px — MEASURED
+ * off the shipped sprites (`art/thief-*.png`), by finding each frame's orange
+ * foot pixels and taking their centroid at display size. All three frames agree
+ * to within ~2 px vertically because they share one body anchor, which is why a
+ * single pair of constants can serve the flap pair and the perch alike.
+ *
+ * The procedural fallback (textures.ts) hangs its legs a few px lower and further
+ * back, so without art the food rides slightly high on the belly — harmless on a
+ * path that only runs before the sprites load.
  */
-const CLAW_DX_CSS = -6
-const CLAW_DY_CSS = 34
+const CLAW_DX_CSS = 2
+const CLAW_DY_CSS = 36
 /** A food held up in the air reads slightly smaller than one on a plate. */
 const CARRIED_SCALE = 0.8
 
@@ -281,7 +283,7 @@ export class ThiefMode {
   private fitVisitor(): void {
     const bird = this.bird
     if (!bird) return
-    bird.setDisplaySize(this.px(VISITOR_W_CSS), this.px(VISITOR_H_CSS))
+    bird.setDisplaySize(this.px(layout.VISITOR_W_CSS), this.px(layout.VISITOR_H_CSS))
     const shape = new Phaser.Geom.Circle(
       bird.frame.width / 2,
       bird.frame.height / 2,

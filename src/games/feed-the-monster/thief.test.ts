@@ -13,6 +13,7 @@ import {
   updateThiefSkill,
 } from './thief'
 import type { PlateCandidate } from './thief'
+import { VISITOR_H_CSS, VISITOR_W_CSS } from './layout'
 import { SKILL_MAX } from './logic'
 import type { Rng } from './logic'
 
@@ -223,5 +224,44 @@ describe('which plate', () => {
     const target = pickTarget([plate(7, 'donut', false)], () => 0.999999)!
     expect(target.slot).toBe(7)
     expect(target.foodId).toBe('donut')
+  })
+})
+
+// The bird's three frames are swapped into ONE display box (thiefMode.fitVisitor
+// force-fits VISITOR_W×H_CSS), so the sprites only hold still if they were cut to a
+// COMMON canvas rather than trimmed per frame. Get that wrong and the bird both
+// restretches and jumps every FLAP_MS — a 150 ms flicker that is easy to ship and
+// hard to spot in a screenshot. The PNG IHDR is enough to pin it.
+describe('the thief sprites', () => {
+  const FRAMES = ['thief-fly-up', 'thief-fly-down', 'thief-perch']
+
+  // Pulled in through Vite's asset pipeline as base64 data URIs rather than with
+  // node:fs: `src` is typechecked with browser-only types on purpose (so nothing
+  // in a game can reach for the filesystem), and `?inline` keeps this spec inside
+  // that surface. Test-only — the game itself loads these by URL (see art.ts).
+  const INLINED = import.meta.glob('./art/thief-*.png', {
+    query: '?inline',
+    import: 'default',
+    eager: true,
+  }) as Record<string, string>
+
+  function pngSize(name: string): { w: number; h: number } {
+    const uri = INLINED[`./art/${name}.png`]
+    expect(uri, `art/${name}.png is missing`).toBeTruthy()
+    const bytes = Uint8Array.from(atob(uri.slice(uri.indexOf(',') + 1)), (c) => c.charCodeAt(0))
+    // IHDR is the first chunk: 8-byte signature, 4 length, 4 type, then w/h as BE u32.
+    const u32 = (at: number) =>
+      (bytes[at] << 24) | (bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3]
+    return { w: u32(16), h: u32(20) }
+  }
+
+  it('all share one canvas, so a wing swap cannot resize or shift the bird', () => {
+    const sizes = FRAMES.map(pngSize)
+    for (const size of sizes) expect(size).toEqual(sizes[0])
+  })
+
+  it('is authored at the aspect of the box it is drawn into, so nothing stretches', () => {
+    const { w, h } = pngSize(FRAMES[0])
+    expect(w / h).toBeCloseTo(VISITOR_W_CSS / VISITOR_H_CSS, 2)
   })
 })

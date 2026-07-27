@@ -202,6 +202,16 @@ export function snapRadius(m: LayoutMetrics): number {
 
 // ─── The visiting thief ──────────────────────────────────────────────────────
 
+/**
+ * A visitor's footprint in CSS px — comfortably bigger than a food, on purpose.
+ *
+ * Every one of the bird's frames is force-fit into this exact box (thiefMode
+ * .fitVisitor), so it doubles as the aspect its art must be authored at: the
+ * sprites are cut to one shared canvas of this shape, and a spec asserts it.
+ */
+export const VISITOR_W_CSS = 124
+export const VISITOR_H_CSS = 104
+
 /** A visitor's tap circle: this share of a tray slot… */
 const VISITOR_TAP_SLOT_FRAC = 0.6
 /**
