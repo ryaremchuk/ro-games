@@ -26,6 +26,12 @@ export interface PixelPadState {
   canvasCss: { x: number; y: number; side: number }
   /** One cell's side in CSS px — how big a block is under a finger. */
   cellCss: number
+  /**
+   * The easel chrome in CSS px, or null when the pad is bare (asked for plain, or
+   * a box too short to wear a frame without shrinking the paper below what a
+   * 3-year-old can hit — see layout.EASEL_MIN_PAPER_CSS).
+   */
+  easel: { border: number; ledge: number; legs: number } | null
 }
 
 export interface PixelPadTestApi {

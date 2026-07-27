@@ -479,6 +479,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       },
       forceCommission: () => {
         if (this.transitioning || this.duoMode.active || this.commission) return false
+        // Needs a LIVE round, like every other mode force: before the first round
+        // is dealt there is still a scheduled startRound in flight, and it would
+        // land on top of the ask (which the announce guard then abandons, leaving
+        // the adult with nothing to look at).
+        if (!this.round) return false
         this.forceCommissionNext = true
         // Re-enter the round start so the gate runs now, not next round.
         this.startRound(this.roundNumber)

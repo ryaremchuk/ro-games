@@ -41,8 +41,8 @@ drops a quiet 1–3 minute making beat into a game that currently has exactly on
 fast rhythm; that variety is the point, and the transition already _is_ a pause
 (dance party) so it lands on an existing seam rather than interrupting a round.
 The real risk is not difficulty but the **off-ramp** — a child can settle into
-the pad and forget the monster — so the friend stays visible and impatient
-behind the pad (peeking, drooling), **done** is the loudest thing on screen, and
+the pad and forget the monster — so the ask keeps pulsing and chirping in the one
+strip the easel leaves uncovered, **done** is the loudest thing on screen, and
 the eat happens immediately with no transition in between. Leaving the pad blank
 costs nothing: the plate fills with an ordinary food and the round proceeds.
 
@@ -92,6 +92,33 @@ At the arrival of the **first friend of an episode**, starting from **episode
 2** — so the child has fed five friends and seen one full dance-party transition
 before the game ever asks them to make something. One per episode, never two.
 
+**The rule, exactly as shipped** (`journey.commissionGate`, and the one place it
+lives). All four must hold:
+
+| Gate              | Condition                                                | Reported as            |
+| ----------------- | -------------------------------------------------------- | ---------------------- |
+| Journey depth     | `episode ≥ COMMISSION_MIN_EPISODE` (1, 0-based)          | `episode`              |
+| Once per episode  | `lastCommissionEpisode < episode`                        | `already-this-episode` |
+| A fresh friend    | `friendsFed === 0 && growthStep === 0`                   | `friend-in-progress`   |
+| Colour to ask for | first unowned in `FoodColor` order, else the oldest slot | —                      |
+
+Whether the ask **names** a colour is separate: it does only from
+`COMMISSION_COLOR_MIN_SKILL` on the cognitive meter (the same value that unlocks
+colour rounds); below it the ask is simply "draw anything".
+
+The gate returns **which rule refused**, and the dev panel prints it live
+(`✏️ DUE red · asks anything · last ep1 · owns 2/6`). That exists because Ros's
+first reaction to the shipped feature was that he could not tell when it fires —
+with a once-per-episode beat, "why has this never happened?" is otherwise
+unanswerable on the device.
+
+> **Open question for the episode redesign.** This cadence — one ask per episode,
+> pinned to the first friend — was chosen so the beat stays special. It has not
+> been judged against a real child yet, and it is the least settled rule in the
+> game. Once episodes are redesigned (conveyor per friend, pot per episode, and
+> so on) the ask should be placed deliberately inside that structure rather than
+> left hanging off the episode boundary.
+
 ### Which colour is asked
 
 **The colour the child does not own yet**, in `FoodColor` order; once all six are
@@ -102,10 +129,13 @@ owned, the oldest slot is refreshed. So the ask has a reason the child can feel
 ### The beat, in order
 
 1. New friend walks in with an **empty plate** instead of a request bubble.
-2. The bubble opens with ✏️ and a **blot of the asked colour**, held for a moment
-   so the colour registers.
-3. The **pad slides up** — 16×16, full palette, one brush, eraser, undo. The
-   friend stays visible above it and gets visibly impatient.
+2. The bubble opens with ✏️ and a **blot of the asked colour**, the friend smacks
+   its lips, and this is held **alone on stage** for `COMMISSION_ANNOUNCE_MS`
+   (1.5 s) — nothing else on screen, nothing to do yet.
+3. Only then does the **easel rise** — 16×16, full palette, one brush, eraser,
+   undo, in a wooden frame with a ledge the finish button rests on. While the
+   child draws, the ask bubble in the uncovered top strip pulses and chirps every
+   few seconds: "still waiting".
 4. **Done** → the pad slides away, the drawing arcs onto the plate, and the
    friend eats it with the celebration turned up (big chomp, confetti, an aura
    pulse a step brighter than a normal feed).
@@ -254,5 +284,27 @@ chomp beats.
 - `BubbleItem` now carries a `foodId` instead of an emoji glyph. The bubble used to
   map the glyph back to an id, which every drawn food would have collided on —
   they all show the same ✏️ fallback.
-- The pad opens as a slide-up panel over the bottom ~80% of the screen, so the
-  friend who asked stays visible and gets visibly impatient above it.
+- The pad opens as a slide-up panel over the bottom ~80% of the screen.
+
+### What the first play on the device changed (2026-07-27)
+
+Ros played it and called this the rawest of the four features: he could not tell
+when it triggers, and the UI was not pretty enough — he asked for the board to be
+wrapped in something like an **easel** so it looks like it belongs in the game.
+
+- **The ask now precedes the easel.** The pad used to open on the same frame as
+  the ask, so the child never saw anybody ask — the easel simply appeared. The
+  friend now has the stage to itself for `COMMISSION_ANNOUNCE_MS`, the same
+  announce-then-play shape the big-bite round uses.
+- **The friend is NOT visible above the pad**, and the old comment claiming it was
+  is gone. An easel big enough to draw on and a friend big enough to read do not
+  both fit on an iPad, let alone a phone. The signal moved instead: the ask bubble
+  lives in the uncovered strip and `requestBubble.nudgeCommission` pulses and
+  chirps it while the child draws. The impatience beat used to call `lickLips()`
+  behind the pad — a signal nobody could see.
+- **The easel belongs to `shared/pixel`**, not here: it is how the pad looks in
+  this app, and the studio route wears it too. See
+  `docs/designs/drawing-pixel-studio.md`.
+- **`forceCommission` now needs a live round**, like every other mode force. Before
+  the first round is dealt there is a scheduled `startRound` in flight, and it
+  landed on top of the ask.

@@ -415,3 +415,39 @@ dogfooding test of the format.
 - Cell sizes as built: ~9 mm on an iPad held landscape, ~6.8 mm portrait (the
   rail's second column costs the canvas some width), ~3.7 mm in iPhone-landscape —
   matching this design's own table, and asserted in `layout.test.ts`.
+
+## The easel (added 2026-07-27)
+
+Ros's first reaction to the shipped pad, in a game context, was that the UI was
+not pretty enough — he asked for the board to be wrapped in **something like an
+easel** so it looks like it belongs in the game. It does now, and the dressing
+lives in `shared/pixel` rather than in either consumer, because it is how this
+app's pad looks: the studio route and the Feed the Monster overlay both wear it,
+and `frame="plain"` is kept for a consumer that genuinely wants only the
+instrument.
+
+**What it is.** A wooden frame around the paper, a ledge under it that the finish
+button rests on, and two splayed legs — three absolutely-positioned divs and no
+assets, painted in the pad's own palette (`#b08968` / `#6b4f3a`), so the easel is
+made of colours the child can also paint with. It sits over a live Phaser canvas
+at 60 fps, so it stays cheap: gradients and shadows, no filters, no blur.
+
+**The rule that keeps it honest: the instrument wins, always.** The easel is paid
+for out of what is left after the pad has been sized, and it degrades in two
+steps rather than shrinking the paper indefinitely:
+
+| Box                                                  | What it gets         | Why                                          |
+| ---------------------------------------------------- | -------------------- | -------------------------------------------- |
+| iPad, either orientation, and the FTM overlay on one | frame + ledge + legs | the paper stays large                        |
+| Anything shorter (iPhone landscape, ~390 tall)       | no easel at all      | a frame there pushes a 16-grid cell to ~2 mm |
+
+Legs come off one step before the frame does (`EASEL_MIN_PAPER_FRAC`), because a
+stubby leg reads as a rendering bug while a board resting on its shelf reads as
+furniture. Below `EASEL_MIN_PAPER_CSS` (16 cells × 18 css px ≈ the ~3 mm floor a
+3-year-old can hit) the whole thing goes, and the fallback is asserted to be
+**exactly** the pad that existed before the easel — same paper, same position.
+
+`layout.test.ts` sweeps every device shape plus the two overlay boxes: the frame,
+ledge and legs are all fully on screen, the frame clears the tool rail (the canvas
+alone clearing it is not enough once it wears a frame), every rail item still
+fits, and the paper is charged something for the frame but never more than 40%.

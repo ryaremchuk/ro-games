@@ -1196,6 +1196,42 @@ test('feed: a commissioned drawing becomes a food and is eaten on the spot', asy
   expect(resumed.drawnFoodIds).toContain(drawnId)
 })
 
+test('feed: the friend asks for a drawing BEFORE the easel arrives', async ({ page }) => {
+  await page.goto('./#/feed-the-monster?e2e')
+  await waitForReady(page)
+  await waitTraySettled(page)
+  await page.evaluate(() => window.__feedTheMonster!.wipeDrawnFoods())
+
+  // The pad is a DOM overlay, so "has it arrived?" is literally "is its hook up?".
+  expect(await page.evaluate(() => window.__pixelPad === undefined)).toBe(true)
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceCommission())).toBe(true)
+
+  // The ASK comes first, alone: the request bubble is showing it, the tray is
+  // cleared, and the easel is nowhere yet. This ordering is the whole point —
+  // opening the pad on the same frame as the ask is what made the beat read as
+  // arbitrary, because the child never saw anybody ask.
+  const asking = await readState(page)
+  expect(asking.commission).not.toBeNull()
+  expect(asking.commission!.phase).toBe('asking')
+  expect(asking.foods, 'nothing to feed — the friend wants something MADE').toHaveLength(0)
+  expect(asking.bubbleTiles, 'the ask is on screen').toBeGreaterThan(0)
+  expect(await page.evaluate(() => window.__pixelPad === undefined)).toBe(true)
+
+  // …and only then does the easel rise.
+  await page.waitForFunction(() => window.__pixelPad !== undefined, undefined, { timeout: 10_000 })
+  const drawing = await readState(page)
+  expect(drawing.commission!.phase).toBe('drawing')
+
+  // It really is an easel, not a bare square: this viewport is an iPad, which is
+  // roomy enough for the full frame + ledge + legs.
+  const pad = await page.evaluate(() => window.__pixelPad!.state())
+  expect(pad.easel, 'the pad wears its frame on an iPad-sized box').not.toBeNull()
+  expect(pad.easel!.border).toBeGreaterThan(0)
+  expect(pad.easel!.ledge).toBeGreaterThan(pad.easel!.border)
+
+  await dismissCommission(page)
+})
+
 test('feed: closing the pad blank costs nothing — the round just proceeds', async ({ page }) => {
   await page.goto('./#/feed-the-monster?e2e')
   await waitForReady(page)

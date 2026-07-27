@@ -361,6 +361,7 @@ export default function PixelPad({
         askColor: askColor ?? null,
         canvasCss: { x: layout.canvasX, y: layout.canvasY, side: layout.side },
         cellCss: cellSize(layout.side, size),
+        easel: layout.easel,
       }),
       paint: (cells) => {
         const edits: CellEdit[] = []
@@ -377,7 +378,17 @@ export default function PixelPad({
     return () => {
       if (window.__pixelPad === api) delete window.__pixelPad
     }
-  }, [exposeTestApi, size, askColor, layout.canvasX, layout.canvasY, layout.side, repaint, done])
+  }, [
+    exposeTestApi,
+    size,
+    askColor,
+    layout.canvasX,
+    layout.canvasY,
+    layout.side,
+    layout.easel,
+    repaint,
+    done,
+  ])
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
