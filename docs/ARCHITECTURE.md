@@ -188,6 +188,20 @@ Cooking is deliberately NOT a mode: `dish` / `dish-ordered` are task kinds in
 `logic.TASK_REGISTRY`, because composition is a cognitive skill and the cognitive
 meter should own it. The pot is just furniture that appears for those kinds.
 
+**Two panels, one per ask.** A kitchen round is the only round that carries two
+instructions, so it draws two task panels and each hangs over the thing it is
+about: the friend's bubble (`requestBubble.ts`, top bar) shows only the finished
+dish — an ordinary one-item request — while the pot carries its own panel with the
+recipe as an equation, `part + part … = dish` (`recipePanel.ts`, owned by
+`kitchenMode`). A non-reader can only tell two instructions apart if they are in
+two places. The recipe panel is keyed off a `Recipe`, never off a round, and its
+progress is driven by the pot's contents, so a pot that later stays on stage across
+rounds is re-tasked with `kitchenMode.setRecipe` and the panel needs no rework.
+`layout.recipePanel` solves where it goes: it hugs the pot on whichever side has
+room (above by default, below when above cannot hold the equation legibly) and
+derives the tile size from the free width beside the friend, so four ingredients
+still read on the narrowest viewport.
+
 ## PWA & hosting
 
 - `vite-plugin-pwa` generates the service worker (autoUpdate) and, via

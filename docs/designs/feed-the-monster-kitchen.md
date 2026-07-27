@@ -66,37 +66,53 @@ familiar spit-back rather than accepting them.
 
 ### The round
 
-1. The bubble shows the **finished dish, large**, with its ingredients in a row
-   underneath.
-2. A **pot** stands on the table between the friend and the tray.
+1. The friend's bubble shows the **finished dish** it wants — an ordinary
+   one-item request ("bring me this").
+2. A **pot** stands on the table between the friend and the tray, carrying its
+   OWN panel with the recipe ("cook this").
 3. Dragging a correct ingredient into the pot: it drops in, steam puffs, the
-   matching picture in the bubble ghosts out — the exact ghosting language the
-   game already uses for counts (`grayedBubbleItems`).
+   matching picture on the pot's panel goes solid and takes a ✓ — the exact
+   ghost→solid language the game already uses for counts.
 4. A wrong ingredient: the pot **spits it back**, same arc-home motion and
    "blegh" beat as the friend's spit-back. Consistency matters more than novelty
    here — the child already knows what that means.
 5. Last ingredient in: a little cook animation (lid rattle, steam burst, a
-   chime), and the finished dish **pops out of the pot** and sits on top of it,
-   draggable.
+   chime), the recipe panel bows out (its job is done, and it frees the pot's
+   airspace), and the finished dish **pops out of the pot** and sits on top of
+   it, draggable.
 6. Drag the dish to the friend → normal eat, normal round completion.
 
 The friend refuses raw ingredients during a kitchen round (spit-back), so there
 is exactly one right thing to do at every moment.
 
-### Recipe representation (no text, no symbols)
+### Recipe representation: two panels, one per ask
 
-No `+` and no `=` — both are abstract for a non-reader. The bubble reads
-top-to-bottom instead:
+**Superseded (2026-07).** Phase one put the whole recipe in the friend's bubble —
+the finished dish big, its parts in a row underneath. That reads as ONE compound
+instruction, and a non-reader cannot tell where "what goes in the pot" ends and
+"what the friend wants" begins. The round now draws **two panels, each hanging
+over the thing it is about**:
 
 ```
-        ┌─────────┐
-        │   🥪    │   ← the finished dish, big
-        └─────────┘
-         🍞 🧀 🍅      ← its parts, in a row, ghosting as each goes in
+                ┌────┐                       ┌──────────────────────────┐
+                │ 🍔 │  ← the friend's ask   │ 🍞 + 🧀 + 🍅 = 🍔 │  ← the pot's ask
+                └────┘     "bring me this"   └──────────────────────────┘
+                  🐰                                     ▼
+                                                        🫕
 ```
 
-The vertical "big thing above, its parts below" arrangement is the same
-whole/parts relationship the picture itself expresses, so it needs no learning.
+`+` and `=` are drawn GLYPHS (`textures.ts`: crossed / stacked rounded bars in a
+quiet slate), never text characters — but they are the only abstract marks in the
+game, and they earn their place: the equation is read aloud as a rising note per
+ingredient landing on a chord, and the panel is tappable to replay it, so the
+relationship is taught by sound and motion before the symbols mean anything.
+
+The panel belongs to the POT (`recipePanel.ts`, owned by `kitchenMode`), keyed off
+a `Recipe` rather than a round, so a pot that later stays on stage for a whole
+friend or episode is simply re-tasked. `layout.recipePanel` hugs it to the pot —
+above it by default, below it when above cannot hold the equation legibly — with a
+tail pointing back at the pot, and derives the tile size from the free width beside
+the friend so four ingredients still read on the narrowest viewport.
 
 ### Order
 
@@ -244,8 +260,12 @@ side benefit.
   through the plate row on a short phone-landscape viewport (caught by the new
   `layout.test.ts` device sweep), so there is also a hard floor keeping its foot
   clear of a plate.
-- The bubble grows to two rows for a kitchen round, and the panel now nudges its
-  own centre down when it is taller than standard — at the shared centre the
-  upper row hung off the top edge.
-- A kitchen round's parts ghost from `kitchenMode`, not from `eaten`: the parts are
-  cooked, never eaten, which is the same reason dots drives its pips directly.
+- The friend's bubble is back to ONE fixed height for every task kind: the recipe
+  moved onto the pot's own panel, so the two-row special case (and the centre nudge
+  that kept its upper row on screen) is gone.
+- A kitchen round's parts go solid from `kitchenMode`, not from `eaten`: the parts
+  are cooked, never eaten, which is the same reason dots drives its pips directly.
+- Where the recipe panel can go is dictated by the FRIEND, not by the pot: on a 4:3
+  portrait iPad a fully-grown friend's equator sits level with the pot and squeezes
+  the air beside it, which is why the panel takes the clear strip under the pot
+  there and the air above the pot on both landscape shapes.

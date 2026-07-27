@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { TRAY_SIZE } from './logic'
-import { FULL_SCALE } from './journey'
+import { FULL_SCALE, GROW_STEPS, scaleForStep } from './journey'
 import {
   beltBandY,
   beltDishPos,
@@ -24,8 +24,7 @@ import {
   recipeCells,
   recipePanel,
   recipeWidthRatio,
-  PANEL_CENTER_Y_CSS,
-  PANEL_H_CSS,
+  panelBottom,
   RECIPE_TILE_CSS,
   VISITOR_TAP_MIN_CSS,
   type LayoutMetrics,
@@ -84,9 +83,7 @@ describe('feed-the-monster layout geometry', () => {
     // Big friend on a short screen: the head would ride up under the panel, so
     // the headroom floor clamps it down instead.
     const big: LayoutMetrics = { ...m, h: 500, bodyR: 200, growth: 1.4 }
-    const headroom =
-      (PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) * big.dpr + big.bodyR * big.growth * 1.35
-    expect(monsterPos(big).y).toBe(headroom)
+    expect(monsterPos(big).y).toBe(panelBottom(big) + big.bodyR * big.growth * 1.35)
   })
 
   it('piles the fed friends into a snug overlapping cluster', () => {
@@ -237,8 +234,7 @@ describe('the pot’s recipe panel', () => {
           it('never overlaps the friend’s request bar at the top', () => {
             // The friend's bar is a FIXED-height band across the top centre; the
             // recipe panel has to live entirely below it.
-            const barBottom = (PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) * d.dpr
-            expect(top).toBeGreaterThan(barBottom)
+            expect(top).toBeGreaterThan(panelBottom(d))
           })
 
           it('never overlaps the friend, even at FULL_SCALE', () => {
@@ -305,17 +301,42 @@ describe('the pot’s recipe panel', () => {
         })
       }
 
-      it('puts every recipe length on the SAME side of the pot', () => {
-        // Which side wins is a property of the device shape (the friend's
-        // silhouette), not of the recipe — so the child never hunts for the panel.
-        const sides = new Set(INGREDIENTS.map((n) => recipePanel(d, n).below))
-        expect(sides.size).toBe(1)
-      })
-
       it('grows the panel with the recipe, one line at a time', () => {
         const w = INGREDIENTS.map((n) => recipePanel(d, n).w)
         expect(w[1]).toBeGreaterThan(w[0])
         expect(w[2]).toBeGreaterThan(w[1])
+      })
+
+      it('stays legible, clear of the friend and glued to the pot as the friend grows', () => {
+        // The friend swells from BASE_SCALE to FULL_SCALE over its four feeds and
+        // eats into the air beside the pot as it goes — the panel has to hold up at
+        // every step of that, for every recipe length, not just at one size.
+        const potTop = potPos(d).y - potWidth(d) * 0.4
+        const potBottom = potPos(d).y + potWidth(d) * 0.4
+        for (let step = 0; step <= GROW_STEPS; step++) {
+          const grown: LayoutMetrics = { ...d, growth: scaleForStep(step) }
+          for (const n of INGREDIENTS) {
+            const box = recipePanel(grown, n)
+            const where = `${n} parts at growth step ${step}`
+            expect(box.tile / d.dpr, where).toBeGreaterThanOrEqual(36)
+            // Glued to the pot: the panel's near edge is within a panel-height of
+            // the pot's, whichever side it took.
+            const clearance = box.below
+              ? box.y - box.h / 2 - potBottom
+              : potTop - (box.y + box.h / 2)
+            expect(clearance, where).toBeGreaterThanOrEqual(0)
+            expect(clearance, where).toBeLessThan(box.h)
+            // Clear of the friend, of the plate row, and of the screen edges.
+            const friend = monsterPos(grown)
+            const r = grown.bodyR * grown.growth
+            const touches =
+              box.y + box.h / 2 > friend.y - r * 1.35 && box.y - box.h / 2 < friend.y + r
+            if (touches) expect(box.x - box.w / 2, where).toBeGreaterThan(friend.x + r)
+            expect(box.y + box.h / 2, where).toBeLessThan(trayY(d) - plateWidth(d) * 0.55)
+            expect(box.x - box.w / 2, where).toBeGreaterThan(0)
+            expect(box.x + box.w / 2, where).toBeLessThanOrEqual(d.w)
+          }
+        }
       })
     })
   }

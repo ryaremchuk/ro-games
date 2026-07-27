@@ -699,6 +699,82 @@ test('feed: feeding from the belt leaves its plate riding empty, then the still 
 })
 
 // ─── The kitchen ──────────────────────────────────────────────────────────────
+//
+// A kitchen round is the only one that puts TWO task panels on screen at once:
+// the friend's bubble ("bring me this dish") and the pot's own recipe panel
+// ("cook this"). The specs below read both through the state hook.
+
+/** The ingredients the pot's recipe panel is showing, left to right. */
+const recipeParts = (s: FeedTestState): string[] =>
+  (s.kitchen?.recipePanel?.cells ?? [])
+    .filter((c) => c.kind === 'part')
+    .map((c) => c.foodId as string)
+
+/** The ingredients already ticked off on the pot's panel. */
+const doneParts = (s: FeedTestState): string[] =>
+  (s.kitchen?.recipePanel?.cells ?? [])
+    .filter((c) => c.kind === 'part' && c.done)
+    .map((c) => c.foodId as string)
+
+test('feed: a dish round shows two panels — the recipe on the pot, the dish on the friend', async ({
+  page,
+}) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  await forceKindSettled(page, 'dish')
+  const s = await pollState(
+    page,
+    'pot up with its recipe panel',
+    (now) => now.kitchen?.recipePanel != null,
+  )
+  const panel = s.kitchen!.recipePanel!
+  const bubble = s.bubbleBox
+
+  // 1. BOTH panels are up at the same time.
+  expect(s.bubbleTiles).toBe(1)
+  expect(panel.cells.length).toBeGreaterThan(0)
+
+  // 2. The friend's bubble holds exactly the finished dish — nothing else.
+  expect(s.bubbleFoodIds).toEqual([s.kitchen!.result])
+
+  // 3. The pot's panel holds the ingredients, in recipe order, as an equation:
+  //    part (+ part)* = result. `+` and `=` are drawn glyphs, so they carry no
+  //    food of their own.
+  expect(recipeParts(s)).toEqual(s.kitchen!.ingredients)
+  const equation = `${s.kitchen!.ingredients.map(() => 'part').join(' plus ')} equals result`
+  expect(panel.cells.map((c) => c.kind).join(' ')).toBe(equation)
+  expect(panel.cells.filter((c) => c.kind === 'result').map((c) => c.foodId)).toEqual([
+    s.kitchen!.result,
+  ])
+  expect(panel.cells.filter((c) => c.foodId === null).every((c) => c.kind !== 'part')).toBe(true)
+  // Nothing is ticked off before the child has cooked anything.
+  expect(doneParts(s)).toEqual([])
+
+  // 4. The two panels do not collide, and the recipe reads at a legible size.
+  const gap = Math.abs(panel.yCss - bubble.yCss) - panel.hCss / 2 - bubble.hCss / 2
+  const sideBySide =
+    Math.abs(panel.xCss - bubble.xCss) - panel.wCss / 2 - bubble.wCss / 2 > 0 || gap > 0
+  expect(sideBySide, 'the recipe panel never lands on the friend’s bubble').toBe(true)
+  expect(panel.tileCss).toBeGreaterThanOrEqual(36)
+
+  // 5. The recipe panel hugs the pot — the picture-language link between the
+  //    task and the thing it belongs to.
+  const potGap = Math.abs(panel.yCss - s.kitchen!.potCss.y) - panel.hCss / 2
+  expect(potGap).toBeLessThan(panel.hCss * 2)
+
+  // 6. Every cell is on screen.
+  const viewport = page.viewportSize()!
+  expect(panel.xCss - panel.wCss / 2).toBeGreaterThan(0)
+  expect(panel.xCss + panel.wCss / 2).toBeLessThanOrEqual(viewport.width)
+  for (const cell of panel.cells) {
+    expect(cell.xCss - cell.sizeCss / 2).toBeGreaterThanOrEqual(panel.xCss - panel.wCss / 2 - 1)
+    expect(cell.xCss + cell.sizeCss / 2).toBeLessThanOrEqual(panel.xCss + panel.wCss / 2 + 1)
+  }
+
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-dish-two-panels.png' })
+})
 
 for (const kind of ['dish', 'dish-ordered'] as const) {
   test(`feed: a ${kind} round is cooked in the pot, then fed`, async ({ page }) => {
@@ -714,6 +790,10 @@ for (const kind of ['dish', 'dish-ordered'] as const) {
     expect(s0.kitchen!.ingredients.length).toBeGreaterThanOrEqual(2)
     expect(s0.kitchen!.contents).toEqual([])
     expect(s0.kitchen!.madeDish).toBeNull()
+    // The round's two asks live on two panels: the RECIPE hangs over the pot…
+    expect(recipeParts(s0)).toEqual(s0.kitchen!.ingredients)
+    // …and the friend's bubble holds only the finished dish.
+    expect(s0.bubbleFoodIds).toEqual([s0.kitchen!.result])
     // Every part the recipe needs is on the tray, and the RESULT is not.
     for (const part of s0.kitchen!.ingredients) {
       expect(s0.foods.map((f) => f.foodId)).toContain(part)
@@ -747,12 +827,25 @@ for (const kind of ['dish', 'dish-ordered'] as const) {
       }
       const inBefore = s.kitchen.contents.length
       await dragToPoint(page, food, { x: s.kitchen.potCss.x, y: s.kitchen.potCss.y })
-      await pollState(
+      const after = await pollState(
         page,
         `part ${want} went in`,
         (now) => (now.kitchen?.contents.length ?? 0) > inBefore || now.kitchen?.madeDish !== null,
         15_000,
       )
+      // Progress is marked on the POT's panel (the parts are cooked, never
+      // eaten) — the ✓ lands on the part that just went in. Not checked for the
+      // LAST part: that one finishes the recipe, and the panel bows out with the
+      // dish popping out of the pot (which the assertions below prove instead).
+      const full = (after.kitchen?.contents.length ?? 0) >= (after.kitchen?.ingredients.length ?? 0)
+      if (!full && after.kitchen?.recipePanel) {
+        await pollState(
+          page,
+          `part ${want} ticked off on the pot's panel`,
+          (now) => doneParts(now).includes(want),
+          10_000,
+        )
+      }
     }
 
     const cooked = await pollState(
@@ -791,6 +884,10 @@ test('feed: an ordered kitchen round refuses a part offered out of turn', async 
     (state) => (state.kitchen?.ingredients.length ?? 0) >= 2,
   )
   expect(s.kitchen!.wants, 'an ordered round wants exactly one part at a time').toHaveLength(1)
+  // The order to follow is written on the POT's panel, left to right, and the
+  // one the pot wants next is the first part not yet ticked off.
+  expect(recipeParts(s)).toEqual(s.kitchen!.ingredients)
+  expect(recipeParts(s)[doneParts(s).length]).toBe(s.kitchen!.wants[0])
 
   // The LAST part is not the next one, so the pot must spit it back.
   const wrong = s.kitchen!.ingredients[s.kitchen!.ingredients.length - 1]
@@ -799,6 +896,8 @@ test('feed: an ordered kitchen round refuses a part offered out of turn', async 
   await dragToPoint(page, food, { x: s.kitchen!.potCss.x, y: s.kitchen!.potCss.y })
   await pollState(page, 'out-of-turn part spat back', (now) => now.spitBacks >= 1, 20_000)
   expect((await readState(page)).kitchen!.contents).toEqual([])
+  // …and nothing was ticked off on the recipe: a refusal marks no progress.
+  expect(doneParts(await readState(page))).toEqual([])
   // Nothing is lost: the part arcs home and the tray stays whole.
   await pollState(page, 'tray whole after the refusal', (now) => now.foods.length === 8, 20_000)
 })

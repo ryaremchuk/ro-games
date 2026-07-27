@@ -131,7 +131,7 @@ export class RequestBubble {
    * layout can count on the band this bar occupies.
    */
   reposition(): void {
-    this.bubble.setPosition(this.scene.scale.width / 2, this.px(layout.PANEL_CENTER_Y_CSS))
+    this.bubble.setPosition(this.scene.scale.width / 2, layout.panelCenterY(this.scene.metrics()))
   }
 
   /** Hide/show the whole top task panel — a duo round shows its own per-friend

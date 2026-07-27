@@ -21,7 +21,24 @@ export interface XY {
 // The task panel lives at the very top of the screen, in its own bar — detached
 // from the friend. Exported: the scene draws the panel bar against these too.
 export const PANEL_H_CSS = 96
-export const PANEL_CENTER_Y_CSS = 58
+const PANEL_CENTER_Y_CSS = 58
+/** Clearance the bar keeps from the top edge, CSS px (a physical minimum). */
+const PANEL_TOP_MARGIN_CSS = 14
+
+/**
+ * Centre of the top task bar, backing px — floored so the bar always keeps its
+ * top margin. ONE definition, because three different things have to agree on
+ * where the bar ends: the bubble that draws it, the friend whose head is kept out
+ * from under it, and the pot's recipe panel that must never reach into it.
+ */
+export function panelCenterY(m: LayoutMetrics): number {
+  return px(m, Math.max(PANEL_CENTER_Y_CSS, PANEL_H_CSS / 2 + PANEL_TOP_MARGIN_CSS))
+}
+
+/** Bottom edge of the top task bar, backing px. */
+export function panelBottom(m: LayoutMetrics): number {
+  return panelCenterY(m) + px(m, PANEL_H_CSS / 2)
+}
 
 // Tray (a fixed-size element) hugs the bottom this fraction up; the hero +
 // friends stand a further fraction above the tray, so on every device the tray
@@ -104,7 +121,7 @@ export function slotPos(m: LayoutMetrics, index: number): XY {
 export function monsterPos(m: LayoutMetrics): XY {
   const y = heroBaseline(m) - m.bodyR * m.growth * 0.55
   // Never let the head ride up under the top task panel.
-  const headroom = px(m, PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) + m.bodyR * m.growth * 1.35
+  const headroom = panelBottom(m) + m.bodyR * m.growth * 1.35
   return { x: m.w / 2, y: Math.max(y, headroom) }
 }
 
@@ -120,7 +137,7 @@ const DUO_X_FRAC = 0.24
  */
 export function duoMonsterPos(m: LayoutMetrics, side: -1 | 1, scale: number): XY {
   const y = heroBaseline(m) - m.bodyR * scale * 0.55
-  const headroom = px(m, PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) + m.bodyR * scale * 1.35
+  const headroom = panelBottom(m) + m.bodyR * scale * 1.35
   return { x: m.w / 2 + side * m.w * DUO_X_FRAC, y: Math.max(y, headroom) }
 }
 
@@ -406,13 +423,7 @@ export function recipePanel(m: LayoutMetrics, ingredients: number): RecipeBox {
   const pot = potPos(m)
   const potH = potWidth(m) * 0.4 // the pot is drawn w × 0.8w
   const gap = potWidth(m) * RECIPE_POT_GAP_FRAC
-  const above = solveRecipeSlot(
-    m,
-    ingredients,
-    pot.y - potH - gap,
-    px(m, PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) + gap,
-    false,
-  )
+  const above = solveRecipeSlot(m, ingredients, pot.y - potH - gap, panelBottom(m) + gap, false)
   const below = solveRecipeSlot(
     m,
     ingredients,
