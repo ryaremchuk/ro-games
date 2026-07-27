@@ -275,35 +275,40 @@ export interface FeedTestApi {
   setRandomBigBite: (enabled: boolean) => void
 
   // ─── `?dev` cheat overlay (FeedDevPanel) ─────────────────────────────────
-  // Incremental nudges for manual testing; each rebuilds the world + round
-  // and no-ops while a transition is in flight.
+  // Incremental nudges for manual testing; each rebuilds the world + round.
+  //
+  // EVERY force below returns false for exactly one reason — a celebration is in
+  // flight (`state().transitioning`), the one chain that must not be severed. A
+  // rare mode holding the stage (a duo, a drawing ask) is stood down first rather
+  // than refused, so the overlay is never inert; the panel shows the refusal so a
+  // busy game can never read as a broken panel.
   /** Grow/shrink the current friend by delta steps (clamped 0..GROW_STEPS-1). */
-  devHeroLevel: (delta: number) => void
+  devHeroLevel: (delta: number) => boolean
   /** Add/remove grown friends by delta (clamped 0..FRIENDS_PER_EPISODE-1). */
-  devFriends: (delta: number) => void
+  devFriends: (delta: number) => boolean
   /** Step the episode by delta (never below 0; themes wrap). */
-  devEpisode: (delta: number) => void
+  devEpisode: (delta: number) => boolean
   /** Re-deal the current round as a fresh task, leaving the journey untouched. */
-  devRegenerate: () => void
+  devRegenerate: () => boolean
   /**
    * Dress/undress the CURRENT round as a big bite (lip smack, glowing tray,
    * bigger food) without waiting on the 12% dice — so an adult can eyeball the
-   * announcement on the device. No-ops mid-transition or during a duo.
+   * announcement on the device.
    */
-  devBigBite: (on: boolean) => void
+  devBigBite: (on: boolean) => boolean
   /**
    * Start a two-friend duo bonus round now (dev/e2e), if ≥2 episode slots are
-   * free and no duo/transition is already running. Bypasses the data+chance
-   * axis so a spec (or a curious adult) can see a duo on demand.
-   * Returns false when a duo can't start right now.
+   * free. Bypasses the data+chance axis so a spec (or a curious adult) can see a
+   * duo on demand. Returns false when a duo is already on stage, no slots are
+   * left, or a celebration is in flight.
    */
   forceDuo: () => boolean
 
   // ─── Commissions (the food the child draws) ───────────────────────────────
   /**
    * Open the pixel pad with a commission at the next round start, bypassing the
-   * once-per-episode / episode-≥2 journey gate. Returns false while a
-   * transition or a duo owns the stage.
+   * once-per-episode / episode-≥2 journey gate. Returns false when the pad is
+   * already up, or while a celebration is in flight.
    */
   forceCommission: () => boolean
   /**
@@ -314,20 +319,21 @@ export interface FeedTestApi {
    */
   submitDrawing: (cells: Array<{ x: number; y: number; color: number }>) => boolean
   /** Dev: retire every drawn food from the game (the gallery keeps the art). */
-  wipeDrawnFoods: () => void
+  wipeDrawnFoods: () => boolean
 
   // ─── Conveyor ─────────────────────────────────────────────────────────────
   /**
    * Re-deal the current round on the belt, bypassing the data+chance axis.
-   * Returns false while a transition, a duo or the pad owns the stage.
+   * Returns false while a celebration is in flight.
    */
   forceConveyor: () => boolean
 
   // ─── The thief ────────────────────────────────────────────────────────────
   /**
-   * Send a visitor in right now, bypassing the data+chance axis. Returns false
-   * when one is already on stage, the tray is empty, or a celebration owns the
-   * screen.
+   * Send a visitor in right now, bypassing the data+chance axis. A belt round is
+   * re-dealt as a still one first (a bird pecks at a plate, not at a lane).
+   * Returns false when one is already on stage, the tray is empty, or a
+   * celebration is in flight.
    */
   forceVisitor: (kind: 'thief' | 'butterfly') => boolean
 }

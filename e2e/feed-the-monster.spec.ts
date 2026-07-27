@@ -1255,6 +1255,59 @@ test('feed: closing the pad blank costs nothing — the round just proceeds', as
   await feedRound(page)
 })
 
+// ─── The `?dev` panel ─────────────────────────────────────────────────────────
+
+/**
+ * The reported bug, from the device: "sometimes the ?dev panel stops responding —
+ * often when there are two friends to feed and I press belt, after that no button
+ * works". Two defects met there, and this pins both:
+ *
+ *  1. A duo starting while a belt round was on stage left the belt RIDING
+ *     underneath it (`conveyorMode.stop()` used to live inside the next round's
+ *     belt gate, which a duo returns before reaching). The tray's home was still a
+ *     belt lane, so a duo food spat back was adopted onto a plate and destroyed
+ *     when that lane wrapped — a duo missing a food it needs can never finish, and
+ *     an unfinished duo never gives `round` back.
+ *  2. Every dev force is gated on a live round, and a duo (or a drawing ask) nulls
+ *     it — so the whole overlay was a silent no-op for as long as one ran.
+ *
+ * Driven through the real DOM buttons, because the panel is the thing that broke.
+ */
+test('feed: the ?dev panel answers every tap, mid-duo and mid-ask', async ({ page }) => {
+  await page.goto('./#/feed-the-monster?dev')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  const tap = (label: string) => page.locator('button', { hasText: label }).first().click()
+
+  // A belt round, then a duo straight on top of it: the belt must be stood down.
+  await startConveyor(page)
+  await tap('Duo')
+  const duo = await pollState(page, 'duo on stage', (s) => s.duoActive)
+  expect(duo.conveyorActive, 'no belt is left riding under a duo').toBe(false)
+  expect(duo.conveyor, 'and it kept no lanes').toBeNull()
+
+  // Mid-duo the panel still answers: Belt hands the stage back to a belt round.
+  await tap('Belt')
+  const belt = await pollState(page, 'belt round from mid-duo', (s) => s.conveyorActive)
+  expect(belt.duoActive, 'the duo was stood down, not stacked').toBe(false)
+  expect(belt.round, 'a real round is live again').toBeGreaterThan(0)
+
+  // Mid-ask it answers too: the easel opens, and a task chip withdraws it.
+  await tap('Draw')
+  await pollState(page, 'the ask is up', (s) => s.commission !== null)
+  await tap('count')
+  const solo = await pollState(page, 'ask withdrawn for a solo round', (s) => s.taskKind !== null)
+  expect(solo.commission, 'the easel is gone').toBeNull()
+  expect(solo.conveyorActive, 'and so is the belt').toBe(false)
+  // Withdrawing is not spending: the once-per-episode beat can still fire later.
+  expect(solo.commissionGate.lastEpisode).toBe(-1)
+
+  // Nothing was left half-dressed: the round it dealt is playable.
+  await waitTraySettled(page)
+  expect((await readState(page)).foods.some((f) => f.correct)).toBe(true)
+})
+
 test('feed: a duo bonus stands up two friends fed from one tray by mouth', async ({ page }) => {
   await page.goto('./#/feed-the-monster')
   await waitForReady(page)

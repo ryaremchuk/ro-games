@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { COMMISSION_MIN_EPISODE, EPISODES, FRIENDS_PER_EPISODE, GROW_STEPS } from './journey'
 import type { FeedTestState } from './testHook'
@@ -28,10 +28,17 @@ import type { FeedTestState } from './testHook'
  * (unlike every child-facing surface). The scene installs its hook
  * asynchronously (Phaser boot) and rounds auto-advance, so we poll to keep the
  * readouts live rather than assuming the handle is ready at mount.
+ *
+ * A tap that cannot land SAYS SO (the ⛔ line). Every force returns a boolean and
+ * this panel used to drop it on the floor, so a busy scene — a celebration mid-flight
+ * — was indistinguishable from a broken overlay ("I press belt and after that no
+ * button works"). The scene now stands a rare mode down instead of refusing, which
+ * leaves exactly one honest refusal to report.
  */
 
 interface DevSnapshot {
   round: number
+  transitioning: boolean
   taskKind: string | null
   episode: number
   episodeId: string
@@ -55,6 +62,7 @@ function readSnapshot(): DevSnapshot | null {
   const s = api.state()
   return {
     round: s.round,
+    transitioning: s.transitioning,
     taskKind: s.taskKind,
     episode: s.journey.episode,
     episodeId: s.episodeId,
@@ -99,20 +107,50 @@ function describeGate(s: FeedTestState): string {
 
 export default function FeedDevPanel() {
   const [snap, setSnap] = useState<DevSnapshot | null>(readSnapshot)
+  /**
+   * Why the last tap did nothing, or null. Every force returns a boolean, and a
+   * refusal used to be swallowed — which is what "the panel stops responding" was:
+   * a legitimately busy game, indistinguishable from a broken overlay. Now a
+   * refusal is SHOWN, so an adult knows to wait a beat instead of mashing. It
+   * fades on its own (the poll below re-renders), so it always describes the tap
+   * just made rather than one from a minute ago.
+   */
+  const [refused, setRefused] = useState<{ msg: string; at: number } | null>(null)
+  /**
+   * Wall-clock start of the celebration the scene is in, tracked by the poll below.
+   * A celebration is the one state that legitimately refuses a tap — and a
+   * celebration that never ends is the soft-lock class this game keeps having to
+   * defend against, so a refusal can say WHICH of the two it is instead of leaving
+   * an adult to guess. Wall-clock is the honest unit: the thing being caught is a
+   * Phaser clock that has stopped advancing.
+   */
+  const heldSinceRef = useRef(performance.now())
 
   useEffect(() => {
-    const id = window.setInterval(() => setSnap(readSnapshot()), 400)
+    const id = window.setInterval(() => {
+      const next = readSnapshot()
+      setSnap(next)
+      if (next === null || !next.transitioning) heldSinceRef.current = performance.now()
+    }, 400)
     return () => window.clearInterval(id)
   }, [])
 
-  const act = (call: (api: NonNullable<Window['__feedTheMonster']>) => void) => {
+  const act = (call: (api: NonNullable<Window['__feedTheMonster']>) => boolean | void) => {
     const api = window.__feedTheMonster
-    if (!api) return
-    call(api)
-    setSnap(readSnapshot()) // reflect instantly, don't wait for the next poll
+    if (!api) {
+      setRefused({ msg: 'no scene', at: performance.now() })
+      return
+    }
+    const accepted = call(api) !== false
+    const state = readSnapshot()
+    const now = performance.now()
+    setSnap(state) // reflect instantly, don't wait for the next poll
+    setRefused(accepted ? null : { msg: busyReason(state, now - heldSinceRef.current), at: now })
   }
 
   const ready = snap !== null
+  const refusal =
+    refused !== null && performance.now() - refused.at < REFUSAL_SHOWN_MS ? refused.msg : null
   const themeCount = EPISODES.length
   const episodeLabel = ready ? `${snap.episode} · ${snap.episodeId}` : '—'
 
@@ -236,9 +274,34 @@ export default function FeedDevPanel() {
           gate gets its own line — otherwise "why has this never happened?" has no
           answer on the device. */}
       {ready && <div style={styles.readout}>✏️ {snap.drawGate}</div>}
+      {/* A refused tap says so, out loud. Silence here was the whole bug report. */}
+      {refusal !== null && <div style={styles.refused}>⛔ {refusal}</div>}
     </div>
   )
 }
+
+/**
+ * What the scene is busy with, for a refused tap. The forces refuse for exactly
+ * one reason (a celebration's tween chain must not be severed — see the scene's
+ * devTakeStage), plus two states that are their own answer: no duo over a duo, no
+ * second ask over an open one.
+ */
+function busyReason(snap: DevSnapshot | null, heldMs: number): string {
+  if (snap === null) return 'no scene'
+  if (snap.transitioning) {
+    // Every celebration is over inside a few seconds; a longer one is a bug worth
+    // naming on the device rather than a beat worth waiting out.
+    const secs = Math.round(heldMs / 1000)
+    return secs > 6 ? `celebrating for ${secs}s — STUCK?` : 'celebrating — wait a beat'
+  }
+  if (snap.commission !== null) return 'already asking'
+  if (snap.duoActive) return 'duo already on stage'
+  if (snap.round === 0) return 'first round not dealt yet'
+  return 'not right now'
+}
+
+/** How long a refused tap stays on screen (a couple of polls past reading it). */
+const REFUSAL_SHOWN_MS = 2_600
 
 // Every task kind, for the one-tap jump chips (bypasses the meter gate). The two
 // kitchen kinds get their own buttons below — they are big enough beats to want
@@ -381,5 +444,11 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 11,
     opacity: 0.6,
     textAlign: 'center',
+  },
+  refused: {
+    fontSize: 11,
+    fontWeight: 700,
+    textAlign: 'center',
+    color: '#ff8f6b',
   },
 }

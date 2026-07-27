@@ -213,8 +213,36 @@ export class DuoMode {
     this.scene.time.delayedCall(110, () => playTone(880, 110, 'sine', 0.08))
   }
 
+  /**
+   * Dev-only: take a live duo off stage without graduating anyone. The caller
+   * hands the world back to solo play (see the scene's devTakeStage, which
+   * rebuilds the walker at the live journey point and deals it a round).
+   *
+   * The `?dev` overlay needs this because a duo nulls the scene's round for as
+   * long as it runs, and every force is gated on a live round — so an adult who
+   * taps a mode button during a duo got nothing at all, from every button, for
+   * the whole duo. Only reachable when nothing is mid-celebration, so no duo
+   * timer chain is in flight here (dealRound guards anyway).
+   */
+  abort(): void {
+    if (!this.active) return
+    this.active = false
+    for (const friend of this.friends) {
+      friend.bubble?.destroy()
+      // The LEFT rig is the scene's own walker — it is reused, never destroyed.
+      if (friend.rig === this.scene.monsterRig) continue
+      this.scene.tweens.killTweensOf(friend.rig.container)
+      friend.rig.container.destroy()
+    }
+    this.friends = []
+    this.scene.monsterRig.duo = null
+  }
+
   /** Deal one of the three duo rounds: fresh foods, fresh tray, fresh bubbles. */
   private dealRound(): void {
+    // An aborted duo may still have this queued behind a celebration; dealing
+    // here would build a duo tray over whatever is on stage now.
+    if (!this.active) return
     // A fresh round is feedable again — clear the celebration guard so drops
     // (and friend taps) are live once more, exactly like the solo startRound.
     this.scene.transitioning = false

@@ -439,21 +439,27 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         thiefSkill: this.thiefSkill,
       }),
       forceKind: (kind) => {
-        if (this.transitioning || this.duoMode.active || !this.round) return false
+        if (!this.devTakeStage()) return false
         this.buildFreshRound({ forceKind: kind, previous: this.previousRequest })
         return true
       },
       forceDuo: () => {
+        // One duo at a time: a duo already on stage is what the button asks for,
+        // and the panel's readout says DUO.
+        if (this.duoMode.active) return false
         // Needs a live solo round (never during the pre-first-round delay — the
         // scheduled startRound(1) would clobber the duo) and ≥2 free slots.
-        if (this.transitioning || this.duoMode.active || !this.round) return false
+        if (!this.devTakeStage()) return false
         if (FRIENDS_PER_EPISODE - this.journey.friendsFed < 2) return false
         this.roundsSinceLastDuo = 0
+        // A duo bypasses startRound, so it must put the previous round's modes
+        // away itself — a belt left riding under a duo destroys its food.
+        this.standDownModes()
         this.duoMode.start()
         return true
       },
       forceJourney: (partial) => {
-        if (this.transitioning || !this.round) return false
+        if (!this.devTakeStage()) return false
         this.applyJourney(journeyFromData({ ...journeyToData(this.journey), ...partial }))
         return true
       },
@@ -474,16 +480,18 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       devFriends: (delta) => this.devNudgeJourney({ friendsFed: delta }),
       devEpisode: (delta) => this.devNudgeJourney({ episode: delta }),
       devBigBite: (on) => {
-        if (this.transitioning || this.duoMode.active || !this.round) return
+        if (!this.devTakeStage()) return false
         this.setBigBite(on)
+        return true
       },
       forceCommission: () => {
-        if (this.transitioning || this.duoMode.active || this.commission) return false
+        // Already asking: the pad is up, there is nothing to force.
+        if (this.commission) return false
         // Needs a LIVE round, like every other mode force: before the first round
         // is dealt there is still a scheduled startRound in flight, and it would
         // land on top of the ask (which the announce guard then abandons, leaving
         // the adult with nothing to look at).
-        if (!this.round) return false
+        if (!this.devTakeStage()) return false
         this.forceCommissionNext = true
         // Re-enter the round start so the gate runs now, not next round.
         this.startRound(this.roundNumber)
@@ -497,8 +505,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         return true
       },
       forceConveyor: () => {
-        if (this.transitioning || this.duoMode.active || this.commission || !this.round)
-          return false
+        if (!this.devTakeStage()) return false
+        // This path does not go through startRound, so it stands the outgoing
+        // belt down itself — serving a second belt over a live one would leak its
+        // plates and strip.
         this.conveyorMode.stop()
         this.roundsSinceLastConveyor = 0
         this.setBigBite(false)
@@ -506,11 +516,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         return true
       },
       forceVisitor: (kind) => {
-        if (this.transitioning || this.thiefMode.active || !this.round) return false
+        if (this.thiefMode.active) return false
+        if (!this.devTakeStage()) return false
         // A visitor never shares a round with the belt (scheduleVisit's `busy`
         // says so), and it aims at a STILL tray slot — which a belt round has
-        // stood down. Forcing one here would peck at an invisible plate.
-        if (this.conveyorMode.active) return false
+        // stood down. Forcing one here would peck at an invisible plate, so deal
+        // a still round first and let the bird land on that.
+        if (this.conveyorMode.active) this.buildFreshRound({ previous: this.previousRequest })
         this.visitTimer?.remove()
         this.visitTimer = undefined
         this.roundsSinceLastVisit = 0
@@ -522,16 +534,18 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         this.callbackFoodId = null
         this.lastCommissionEpisode = -1
         saveData(GAME_ID, { commissionEpisode: -1 })
+        return true
       },
 
       devRegenerate: () => {
-        if (this.transitioning || this.duoMode.active || !this.round) return
+        if (!this.devTakeStage()) return false
         // Dev: re-deal a TRULY RANDOM task across EVERY kind, not gated by the
         // current meter — so tapping ↻ cycles through all types an adult wants
         // to eyeball (the child never sees this overlay).
         const kinds = TASK_REGISTRY.map((def) => def.kind)
         const kind = kinds[Math.floor(Math.random() * kinds.length)]
         this.buildFreshRound({ forceKind: kind, previous: this.previousRequest })
+        return true
       },
     }
     this.testApi = api
@@ -575,9 +589,38 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.buildFreshRound({})
   }
 
+  /**
+   * Clear the stage so a dev force can land, and say whether it may.
+   *
+   * The ONLY state it refuses is a celebration in flight: `transitioning` guards a
+   * tween/timer chain whose completion is the single path back to a playable round,
+   * and severing it soft-locks the game. Everything else it RESOLVES instead of
+   * refusing — a duo and a drawing ask both null `round` for as long as they run,
+   * and every force needs a live round, so refusing left the whole `?dev` overlay a
+   * silent no-op for tens of seconds at a time. That is what "the panel stops
+   * responding, no button does anything" was: not a dead panel, a busy game with no
+   * way to say so and no way out.
+   */
+  private devTakeStage(): boolean {
+    if (this.transitioning) return false
+    if (this.commission) {
+      this.withdrawCommission()
+      this.dealRound() // the ask dealt no tray; give the friend a round to be in
+    }
+    if (this.duoMode.active) {
+      this.duoMode.abort()
+      // Rebuild the solo walker at the live journey point and deal it a round —
+      // the same path the `?dev` journey nudges use.
+      this.applyJourney(this.journey)
+    }
+    // Before the very first round is dealt there is still a scheduled
+    // startRound(1) in flight, which would clobber whatever we force now.
+    return this.round !== null
+  }
+
   /** Nudge one journey axis by delta (clamped to its valid range), rebuild. */
-  private devNudgeJourney(delta: Partial<JourneyState>): void {
-    if (this.transitioning || !this.round) return
+  private devNudgeJourney(delta: Partial<JourneyState>): boolean {
+    if (!this.devTakeStage()) return false
     const next: JourneyState = {
       episode: Math.max(0, this.journey.episode + (delta.episode ?? 0)),
       friendsFed: Phaser.Math.Clamp(
@@ -592,6 +635,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       ),
     }
     this.applyJourney(next)
+    return true
   }
 
   /** Deal a fresh round from the current episode / skill / round number. */
@@ -610,7 +654,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     })
     this.eaten = []
     this.spitBacks = 0
-    this.conveyorMode.stop()
+    // A re-deal is a round boundary too: the previous round's belt/pot/visitor
+    // must not outlive the round that invited them (see standDownModes).
+    this.standDownModes()
     this.presentRound(round)
   }
 
@@ -843,6 +889,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.drawnBiteRound = false
     this.roundsSinceLastDuo++
     this.roundsSinceLastConveyor++
+    this.standDownModes()
     // A duo grows on its own synchronized curve (journey.duoFeedStep), so a big
     // bite never applies to one — clear the dressing before handing the round over.
     this.setBigBite(false)
@@ -872,6 +919,31 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   }
 
   /**
+   * Put the PREVIOUS round's modes away. This is the round boundary's job, and
+   * only its job: standing the belt down used to live inside tryInjectConveyor's
+   * declined branch, so every gate that returns early — a commission, a duo —
+   * skipped it and left the belt riding underneath the new round. Under a duo
+   * that is not merely untidy: `tray.homeProvider` still pointed at the belt, so
+   * a duo food spat back was adopted onto a lane and then DESTROYED when that
+   * lane wrapped past the hatch — a duo missing a food it still needs can never
+   * be completed, and a duo that never completes never gives `round` back, which
+   * soft-locks the game (and, because every dev force is gated on a live round,
+   * makes the whole `?dev` panel inert).
+   *
+   * A mode this round wants is stood back up immediately (the belt in
+   * presentRound, the pot for a `dish` request), so the child sees no gap.
+   */
+  private standDownModes(): void {
+    this.conveyorMode.stop()
+    this.kitchenMode.stop()
+    // A visitor belongs to the round that invited it; a fresh round schedules
+    // its own (see scheduleVisit).
+    this.thiefMode.cancel()
+    this.visitTimer?.remove()
+    this.visitTimer = undefined
+  }
+
+  /**
    * The belt's own axis: weigh live game DATA (cognitive fluency, recent
    * struggle, rounds since the last belt) + chance. Returns true when this round
    * rides the belt. Never stacks with a duo (that returned already) and never
@@ -889,10 +961,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         Math.random,
       )
     this.forceConveyorNext = false
-    if (!wanted) {
-      this.conveyorMode.stop()
-      return false
-    }
+    if (!wanted) return false
     this.roundsSinceLastConveyor = 0
     return true
   }
@@ -1096,9 +1165,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.round = null
     // The friend arrives with an EMPTY PLATE: nothing to be fed, only something
     // to be given. Any leftover food would also be draggable behind the pad.
-    this.conveyorMode.stop()
-    this.kitchenMode.stop()
-    this.thiefMode.cancel()
+    // (The modes themselves are already away — standDownModes runs at the top of
+    // every startRound, which is the only way in here.)
     this.tray.clearFoods()
     this.bubbleUi.showCommission(askColor ? color : null)
     // ANNOUNCE FIRST, then hand the screen over. The friend asks while it is still
@@ -1130,6 +1198,19 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       callback: () => this.bubbleUi.nudgeCommission(),
     })
     return true
+  }
+
+  /**
+   * Dev-only: withdraw a live ask and close the easel, WITHOUT spending the
+   * episode's commission (the child never did this — an adult did, to get at the
+   * rest of the panel), so the beat can still fire later.
+   */
+  private withdrawCommission(): void {
+    if (!this.commission) return
+    this.commission = null
+    this.impatience?.remove()
+    this.impatience = undefined
+    this.events.emit('commission', null)
   }
 
   /**
