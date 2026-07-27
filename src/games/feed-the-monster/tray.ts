@@ -133,7 +133,7 @@ export class Tray {
       glow.setTint(GLOW_TINT).setAlpha(0).setBlendMode(Phaser.BlendModes.ADD)
       this.glows.push(glow)
 
-      const plate = this.scene.add.image(0, 0, 'ftm-plate').setDepth(4)
+      const plate = this.scene.add.image(0, 0, this.scene.look('plate', 'ftm-plate')).setDepth(4)
       this.dressPlate(plate)
       plate.setInteractive()
       plate.on('pointerdown', () => {
@@ -162,8 +162,9 @@ export class Tray {
       if (plate.texture.key !== artKey(marker)) plate.setTexture(artKey(marker))
       plate.setDisplaySize(w, w * 0.5) // marker art is a 2:1 doily oval
     } else {
-      if (plate.texture.key !== 'ftm-plate') plate.setTexture('ftm-plate')
-      plate.setDisplaySize(w, w * 0.55) // procedural plate keeps its flatter oval
+      const dish = this.scene.look('plate', 'ftm-plate')
+      if (plate.texture.key !== dish) plate.setTexture(dish)
+      plate.setDisplaySize(w, w * 0.55) // round dish, foreshortened into an oval
     }
     plate.setData('baseSX', plate.scaleX)
     plate.setData('baseSY', plate.scaleY)

@@ -60,7 +60,12 @@ import type FeedTheMonsterScene from './FeedTheMonsterScene'
 
 /** Plate under a dish, as a fraction of the pitch. */
 const PLATE_W_MUL = 0.78
-/** Tread scroll per pitch travelled, in texture px — pure decoration. */
+/**
+ * How far the tread slides per pitch the dishes travel, in BACKING px of actual
+ * screen travel — pure decoration, but it has to be measured on the screen and
+ * not in texture px, or a strip drawn at a different resolution would silently
+ * change the belt's apparent speed (see the tileScale conversion in update()).
+ */
 const TREAD_SCROLL = 48
 
 /**
@@ -169,7 +174,7 @@ export class ConveyorMode {
     // the hidden lanes are scheduled, which starts the anti-drought machinery.
     this.lanes = []
     for (let i = 0; i < total; i++) {
-      const plate = this.scene.add.image(0, 0, 'ftm-plate').setDepth(4)
+      const plate = this.scene.add.image(0, 0, this.scene.look('plate', 'ftm-plate')).setDepth(4)
       const lane: Lane = {
         foodId: null,
         food: null,
@@ -228,15 +233,25 @@ export class ConveyorMode {
 
     // A tileSprite so the tread genuinely scrolls with the belt; the strip
     // texture is authored to tile seamlessly left↔right (see textures.ts).
-    const stripKey = this.scene.hasArt('belt-strip') ? artKey('belt-strip') : 'ftm-belt'
+    const stripKey = this.scene.look('belt-strip', 'ftm-belt')
     this.belt = this.scene.add
       .tileSprite(m.w / 2, y, m.w, h, stripKey)
       .setDepth(3)
       .setTint(tint)
+    // A tileSprite REPEATS its texture rather than stretching it, so the strip
+    // has to be scaled to the band explicitly: one texture height = the whole
+    // belt, top highlight down through the front lip, whatever resolution the
+    // art arrived at. The same factor horizontally, so the tread ribs keep the
+    // proportions they were drawn with instead of squashing on tall belts. The
+    // procedural strip is authored at exactly BELT_TEX_H_CSS, so this is 1 for
+    // it — nothing about the drawn look changes.
+    const strip = this.scene.textures.get(stripKey).getSourceImage()
+    const fit = h / strip.height
+    this.belt.setTileScale(fit, fit)
 
     // Rollers at the belt's two ends, inset by half their own width so the drum
     // is fully visible rather than half off screen.
-    const rollerKey = this.scene.hasArt('belt-roller') ? artKey('belt-roller') : 'ftm-belt-roller'
+    const rollerKey = this.scene.look('belt-roller', 'ftm-belt-roller')
     const rollerW = h * 0.92
     for (const side of [-1, 1] as const) {
       const roller = this.scene.add
@@ -452,7 +467,11 @@ export class ConveyorMode {
     const total = this.lanes.length
     const step = this.step()
     this.offset += deltaMs / step
-    if (this.belt) this.belt.tilePositionX += (deltaMs / step) * TREAD_SCROLL
+    // tilePositionX counts TEXTURE px; dividing by the tile scale turns the dial
+    // back into screen px, so the tread runs at the same speed whatever size the
+    // strip texture is.
+    if (this.belt)
+      this.belt.tilePositionX += ((deltaMs / step) * TREAD_SCROLL) / this.belt.tileScaleX
 
     this.settleClaims()
 
@@ -553,7 +572,8 @@ export class ConveyorMode {
       if (plate.texture.key !== artKey(marker)) plate.setTexture(artKey(marker))
       plate.setDisplaySize(w, w * 0.5)
     } else {
-      if (plate.texture.key !== 'ftm-plate') plate.setTexture('ftm-plate')
+      const dish = this.scene.look('plate', 'ftm-plate')
+      if (plate.texture.key !== dish) plate.setTexture(dish)
       plate.setDisplaySize(w, w * 0.55)
     }
   }

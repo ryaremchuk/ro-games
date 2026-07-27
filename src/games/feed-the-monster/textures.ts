@@ -75,6 +75,14 @@ export function blobPoints(cx: number, cy: number, r: number, seed: number): Pha
   return samples
 }
 
+/** Margin around an emoji glyph, × its font size (emoji overflow the em box,
+ * and measureText lies about them — pad rather than measure). */
+const EMOJI_PAD_FRAC = 0.25
+/** Margin around an outlined text glyph, × its font size. */
+const GLYPH_PAD_FRAC = 0.32
+/** Outline width on a text glyph, × its font size. */
+const GLYPH_STROKE_FRAC = 0.16
+
 /** Pre-render an emoji to a CanvasTexture at physical pixels (crisp on retina). */
 export function emojiTexture(
   scene: Phaser.Scene,
@@ -85,7 +93,7 @@ export function emojiTexture(
 ): void {
   if (scene.textures.exists(key)) return
   const fontPx = Math.round(cssSize * dpr)
-  const pad = Math.ceil(fontPx * 0.25) // emoji overflow the em box; don't trust measureText
+  const pad = Math.ceil(fontPx * EMOJI_PAD_FRAC)
   const side = fontPx + pad * 2
   const tex = scene.textures.createCanvas(key, side, side)
   if (!tex) return
@@ -108,7 +116,7 @@ export function glyphTexture(
 ): void {
   if (scene.textures.exists(key)) return
   const fontPx = Math.round(cssSize * dpr)
-  const pad = Math.ceil(fontPx * 0.32)
+  const pad = Math.ceil(fontPx * GLYPH_PAD_FRAC)
   const side = fontPx + pad * 2
   const tex = scene.textures.createCanvas(key, side, side)
   if (!tex) return
@@ -118,12 +126,24 @@ export function glyphTexture(
   ctx.textBaseline = 'middle'
   ctx.lineJoin = 'round'
   ctx.strokeStyle = 'rgba(61,58,75,0.85)'
-  ctx.lineWidth = Math.max(2, fontPx * 0.16)
+  ctx.lineWidth = Math.max(2, fontPx * GLYPH_STROKE_FRAC)
   ctx.strokeText(char, side / 2, side / 2)
   ctx.fillStyle = '#ffffff'
   ctx.fillText(char, side / 2, side / 2)
   tex.refresh() // required for the WebGL upload
 }
+
+/**
+ * How much of a `makeBlobTexture` square the blob's ink actually covers.
+ *
+ * The blob is padded into a 2.4r box and the bezier smoothing pulls its outline
+ * back inside r, so it paints ~0.71 of the box and the rest is transparent
+ * margin. Every consumer's tile size is tuned against the PADDED box, so
+ * shipped art that replaces a blob — trimmed tight to its own ink — must be
+ * scaled by this to keep the same footprint, or it renders ~40% bigger. Pinned
+ * against blobPoints in textures.test.ts so the two cannot drift apart.
+ */
+export const BLOB_PAINT_FRAC = 0.719
 
 export function makeBlobTexture(
   scene: Phaser.Scene,
@@ -289,6 +309,12 @@ function buildThiefFrames(scene: Phaser.Scene, px: (css: number) => number): voi
 
 /** Canvas the `+` / `=` glyphs are authored on, CSS px (square). */
 const OP_TEX_CSS = 40
+/** Arm length of `+`/`=`, × the canvas side — also their paint fraction. */
+const OP_ARM_FRAC = 0.72
+/** Bar thickness, × the canvas side. */
+const OP_BAR_FRAC = 0.2
+/** Gap between the two `=` bars, × the canvas side. */
+const OP_GAP_FRAC = 0.16
 /**
  * Operator ink: a soft slate, deliberately QUIETER than a food or a ✓ badge. The
  * glyphs are grammar, not content — the child has to read the pictures first and
@@ -303,8 +329,8 @@ const OP_INK = 0x6f6b80
  */
 function buildOperatorGlyphs(scene: Phaser.Scene, px: (css: number) => number): void {
   const side = px(OP_TEX_CSS)
-  const bar = side * 0.2
-  const arm = side * 0.72
+  const bar = side * OP_BAR_FRAC
+  const arm = side * OP_ARM_FRAC
 
   if (!scene.textures.exists('ftm-plus')) {
     const g = scene.add.graphics()
@@ -316,7 +342,7 @@ function buildOperatorGlyphs(scene: Phaser.Scene, px: (css: number) => number): 
   }
 
   if (!scene.textures.exists('ftm-equals')) {
-    const gap = side * 0.16
+    const gap = side * OP_GAP_FRAC
     const g = scene.add.graphics()
     g.fillStyle(OP_INK, 1)
     g.fillRoundedRect((side - arm) / 2, side / 2 - gap / 2 - bar, arm, bar, bar / 2)
@@ -324,6 +350,95 @@ function buildOperatorGlyphs(scene: Phaser.Scene, px: (css: number) => number): 
     g.generateTexture('ftm-equals', side, side)
     g.destroy()
   }
+}
+
+// ─── UI marks ────────────────────────────────────────────────────────────────
+//
+// The small non-food symbols: 🚫, ✓, ?, +, =, ✏️ and the celebration ⭐. Each is
+// procedural by default and each can be replaced by an `art/<name>.png`.
+
+/** Ring radius of the ban sign, CSS px. */
+const BAN_R_CSS = 34
+/** Ring stroke of the ban sign, CSS px. */
+const BAN_STROKE_CSS = 8
+/** The ban ring's outer diameter over its padded canvas: the stroke straddles
+ * the radius, so the canvas carries half a stroke of margin all round. */
+const BAN_PAINT_FRAC = (BAN_R_CSS * 2 + BAN_STROKE_CSS) / (BAN_R_CSS * 2 + BAN_STROKE_CSS * 2)
+/** An emoji glyph's ink over its padded canvas (see EMOJI_PAD_FRAC). */
+const EMOJI_PAINT_FRAC = 1 / (1 + 2 * EMOJI_PAD_FRAC)
+/**
+ * The "?" glyph's INK HEIGHT over its padded canvas. A 900-weight "?" stands
+ * about 0.72em tall, the outline adds half its width top and bottom
+ * (GLYPH_STROKE_FRAC), and the canvas is 1 + 2·GLYPH_PAD_FRAC ems.
+ */
+const Q_PAINT_FRAC = (0.72 + GLYPH_STROKE_FRAC) / (1 + 2 * GLYPH_PAD_FRAC)
+
+/** A UI symbol that shipped art may replace: its procedural fallback, how much
+ * of that fallback's square box the procedural ink covers, and the axis the
+ * fraction is measured on. */
+export interface UiMark {
+  /** Procedural texture key, used when no `art/<name>.png` shipped. */
+  readonly fallback: string
+  /** Share of the fallback texture's box its ink really covers, on `along`. */
+  readonly frac: number
+  /** Axis `frac` is measured on; art keeps its own aspect ratio about it. */
+  readonly along: 'width' | 'height'
+}
+
+/**
+ * Every UI mark, keyed by its `art/<name>.png` name.
+ *
+ * All seven procedural textures are PADDED — the ban ring leaves half a stroke
+ * of margin, the operator arms span 0.72 of their square, an emoji or glyph
+ * canvas is padded so nothing clips. Shipped art is trimmed tight to its ink, so
+ * a consumer sizing against the padded box has to scale the art by `frac` or the
+ * mark renders up to 85% too big. Exactly the contract BLOB_PAINT_FRAC states
+ * for the blobs; `markScale` applies it.
+ *
+ * `along` matters because these sprites are NOT square: "?" is far taller than
+ * wide and "=" far wider than tall, so stretching either into the caller's
+ * square box would deform it. The art is fitted on one axis and free on the
+ * other.
+ */
+export const UI_MARKS = {
+  ban: { fallback: 'ftm-ban', frac: BAN_PAINT_FRAC, along: 'width' },
+  // The ✓ disc fills its canvas edge to edge — nothing to normalize.
+  check: { fallback: 'ftm-check', frac: 1, along: 'width' },
+  q: { fallback: 'ftm-q', frac: Q_PAINT_FRAC, along: 'height' },
+  plus: { fallback: 'ftm-plus', frac: OP_ARM_FRAC, along: 'width' },
+  equals: { fallback: 'ftm-equals', frac: OP_ARM_FRAC, along: 'width' },
+  pencil: { fallback: 'ftm-pencil', frac: EMOJI_PAINT_FRAC, along: 'width' },
+  star: { fallback: 'ftm-star', frac: EMOJI_PAINT_FRAC, along: 'width' },
+} as const satisfies Record<string, UiMark>
+
+/** Name of a UI mark — also its `art/<name>.png` file name. */
+export type UiMarkName = keyof typeof UI_MARKS
+
+/** Font size the ⭐ particle is drawn at, CSS px. */
+const STAR_FONT_CSS = 30
+/** Font size the ✏️ commission mark is drawn at, CSS px. */
+const PENCIL_FONT_CSS = 40
+/** The ⭐ particle's full padded box, CSS px — the footprint a celebration star
+ * occupied at `scale: 1` before any art shipped, and the box art is fitted to. */
+export const STAR_BOX_CSS = STAR_FONT_CSS * (1 + 2 * EMOJI_PAD_FRAC)
+
+/**
+ * Uniform scale that puts a mark's ink inside `box`, the square footprint the
+ * layout gives it. The procedural textures are square, so scaling by
+ * `box / width` reproduces the old `setDisplaySize(box, box)` exactly; art is
+ * scaled to `box * frac` on its fitted axis and keeps its aspect ratio.
+ *
+ * Returned as a number (not applied) because particle emitters need the factor
+ * itself — see FeedTheMonsterScene.buildEmitters.
+ */
+export function markScale(
+  mark: UiMark,
+  tex: { width: number; height: number },
+  box: number,
+  isArt: boolean,
+): number {
+  if (!isArt) return box / tex.width
+  return (box * mark.frac) / (mark.along === 'width' ? tex.width : tex.height)
 }
 
 /**
@@ -340,7 +455,9 @@ export function buildSceneTextures(
 
   monsterTexture(scene, opts.color, opts.bodyR)
 
-  // Plate under each tray food.
+  // Plate under each tray food, and under every dish riding the belt. The
+  // FALLBACK look: an `art/plate.png` takes over through scene.look(), and an
+  // episode's `marker-<id>` doily outranks both (see tray.dressPlate).
   if (!scene.textures.exists('ftm-plate')) {
     const pr = px(42)
     const g = scene.add.graphics()
@@ -352,13 +469,16 @@ export function buildSceneTextures(
     g.destroy()
   }
 
-  // Color splash for the task panel tiles (white, tinted per request color).
+  // Color splash for the task panel tiles: drawn WHITE because every tile
+  // tints it (the request colour, the neutral dots backing, the grey "?"
+  // socket). An `art/splash.png` replaces it through scene.look() and must be
+  // white/light-grey for the same reason.
   makeBlobTexture(scene, 'ftm-splash', px(26), 0xffffff, 11)
 
   // Ban sign for "not" rounds: red ring + diagonal bar (🚫, drawn crisp).
   if (!scene.textures.exists('ftm-ban')) {
-    const r = px(34)
-    const stroke = px(8)
+    const r = px(BAN_R_CSS)
+    const stroke = px(BAN_STROKE_CSS)
     const side = r * 2 + stroke * 2
     const g = scene.add.graphics()
     g.lineStyle(stroke, 0xe5484d, 1)
@@ -412,9 +532,9 @@ export function buildSceneTextures(
     g.generateTexture('ftm-dot', px(12), px(12))
     g.destroy()
   }
-  emojiTexture(scene, opts.dpr, 'ftm-star', '⭐', 30)
+  emojiTexture(scene, opts.dpr, 'ftm-star', '⭐', STAR_FONT_CSS)
   // The commission ask: "make me one" (see requestBubble.showCommission).
-  emojiTexture(scene, opts.dpr, 'ftm-pencil', '✏️', 40)
+  emojiTexture(scene, opts.dpr, 'ftm-pencil', '✏️', PENCIL_FONT_CSS)
 
   // ── The thief ────────────────────────────────────────────────────────────
   // Separate FULL-BODY frames, swapped — no face-anchored parts, no rigged wings.

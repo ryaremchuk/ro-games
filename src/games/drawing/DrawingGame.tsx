@@ -2,8 +2,11 @@
  * The PIXEL STUDIO — the drawing game, rebuilt around the shared pad.
  *
  * This route is deliberately thin: `shared/pixel/PixelPad` is the instrument and
- * this is its shell, adding only the three precision buttons (16 / 32 / 64) and
- * the gallery. The pad is shared because other games mount the very same
+ * this is its shell, adding only the three precision buttons and the gallery.
+ * Those three buttons used to print the digits 16 / 32 / 64 — unreadable to the
+ * player, so no label at all. They now show the SAME apple drawn at three block
+ * resolutions (shared/pixel/icons), which says "bigger blocks / smaller blocks"
+ * without a single character. The pad is shared because other games mount the
  * component as an overlay to commission art (Feed the Monster's drawn food is
  * the first), so anything the studio taught the pad would otherwise have to be
  * pulled back out again.
@@ -22,6 +25,8 @@
 import { useCallback, useMemo, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties } from 'react'
 import PixelPad from '../../shared/pixel/PixelPad'
+import PadIcon from '../../shared/pixel/PadIcon'
+import { gridIcon } from '../../shared/pixel/icons'
 import { DEFAULT_GRID_SIZE, GRID_SIZES } from '../../shared/pixel/grid'
 import type { Grid, GridSize } from '../../shared/pixel/grid'
 import {
@@ -91,8 +96,10 @@ export default function DrawingGame() {
               color: size === value ? '#fff' : '#3d3a4b',
             }}
           >
-            {value === 16 ? '▦' : value === 32 ? '▩' : '▨'}
-            <span style={styles.sizeNumber}>{value}</span>
+            <PadIcon
+              name={gridIcon(value)}
+              fallback={value === 16 ? '▦' : value === 32 ? '▩' : '▨'}
+            />
           </button>
         ))}
         <button
@@ -104,7 +111,7 @@ export default function DrawingGame() {
           }}
           style={styles.sizeButton}
         >
-          🖼️
+          <PadIcon name="tool-gallery" fallback="🖼️" />
         </button>
       </>
     ),
@@ -214,6 +221,9 @@ const styles: Record<string, CSSProperties> = {
   root: { position: 'relative', width: '100%', height: '100%', overflow: 'hidden' },
   sizeButton: {
     position: 'relative',
+    display: 'grid',
+    placeItems: 'center',
+    padding: 0,
     border: 'none',
     borderRadius: 12,
     background: 'rgba(255,255,255,0.9)',
@@ -224,14 +234,6 @@ const styles: Record<string, CSSProperties> = {
     aspectRatio: '1',
     cursor: 'pointer',
     touchAction: 'manipulation',
-  },
-  sizeNumber: {
-    position: 'absolute',
-    right: 4,
-    bottom: 2,
-    fontSize: 10,
-    fontWeight: 700,
-    opacity: 0.75,
   },
   gallery: {
     position: 'absolute',

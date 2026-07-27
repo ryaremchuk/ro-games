@@ -28,6 +28,8 @@ import type FeedTheMonsterScene from './FeedTheMonsterScene'
 
 /** An ingredient not yet in the pot sits ghosted — the game's "want" language. */
 const GHOST_ALPHA = 0.5
+/** The ✓ badge's width as a share of the ingredient it is stamped on. */
+const CHECK_OF_TILE = 0.46
 /** Pentatonic-happy tones, shared with the scene + the request bubble. */
 const PENTA = [523, 587, 659, 784, 880]
 
@@ -166,13 +168,7 @@ export class RecipePanel {
 
     for (const cell of layout.recipeCells(box, n)) {
       if (cell.kind === 'plus' || cell.kind === 'equals') {
-        const glyph = this.scene.add.image(
-          cell.dx,
-          0,
-          cell.kind === 'plus' ? 'ftm-plus' : 'ftm-equals',
-        )
-        glyph.setDisplaySize(cell.size, cell.size)
-        root.add(glyph)
+        root.add(this.scene.addMark(cell.dx, 0, cell.kind, cell.size))
         continue
       }
       const foodId = cell.kind === 'result' ? recipe.resultFoodId : recipe.ingredients[cell.index]
@@ -223,9 +219,9 @@ export class RecipePanel {
     if (pic.getData('checked')) return
     pic.setData('checked', true)
     pic.setAlpha(1)
-    const badge = this.scene.add.image(pic.x, pic.y, 'ftm-check')
-    const s = pic.displayWidth * 0.46
-    badge.setDisplaySize(s, s).setAlpha(0.85)
+    const badge = this.scene
+      .addMark(pic.x, pic.y, 'check', pic.displayWidth * CHECK_OF_TILE)
+      .setAlpha(0.85)
     this.root?.add(badge)
     this.scene.tweens.add({
       targets: badge,

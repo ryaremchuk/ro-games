@@ -297,6 +297,44 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     return this.textures.exists(artKey(name))
   }
 
+  /**
+   * Resolve one look to a texture key: the shipped `art/<name>.png` if it
+   * exists, else the procedural `fallback` built in textures.ts. The single
+   * place the reskin contract is spelled out — every prop, belt piece and tile
+   * asks through here, so a missing PNG can only ever mean "keep the drawn
+   * look", never a blank sprite.
+   *
+   * Callers must still size what they get: an art sprite arrives at atlas
+   * resolution (~900px) while the procedural textures are authored at their css
+   * size, so every consumer sets an explicit displaySize from the layout.
+   */
+  look(name: string, fallback: string): string {
+    return this.hasArt(name) ? artKey(name) : fallback
+  }
+
+  /**
+   * Scale factor for one UI mark (🚫 ✓ ? + = ✏️ ⭐) sized into `box`, the square
+   * footprint the layout gives it. Art or procedural, the ink comes out the same
+   * size — see textures.UI_MARKS for why the two need different arithmetic.
+   * Exposed as a number for the particle emitters, which take a scale, not a
+   * display size; everything else goes through addMark().
+   */
+  markScale(name: textures.UiMarkName, box: number): number {
+    const mark = textures.UI_MARKS[name]
+    const tex = this.textures.get(this.look(name, mark.fallback)).getSourceImage()
+    return textures.markScale(mark, tex, box, this.hasArt(name))
+  }
+
+  /**
+   * One UI mark as a sprite, sized into `box`. The single way these symbols are
+   * placed: an atlas sprite arrives ~570px wide against a procedural texture
+   * authored at 30–40 CSS px, so nothing may rely on intrinsic pixels.
+   */
+  addMark(x: number, y: number, name: textures.UiMarkName, box: number): Phaser.GameObjects.Image {
+    const mark = textures.UI_MARKS[name]
+    return this.add.image(x, y, this.look(name, mark.fallback)).setScale(this.markScale(name, box))
+  }
+
   create(): void {
     this.dpr = Math.min(window.devicePixelRatio || 1, 3)
     this.safeInsetBottom = safeAreaInset('bottom')
@@ -713,12 +751,16 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       tint: CONFETTI_TINTS,
       emitting: false,
     })
-    this.stars = this.add.particles(0, 0, 'ftm-star', {
+    // A star particle is the one mark whose size came from the texture's own
+    // pixels (`scale: 1` on a 45-CSS-px emoji canvas). Shipped star art is ~12×
+    // that, so the scale is derived from the CSS box instead — see markScale.
+    const starScale = this.markScale('star', this.px(textures.STAR_BOX_CSS))
+    this.stars = this.add.particles(0, 0, this.look('star', 'ftm-star'), {
       speed: { min: this.px(150), max: this.px(320) },
       angle: { min: 230, max: 310 },
       gravityY: this.px(500),
       lifespan: { min: 1400, max: 2200 },
-      scale: { start: 1, end: 0.2 },
+      scale: { start: starScale, end: starScale * 0.2 },
       rotate: { start: 0, end: 180 },
       emitting: false,
     })

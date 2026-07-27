@@ -27,6 +27,8 @@ const GHOST_ALPHA = 0.5
 const SLOT_GREY = 0xd6d3ce // pattern answer socket — a "?" hole
 const DOTS_BACKING = 0xebe7e0 // subitizing frame behind the ink pips
 const BUBBLE_ITEM_CSS = 44
+// The ✓ badge's width as a share of the tile it is stamped on.
+const CHECK_OF_TILE = 0.46
 // Mirrors the scene's ART SPEC ink + pentatonic-happy tones (the pips + the
 // request-cue melody share these exact values with the scene).
 const INK = 0x3d3a4b
@@ -54,6 +56,29 @@ export class RequestBubble {
 
   private px(css: number): number {
     return css * this.scene.dpr
+  }
+
+  /**
+   * One tile blob, tinted and sized: shipped splash art if it is there, else
+   * the procedural blob. `box` is the footprint the tile was designed to
+   * occupy — the art is normalized into it (textures.BLOB_PAINT_FRAC, since the
+   * procedural blob only inks 0.72 of its own box), so swapping the PNG in or
+   * out cannot move the layout. The explicit displaySize is what keeps a ~850px
+   * atlas sprite from rendering at atlas resolution.
+   */
+  private addSplash(x: number, box: number, tint: number): Phaser.GameObjects.Image {
+    const size = this.scene.hasArt('splash') ? box * textures.BLOB_PAINT_FRAC : box
+    return (
+      this.scene.add
+        .image(x, 0, this.scene.look('splash', 'ftm-splash'))
+        .setTint(tint)
+        .setDisplaySize(size, size)
+        // The footprint the tile was DESIGNED to occupy, remembered because the
+        // art branch above deliberately renders narrower than it. Overlays sized
+        // off the tile (the ✓) must key off this, or shipping splash.png would
+        // silently shrink them by BLOB_PAINT_FRAC. See stampCheck.
+        .setData('box', box)
+    )
   }
 
   /** Tile count, for the e2e state hook (was `this.bubblePics.length`). */
@@ -159,15 +184,13 @@ export class RequestBubble {
     this.drawPanel(count * itemW + this.px(52))
     this.reposition()
 
-    const pencil = this.scene.add.image(-((count - 1) / 2) * itemW, 0, 'ftm-pencil')
-    pencil.setDisplaySize(tile * 0.9, tile * 0.9)
+    const pencil = this.scene.addMark(-((count - 1) / 2) * itemW, 0, 'pencil', tile * 0.9)
     this.bubble.add(pencil)
     this.bubblePics.push(pencil)
     this.pulse(pencil)
 
     if (color !== null) {
-      const blot = this.scene.add.image(itemW / 2, 0, 'ftm-splash').setTint(COLOR_HEX[color])
-      blot.setDisplaySize(tile, tile)
+      const blot = this.addSplash(itemW / 2, tile, COLOR_HEX[color])
       this.bubble.add(blot)
       this.bubblePics.push(blot)
       this.pulse(blot)
@@ -274,8 +297,7 @@ export class RequestBubble {
         if (isPattern) context = true
         else if (ghostKind && !item.banned) ghost = true
       } else if (item.color !== undefined) {
-        pic = this.scene.add.image(x, 0, 'ftm-splash').setTint(COLOR_HEX[item.color])
-        pic.setDisplaySize(tile, tile)
+        pic = this.addSplash(x, tile, COLOR_HEX[item.color])
         // A banned colour stays solid under its ✗. A colour request is a
         // you-pick slot: keep the hue readable (full tint, semi-transparent)
         // and mark it "any food of this colour" with a ?.
@@ -286,14 +308,12 @@ export class RequestBubble {
       } else if (item.dots !== undefined) {
         // Subitizing tile: NEUTRAL backing (never a food colour) + ink pips.
         // Progress is the pips lighting up — no ghost, no ✓.
-        pic = this.scene.add.image(x, 0, 'ftm-splash').setTint(DOTS_BACKING)
-        pic.setDisplaySize(tile * 1.1, tile * 1.1)
+        pic = this.addSplash(x, tile * 1.1, DOTS_BACKING)
         this.addPips(x, item.dots)
       } else if (isPattern) {
         // The pattern's answer socket — THE ask of the round: a neutral grey
         // "?" hole (never a food colour) with a pulsing ring.
-        pic = this.scene.add.image(x, 0, 'ftm-splash').setTint(SLOT_GREY)
-        pic.setDisplaySize(tile * 0.9, tile * 0.9)
+        pic = this.addSplash(x, tile * 0.9, SLOT_GREY)
         const ring = this.scene.add.circle(x, 0, tile * 0.5, 0x000000, 0)
         ring.setStrokeStyle(this.px(4), this.scene.episode.palette.table, 1)
         this.bubble.add(ring)
@@ -307,15 +327,13 @@ export class RequestBubble {
         // Deliberately makes NO colour claim — the crossed-out tile is the only
         // constraint, so there's no misleading "any colour" wheel (which also
         // showed the banned colour inside a "not that colour" task).
-        pic = this.scene.add.image(x, 0, 'ftm-splash').setTint(SLOT_GREY).setAlpha(0.9)
-        pic.setDisplaySize(tile * 0.82, tile * 0.82)
+        pic = this.addSplash(x, tile * 0.82, SLOT_GREY).setAlpha(0.9)
         qSize = tile * 0.45
         this.pulse(pic)
       }
       if (ghost) pic.setAlpha(GHOST_ALPHA)
       if (item.banned) {
-        const ban = this.scene.add.image(x, 0, 'ftm-ban')
-        ban.setDisplaySize(tile * 1.15, tile * 1.15)
+        const ban = this.scene.addMark(x, 0, 'ban', tile * 1.15)
         this.bubble.add(ban)
         this.bubbleExtras.push(ban)
       }
@@ -408,8 +426,7 @@ export class RequestBubble {
 
   /** Overlay a "?" on a you-pick slot ("a food goes here — you choose"). */
   private addQ(pic: Phaser.GameObjects.Image, size: number): void {
-    const q = this.scene.add.image(pic.x, pic.y, 'ftm-q')
-    q.setDisplaySize(size, size)
+    const q = this.scene.addMark(pic.x, pic.y, 'q', size)
     this.bubble.add(q)
     this.bubbleExtras.push(q)
     pic.setData('q', q)
@@ -437,9 +454,10 @@ export class RequestBubble {
     pic.setData('checked', true)
     // A soft ✓ disc stamped over the centre of the tile — anchored to the food
     // whatever its shape, translucent so the picture still reads underneath.
-    const badge = this.scene.add.image(pic.x, pic.y, 'ftm-check')
-    const s = pic.displayWidth * 0.46
-    badge.setDisplaySize(s, s).setAlpha(0.85)
+    // A colour blot reports its design box (addSplash); a food tile's own
+    // displayWidth already is one.
+    const s = ((pic.getData('box') as number | undefined) ?? pic.displayWidth) * CHECK_OF_TILE
+    const badge = this.scene.addMark(pic.x, pic.y, 'check', s).setAlpha(0.85)
     this.bubble.add(badge)
     this.bubbleExtras.push(badge)
     pic.setData('check', badge)
@@ -464,6 +482,7 @@ export class RequestBubble {
     pic.setAlpha(1)
     const size = tile * textures.foodScale(foodId)
     pic.setDisplaySize(size, size)
+    pic.setData('box', undefined) // no longer a blot: its own width is the box
     this.scene.tweens.add({
       targets: pic,
       scaleX: { from: pic.scaleX * 1.4, to: pic.scaleX },
@@ -487,6 +506,7 @@ export class RequestBubble {
     slot.setAlpha(1)
     const size = tile * textures.foodScale(this.scene.round.request.answerId)
     slot.setDisplaySize(size, size)
+    slot.setData('box', undefined) // no longer a socket: its own width is the box
     this.stampCheck(slot)
     // The socket is answered — its ring bows out.
     if (this.patternRing) {

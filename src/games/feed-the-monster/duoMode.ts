@@ -28,6 +28,9 @@ const GAME_ID = 'feed-the-monster'
 // Pentatonic-ish happy tones, mirrored from the scene (the duo shares the count
 // beep + grow chime — see monsterRig.ts for the same duplicate-const pattern).
 const PENTA = [523, 587, 659, 784, 880]
+/** The ✓ badge's width as a share of the duo tile it is stamped on — a touch
+ * bolder than the solo panel's, since a duo bubble's tiles are smaller. */
+const CHECK_OF_TILE = 0.5
 
 /** A tiny thought bubble above one duo friend: the food it wants, `count` tiles
  * that ghost until fed then stamp a ✓. Simpler than the full RequestBubble — a
@@ -94,9 +97,8 @@ class DuoBubble {
         duration: 220,
         ease: 'Back.easeOut',
       })
-      const badge = this.scene.add
-        .image(tile.x, tile.y, 'ftm-check')
-        .setDisplaySize(tile.displayWidth * 0.5, tile.displayWidth * 0.5)
+      const badge = this.scene
+        .addMark(tile.x, tile.y, 'check', tile.displayWidth * CHECK_OF_TILE)
         .setAlpha(0.85)
       this.container.add(badge)
       this.scene.tweens.add({

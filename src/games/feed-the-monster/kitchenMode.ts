@@ -34,7 +34,6 @@ import { playTone } from '../../shared/audio'
 import { dishResult, isDishCooked, potAccepts, potWants } from './logic'
 import type { DishRequest } from './logic'
 import { recipeById } from './recipes'
-import { artKey } from './art'
 import * as layout from './layout'
 import { RecipePanel } from './recipePanel'
 import type { KitchenState } from './testHook'
@@ -112,7 +111,7 @@ export class KitchenMode {
       ease: 'Sine.easeInOut',
     })
 
-    const key = this.scene.hasArt('pot') ? artKey('pot') : 'ftm-pot'
+    const key = this.scene.look('pot', 'ftm-pot')
     this.pot = this.scene.add.image(at.x, at.y, key).setDepth(4)
     this.pot.setDisplaySize(w, w * 0.8)
     this.pot.setTint(this.scene.episode.palette.tableEdge)

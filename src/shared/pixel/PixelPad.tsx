@@ -46,12 +46,19 @@ import { gridToDrawing, saveDrawing } from './artStore'
 import type { Drawing, DrawingRole } from './artStore'
 import { cellFromPoint, cellSize, padLayout } from './layout'
 import type { PadLayout } from './layout'
+import PadIcon from './PadIcon'
+import { padIconUrl } from './icons'
 import type { PixelPadTestApi } from './testHook'
 
 /** One stroke (pointer-down → up) = one undo step. */
 const UNDO_DEPTH = 20
 /** A fast drag must not machine-gun the tick sound. */
 const TICK_THROTTLE_MS = 40
+/**
+ * The default finish glyph. It doubles as the "no consumer overrode the label"
+ * signal for the done button's art — see the render below.
+ */
+const DEFAULT_DONE_LABEL = '✓'
 
 export interface PixelPadProps {
   /** Grid resolution. 16 is the only size comfortable on every device. */
@@ -114,7 +121,7 @@ export default function PixelPad({
   railTop,
   railTools = 0,
   chromeTop = 0,
-  doneLabel = '✓',
+  doneLabel = DEFAULT_DONE_LABEL,
   frame = 'easel',
   exposeTestApi = false,
 }: PixelPadProps) {
@@ -435,6 +442,8 @@ export default function PixelPad({
     side: layout.side + easel.border * 2,
   }
   const doneSide = layout.button * 1.2
+  /** Use the finish ART as the whole button face — see the done button below. */
+  const doneArt = doneLabel === DEFAULT_DONE_LABEL && padIconUrl('tool-done') !== undefined
   // The finish button RESTS ON THE LEDGE (clamped so it can never hang out of the
   // pad's own box on a short overlay), which is what makes the shelf load-bearing
   // rather than ornamental.
@@ -523,9 +532,13 @@ export default function PixelPad({
             type="button"
             aria-label="Eraser"
             onClick={() => setTool((t) => ({ ...t, eraser: true }))}
-            style={toolStyle({ background: tool.eraser ? '#ffd166' : 'rgba(255,255,255,0.9)' })}
+            // Selected is BLUE, not the amber it used to be: the sponge art is
+            // itself amber-yellow, so the old highlight swallowed it whole. Blue is
+            // already the rail's "this one is on" (the studio's size buttons), so
+            // the pad now says it one way everywhere.
+            style={toolStyle({ background: tool.eraser ? '#4d96ff' : 'rgba(255,255,255,0.9)' })}
           >
-            🧽
+            <PadIcon name="tool-eraser" fallback="🧽" />
           </button>
           {/* Never greyed into uselessness — an empty stack is simply inert. */}
           <button
@@ -534,10 +547,10 @@ export default function PixelPad({
             onClick={undo}
             style={toolStyle({ opacity: undoDepth === 0 ? 0.45 : 1 })}
           >
-            ↩︎
+            <PadIcon name="tool-undo" fallback="↩︎" />
           </button>
           <button type="button" aria-label="New page" onClick={clear} style={toolStyle()}>
-            🗑️
+            <PadIcon name="tool-trash" fallback="🗑️" />
           </button>
         </div>
         <div style={swatchZone}>
@@ -576,9 +589,20 @@ export default function PixelPad({
           type="button"
           aria-label="Done"
           onClick={done}
-          style={{ ...styles.done, width: layout.button * 1.2, height: layout.button * 1.2 }}
+          style={{
+            ...styles.done,
+            width: doneSide,
+            height: doneSide,
+            // The art IS a green disc with a white check, so painting it on top of
+            // the CSS green disc would stack two green circles and rim the good one
+            // with the flat one. The art wins and the disc steps aside — but only
+            // while the label is ours: a consumer that passes its own `doneLabel`
+            // gets the CSS disc back to carry it (nobody does today; FTM and the
+            // studio both take the default).
+            ...(doneArt ? styles.doneBare : null),
+          }}
         >
-          {doneLabel}
+          {doneArt ? <PadIcon name="tool-done" fallback={doneLabel} scale={1} shadow /> : doneLabel}
         </button>
       </div>
     </div>
@@ -632,6 +656,9 @@ const styles: Record<string, CSSProperties> = {
     touchAction: 'manipulation',
   },
   tool: {
+    display: 'grid',
+    placeItems: 'center',
+    padding: 0,
     border: 'none',
     borderRadius: 12,
     background: 'rgba(255,255,255,0.9)',
@@ -675,6 +702,9 @@ const styles: Record<string, CSSProperties> = {
     boxShadow: '0 2px 8px rgba(0,0,0,0.25), inset 0 0 0 3px rgba(255,255,255,0.7)',
   },
   done: {
+    display: 'grid',
+    placeItems: 'center',
+    padding: 0,
     border: 'none',
     borderRadius: '50%',
     background: '#2f9e44',
@@ -685,5 +715,16 @@ const styles: Record<string, CSSProperties> = {
     boxShadow: '0 6px 16px rgba(0,0,0,0.3)',
     cursor: 'pointer',
     touchAction: 'manipulation',
+  },
+  /**
+   * The done button when the ART is its face: the CSS disc gets out of the way
+   * entirely. The box-shadow goes too — a square shadow behind a round sprite is
+   * the tell that a PNG was pasted onto a button — and the art wears its own
+   * drop-shadow instead, which follows the disc's real silhouette. The button box
+   * (and therefore the tap target) is unchanged.
+   */
+  doneBare: {
+    background: 'none',
+    boxShadow: 'none',
   },
 }

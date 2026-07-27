@@ -50,7 +50,6 @@ import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { pickTarget, thiefDials } from './thief'
 import type { ThiefDials, VisitOutcome } from './thief'
-import { artKey } from './art'
 import * as layout from './layout'
 import type { VisitorState } from './testHook'
 import type FeedTheMonsterScene from './FeedTheMonsterScene'
@@ -361,7 +360,7 @@ export class ThiefMode {
   private frameKey(): string {
     const name =
       this.phase === 'peck' ? 'thief-perch' : this.wingUp ? 'thief-fly-up' : 'thief-fly-down'
-    return this.scene.hasArt(name) ? artKey(name) : `ftm-${name}`
+    return this.scene.look(name, `ftm-${name}`)
   }
 
   // ─── The two ways it ends ──────────────────────────────────────────────────
