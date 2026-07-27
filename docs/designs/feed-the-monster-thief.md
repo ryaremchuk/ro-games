@@ -64,19 +64,26 @@ telegraphed, it never blocks the round, and its frequency is capped by the same
 ### The beat
 
 ```
- telegraph (~1.2 s)      approach        peck window        exit
- shadow slides in    →   bird glides  →  1.5–3.0 s      →   flies off
+ telegraph 1.0–1.5 s     glide 1.24 s    peck window        exit
+ shadow slides in    →   bird flies   →  1.5–3.0 s      →   flies off
  + a distant caw         to a plate      (tap → shoo)        (with or without)
+                         └──────── tappable ─────┘
 ```
 
 - **Telegraph is mandatory.** A moving shadow on the table plus a distant caw,
   well before the bird is on screen. Nothing may ever appear on a plate without
   warning — at this age an unannounced grab reads as unfair, not exciting.
+- **The glide is half the catch window.** The visitor is tappable from its first
+  frame on screen, and it flies slowly enough (`thief.APPROACH_MS`) for a
+  four-year-old to land a finger on it in mid-air. Shortening it would buy
+  difficulty by making the visit less catchable rather than more demanding, so it
+  is the same length at every skill.
 - **Target choice**: a plate that currently holds a food. Prefer a **distractor**
   over a food the request wants (see no-fail).
-- **Tap to shoo**: a generous hit area (the bird plus a margin, at least as big
-  as a food's), a squawk, a puff of feathers, the bird arcs off screen. The
-  friend does a `beHappy` giggle.
+- **Tap to shoo**: a generous hit area (`layout.visitorTapRadius` — a ~2.7 cm
+  circle, roomier than a food's, because it is the only target that moves), a
+  squawk, a puff of feathers, the bird arcs off screen. The friend does a
+  `beHappy` giggle.
 - **Success (from the bird's side)**: it lifts the food and flies off with it in
   its beak; the plate is briefly empty and a replacement food drops in with the
   existing bounce. **The round stays completable at all times.**
@@ -108,12 +115,17 @@ withholding hard). It only unlocks once the child reliably catches thieves.
 The thief rides its **own axis**, like the duo — driven by live data plus chance,
 never by the cognitive meter, and gated so it never lands on a struggling child.
 
-| Dial                        | Easiest        | Hardest         |
-| --------------------------- | -------------- | --------------- |
-| Peck window (time to react) | 3.0 s          | 1.5 s           |
-| Telegraph lead              | 1.5 s          | 1.0 s           |
-| Frequency                   | ~1 in 4 rounds | ~1 in 2 rounds  |
-| No-go visitor rate          | 0 %            | ~30 % of visits |
+| Dial                        | Easiest             | Hardest         |
+| --------------------------- | ------------------- | --------------- |
+| Glide (tappable flight)     | 1.24 s — never less | 1.24 s          |
+| Peck window (time to react) | 3.0 s               | 1.5 s           |
+| Telegraph lead              | 1.5 s               | 1.0 s           |
+| Frequency                   | ~1 in 4 rounds      | ~1 in 2 rounds  |
+| No-go visitor rate          | 0 %                 | ~30 % of visits |
+
+The whole tappable window (glide + peck) therefore runs 4.24 s → 2.74 s, floored by
+`thief.MIN_TAPPABLE_MS` so the hardest visit still measures attention rather than
+reflexes.
 
 Its own small persisted meter (`thief`), moved by whether the last few visits
 were caught in time. Gates, mirroring `shouldInjectDuo`:
@@ -225,3 +237,16 @@ glance.
 - Both visitors are drawn **procedurally for now** — three magpie frames sharing
   one body anchor plus two butterfly frames, following the whack-critter
   separate-full-body-frames pattern rather than anything face-anchored.
+
+### After watching it played on the iPad
+
+- **The glide was twice too fast** (620 ms). The bird was on the plate before the
+  child had finished turning their head, so "you may tap it in the air" was true in
+  code and false in practice: every catch was made on the perch. It is now 1.24 s
+  (`thief.APPROACH_MS`), a pure design dial in the pure module and unit-tested. The
+  telegraph was left alone at 1.0–1.5 s — it already reads, and stretching it would
+  only add waiting, not another chance to act.
+- **The hit area is a circle, not the sprite rectangle** (`layout.visitorTapRadius`):
+  proportional to a tray slot, floored at ~1.3 cm of radius, and re-derived on every
+  frame swap. Phaser's `setInteractive` silently ignores a new shape once an object
+  is interactive, so the shape is assigned in place — a lesson worth keeping.

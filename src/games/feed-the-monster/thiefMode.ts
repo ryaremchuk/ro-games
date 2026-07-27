@@ -5,12 +5,18 @@
  *
  * The beat:
  *
- *   telegraph (~1.2 s)      approach        peck window        exit
- *   shadow slides in    →   bird glides  →  1.5–3.0 s      →   flies off
+ *   telegraph 1.0–1.5 s     glide 1.24 s    peck window        exit
+ *   shadow slides in    →   bird flies   →  1.5–3.0 s      →   flies off
  *   + a distant caw         to a plate      (tap → shoo)        (with or without)
+ *                           └── tappable ───────┘
  *
  * The telegraph is MANDATORY. Nothing may ever appear on a plate without warning:
  * at this age an unannounced grab reads as unfair, not exciting.
+ *
+ * The GLIDE is a catch opportunity, not a wait: the visitor carries its full tap
+ * circle from its first frame on screen, and it flies slowly enough (thief.APPROACH_MS,
+ * doubled after watching the game on the iPad) for a four-year-old to land a finger
+ * on it in mid-air.
  *
  * No-fail rules, all of them load-bearing:
  *  1. The thief prefers a distractor, and when it has no choice the replacement
@@ -31,7 +37,7 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { pickTarget, thiefDials } from './thief'
-import type { VisitOutcome, VisitorKind } from './thief'
+import type { ThiefDials, VisitOutcome, VisitorKind } from './thief'
 import { artKey } from './art'
 import * as layout from './layout'
 import type { VisitorState } from './testHook'
@@ -44,6 +50,11 @@ const FLAP_MS = 150
 /** Visitor footprint in CSS px. Comfortably bigger than a food, on purpose. */
 const VISITOR_W_CSS = 124
 const VISITOR_H_CSS = 104
+/** How far off screen (right) and above the plate the glide starts, in CSS px. */
+const ENTRY_X_CSS = 120
+const ENTRY_RISE_CSS = 200
+/** Where the visitor settles, above the plate it is after. */
+const PERCH_RISE_CSS = 26
 export class ThiefMode {
   /** True from the telegraph until the visitor is off screen. */
   active = false
@@ -130,7 +141,7 @@ export class ThiefMode {
       this.after(150, () => playTone(1319, 140, 'sine', 0.04))
     }
 
-    this.after(dials.telegraphMs, () => this.approach(dials.peckWindowMs))
+    this.after(dials.telegraphMs, () => this.approach(dials))
     return true
   }
 
@@ -139,22 +150,17 @@ export class ThiefMode {
   }
 
   /** Glide in from off screen and land on the plate. */
-  private approach(peckWindowMs: number): void {
+  private approach(dials: ThiefDials): void {
     if (!this.active) return
     this.phase = 'approach'
     const at = layout.slotPos(this.scene.metrics(), this.slot)
     const key = this.frameKey()
     this.bird = this.scene.add
-      .image(this.scene.scale.width + this.px(120), at.y - this.px(200), key)
+      .image(this.scene.scale.width + this.px(ENTRY_X_CSS), at.y - this.px(ENTRY_RISE_CSS), key)
       .setDepth(21)
-    this.bird.setDisplaySize(
-      this.px(this.kind === 'thief' ? VISITOR_W_CSS : VISITOR_H_CSS),
-      this.px(VISITOR_H_CSS),
-    )
-    // The whole sprite is the hit area, and the sprite is deliberately larger than
-    // a food: a four-year-old is aiming a finger at something that just moved, and
-    // the tap must be at least as forgiving as a food's ~100 css hit circle.
-    this.bird.setInteractive({ useHandCursor: true })
+    // Sized AND made tappable before the first frame is drawn: the tap counts from
+    // the moment the bird exists, so it must never be on screen without its circle.
+    this.fitVisitor()
     this.bird.on('pointerdown', () => this.onTap())
 
     this.flap = this.scene.time.addEvent({
@@ -162,18 +168,63 @@ export class ThiefMode {
       loop: true,
       callback: () => {
         this.wingUp = !this.wingUp
-        if (this.phase !== 'peck') this.bird?.setTexture(this.frameKey())
+        if (this.phase !== 'peck') {
+          this.bird?.setTexture(this.frameKey())
+          this.fitVisitor()
+        }
       },
     })
 
     this.scene.tweens.add({
       targets: this.bird,
       x: at.x,
-      y: at.y - this.px(26),
-      duration: 620,
+      y: at.y - this.px(PERCH_RISE_CSS),
+      // Half the speed it shipped at — the glide is the child's chance to catch the
+      // bird in mid-air, and it lives in thief.ts because it is a design dial.
+      duration: dials.approachMs,
       ease: 'Sine.easeOut',
-      onComplete: () => this.land(peckWindowMs),
+      onComplete: () => this.land(dials.peckWindowMs),
     })
+  }
+
+  /**
+   * Size the visitor and give it its tap circle, both derived from the CURRENT
+   * frame — so swapping wing-up ↔ wing-down ↔ perch can never shrink either, even
+   * if a future art frame arrives at a different resolution.
+   *
+   * The circle lives in unscaled frame coords (like a tray food's), hence the
+   * divide by the sprite's own scale: what the finger gets is a
+   * `layout.visitorTapRadius` circle of glass whatever the art's resolution. It is
+   * assigned in place because Phaser's `setInteractive` ignores a new shape once an
+   * object is already interactive (InputPlugin.enable only flips `enabled`).
+   */
+  private fitVisitor(): void {
+    const bird = this.bird
+    if (!bird) return
+    bird.setDisplaySize(
+      this.px(this.kind === 'thief' ? VISITOR_W_CSS : VISITOR_H_CSS),
+      this.px(VISITOR_H_CSS),
+    )
+    const shape = new Phaser.Geom.Circle(
+      bird.frame.width / 2,
+      bird.frame.height / 2,
+      this.tapRadius() / Math.min(bird.scaleX, bird.scaleY),
+    )
+    if (bird.input) {
+      bird.input.hitArea = shape
+      bird.input.hitAreaCallback = Phaser.Geom.Circle.Contains
+    } else {
+      bird.setInteractive({
+        hitArea: shape,
+        hitAreaCallback: Phaser.Geom.Circle.Contains,
+        useHandCursor: true,
+      })
+    }
+  }
+
+  /** On-glass tap radius for the visitor, in backing px. */
+  private tapRadius(): number {
+    return layout.visitorTapRadius(this.scene.metrics())
   }
 
   /** Landed: the peck loop runs for the window, then the visit resolves. */
@@ -182,6 +233,7 @@ export class ThiefMode {
     this.phase = 'peck'
     this.peckEndsAt = this.scene.time.now + peckWindowMs
     this.bird.setTexture(this.frameKey())
+    this.fitVisitor()
     this.shadow?.setAlpha(0.3)
 
     if (this.kind === 'thief') {
@@ -224,9 +276,11 @@ export class ThiefMode {
 
   /**
    * The child tapped it. Every tap on a visible visitor counts, including one
-   * during the glide in: punishing an eager child for being early is exactly the
-   * wrong lesson, and there is nothing to tap during the telegraph anyway, so
-   * spam-tapping the sky can never be what pays off.
+   * during the glide in — with the same consequences as a perched tap: punishing an
+   * eager child for being early is exactly the wrong lesson, and there is nothing to
+   * tap during the telegraph anyway, so spam-tapping the sky can never be what pays
+   * off. The glide is deliberately slow enough (thief.APPROACH_MS) for that
+   * mid-air catch to be a real option and not a fluke.
    */
   private onTap(): void {
     if (!this.active || this.resolved || this.phase === 'leaving') return
@@ -380,6 +434,7 @@ export class ThiefMode {
       msLeft: this.phase === 'peck' ? Math.max(0, this.peckEndsAt - this.scene.time.now) : 0,
       xCss: (this.bird?.x ?? 0) / this.scene.dpr,
       yCss: (this.bird?.y ?? 0) / this.scene.dpr,
+      tapRadiusCss: this.tapRadius() / this.scene.dpr,
     }
   }
 }

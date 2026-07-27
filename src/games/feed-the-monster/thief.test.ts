@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  APPROACH_MS,
   BUTTERFLY_MIN_SKILL,
+  MIN_TAPPABLE_MS,
   THIEF_BASE_CHANCE,
   THIEF_MAX_CHANCE,
   THIEF_MIN_GAP,
@@ -83,10 +85,56 @@ describe('difficulty curves', () => {
   })
 
   it('runs the design numbers at each end', () => {
-    expect(thiefDials(0)).toMatchObject({ peckWindowMs: 3_000, telegraphMs: 1_500, noGoRate: 0 })
+    expect(thiefDials(0)).toMatchObject({
+      approachMs: 1_240,
+      peckWindowMs: 3_000,
+      telegraphMs: 1_500,
+      noGoRate: 0,
+    })
     expect(thiefDials(THIEF_SKILL_MAX).peckWindowMs).toBe(1_500)
     expect(thiefDials(THIEF_SKILL_MAX).telegraphMs).toBe(1_000)
     expect(thiefDials(THIEF_SKILL_MAX).noGoRate).toBeCloseTo(0.3)
+  })
+
+  it('flies in at half the speed it shipped at, and never faster', () => {
+    // 620 ms was the shipped glide, and on the iPad the bird was simply already
+    // there: the child never got the mid-air catch the mechanic is built around.
+    const SHIPPED_MS = 620
+    expect(APPROACH_MS).toBe(2 * SHIPPED_MS)
+    for (const skill of SKILLS) {
+      expect(thiefDials(skill).approachMs).toBe(APPROACH_MS)
+    }
+  })
+
+  it('keeps the glide the same length at every skill — difficulty rides the peck', () => {
+    // The glide is the fair-warning half of a visit: shrinking it would buy
+    // difficulty by making the visit less catchable rather than more demanding.
+    for (let skill = 1; skill <= THIEF_SKILL_MAX; skill++) {
+      expect(thiefDials(skill).approachMs).toBe(thiefDials(skill - 1).approachMs)
+    }
+    // …and the whole window still tightens with skill, which is where the ladder is.
+    const easiest = thiefDials(0)
+    const hardest = thiefDials(THIEF_SKILL_MAX)
+    expect(hardest.approachMs + hardest.peckWindowMs).toBeLessThan(
+      easiest.approachMs + easiest.peckWindowMs,
+    )
+  })
+
+  it('leaves a tappable window at every skill, the top of the ladder included', () => {
+    for (const skill of SKILLS) {
+      const dials = thiefDials(skill)
+      // What the child actually gets to aim at: the glide plus the perch.
+      expect(
+        dials.approachMs + dials.peckWindowMs,
+        `visit too quick to catch at skill ${skill}`,
+      ).toBeGreaterThanOrEqual(MIN_TAPPABLE_MS)
+    }
+    const hardest = thiefDials(THIEF_SKILL_MAX)
+    // The hardest visit in the game: 1.24 s in the air + 1.5 s on the plate. Even
+    // if the child only reacts once it lands, the glide is the warning that got
+    // their eyes there — which is exactly what a 620 ms glide could not do.
+    expect(hardest.approachMs).toBeGreaterThanOrEqual(1_200)
+    expect(hardest.approachMs + hardest.peckWindowMs).toBeGreaterThanOrEqual(2_700)
   })
 
   it('always leaves the telegraph shorter than the window it warns about', () => {

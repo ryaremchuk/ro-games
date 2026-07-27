@@ -20,8 +20,10 @@ import {
   monsterPos,
   miniSlot,
   snapRadius,
+  visitorTapRadius,
   PANEL_CENTER_Y_CSS,
   PANEL_H_CSS,
+  VISITOR_TAP_MIN_CSS,
   type LayoutMetrics,
 } from './layout'
 
@@ -245,5 +247,34 @@ describe('the conveyor belt', () => {
     const narrow: LayoutMetrics = { ...m, w: 300 }
     expect(visibleDishCount(narrow)).toBeGreaterThanOrEqual(4)
     expect(dishPitch(narrow) * 4).toBeLessThanOrEqual(narrow.w + 1)
+  })
+})
+
+describe('a visitor’s tap circle', () => {
+  // The thief and the butterfly are the only targets in the game that MOVE, and
+  // they are tappable from their first frame on screen — so the circle a finger
+  // has to land in is held to a physical minimum on every device.
+  for (const device of DEVICES) {
+    it(`is at least ~2 cm across on ${device.name}`, () => {
+      const css = visitorTapRadius(device.metrics) / device.metrics.dpr
+      expect(css).toBeGreaterThanOrEqual(VISITOR_TAP_MIN_CSS)
+      // ~52 css px to the centimetre on an iPad: a 2 cm target is ~104 css across.
+      expect(css * 2).toBeGreaterThanOrEqual(104)
+      // And roomier than a still food's ~100 css hit circle, because it moves.
+      expect(css * 2).toBeGreaterThan(100)
+    })
+  }
+
+  it('grows with the tray on a wide screen instead of staying pinned', () => {
+    const wide: LayoutMetrics = { ...m, w: 4000 }
+    expect(visitorTapRadius(wide)).toBeGreaterThan(visitorTapRadius(m))
+    expect(visitorTapRadius(wide)).toBeCloseTo(traySlotWidth(wide) * 0.6, 6)
+  })
+
+  it('falls back to the physical floor on a narrow screen', () => {
+    const narrow: LayoutMetrics = { ...m, w: 700, dpr: 2 }
+    // The proportional term (0.6 of a 79.6 css slot) is below the floor there.
+    expect(traySlotWidth(narrow) * 0.6).toBeLessThan(VISITOR_TAP_MIN_CSS * narrow.dpr)
+    expect(visitorTapRadius(narrow)).toBe(VISITOR_TAP_MIN_CSS * narrow.dpr)
   })
 })

@@ -4,9 +4,10 @@
  * curve live here and are unit-tested (thief.test.ts).
  *
  * The mechanic: every now and then a cheeky magpie glides in, lands on a plate and
- * starts pecking. A tap sends it flapping off empty-clawed. Ignore it long enough
- * and it flies away WITH the food — at which point a fresh one drops onto the
- * plate, because nothing in this game is ever lost.
+ * starts pecking. A tap sends it flapping off empty-clawed — and it counts from the
+ * moment the bird is on screen, so the glide in is a catch opportunity, not a wait.
+ * Ignore it long enough and it flies away WITH the food — at which point a fresh
+ * one drops onto the plate, because nothing in this game is ever lost.
  *
  * This is the game's first INTERRUPTION: something that demands a response while
  * the real job (feed the friend) is still open. That is a different muscle from
@@ -30,6 +31,11 @@ import type { Rng } from './logic'
 export const THIEF_SKILL_MAX = 6
 
 export interface ThiefDials {
+  /**
+   * The glide: how long the visitor is in the air, from its first frame on screen
+   * to touching down on the plate. It is tappable for every one of those ms.
+   */
+  approachMs: number
   /** How long the child has to react once the bird has landed. */
   peckWindowMs: number
   /** Warning before the bird is on screen (shadow + a distant caw). */
@@ -37,6 +43,29 @@ export interface ThiefDials {
   /** Share of visits that are the no-go butterfly. */
   noGoRate: number
 }
+
+/**
+ * Duration of the glide in, at every skill.
+ *
+ * DOUBLED from the 620 ms it shipped at, after watching the game played on the
+ * iPad: the bird was on the plate before the child had finished turning their head,
+ * so the only real chance to act came *after* it had landed. The glide is the
+ * "here it comes — catch it" beat, and the visitor is tappable throughout it, so
+ * halving its speed hands back the in-flight catch the mechanic was always meant
+ * to offer.
+ *
+ * It stays FLAT across the ladder on purpose: the glide is the fair-warning half
+ * of a visit, and difficulty rides the peck window and the no-go rate instead. The
+ * total tappable window still shrinks with skill (see MIN_TAPPABLE_MS).
+ */
+export const APPROACH_MS = 1_240
+
+/**
+ * Floor on the WHOLE tappable window (glide + peck) at any skill. A four-year-old
+ * has to notice the bird, decide, and land a finger on a moving target; below this
+ * the visit stops measuring attention and starts measuring reflexes.
+ */
+export const MIN_TAPPABLE_MS = 2_000
 
 function lerp(from: number, to: number, t: number): number {
   return from + (to - from) * t
@@ -52,7 +81,8 @@ export const BUTTERFLY_MIN_SKILL = 3
 /**
  * Dials for a thief-meter value. The peck window shrinks 3.0 s → 1.5 s and the
  * telegraph 1.5 s → 1.0 s, while the butterfly ramps in from nothing to ~30 % of
- * visits — the standard no-go ratio that makes withholding genuinely hard.
+ * visits — the standard no-go ratio that makes withholding genuinely hard. The
+ * glide is the same generous length at every skill (see APPROACH_MS).
  */
 export function thiefDials(thiefSkill: number): ThiefDials {
   const clamped = Math.min(Math.max(thiefSkill, 0), THIEF_SKILL_MAX)
@@ -62,6 +92,7 @@ export function thiefDials(thiefSkill: number): ThiefDials {
     ? (clamped - BUTTERFLY_MIN_SKILL) / Math.max(1, THIEF_SKILL_MAX - BUTTERFLY_MIN_SKILL)
     : 0
   return {
+    approachMs: APPROACH_MS,
     peckWindowMs: Math.round(lerp(3_000, 1_500, t)),
     telegraphMs: Math.round(lerp(1_500, 1_000, t)),
     noGoRate: unlocked ? lerp(0.12, 0.3, noGoT) : 0,

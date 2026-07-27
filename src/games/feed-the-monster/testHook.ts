@@ -102,9 +102,14 @@ export interface VisitorState {
   foodId: string
   /** ms left in the peck window (0 outside it). */
   msLeft: number
-  /** Where to tap, in css px. */
+  /** Where to tap, in css px — live, so it tracks the bird through the glide. */
   xCss: number
   yCss: number
+  /**
+   * Radius of the tap circle around (xCss, yCss), in css px. Carried from the
+   * visitor's first frame on screen: a tap lands whether it is flying or perched.
+   */
+  tapRadiusCss: number
 }
 
 /** The pot, mid-cook. */

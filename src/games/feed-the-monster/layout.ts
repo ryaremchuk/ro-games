@@ -156,6 +156,34 @@ export function snapRadius(m: LayoutMetrics): number {
   return Math.max(m.bodyR * 0.9 * m.growth, px(m, 100))
 }
 
+// ─── Visitors (the thief, the butterfly) ─────────────────────────────────────
+
+/** A visitor's tap circle: this share of a tray slot… */
+const VISITOR_TAP_SLOT_FRAC = 0.6
+/**
+ * …never below this physical floor, in CSS px. ~52 css px make a centimetre on an
+ * iPad, so 70 is ~1.3 cm of radius — a ~2.7 cm target, comfortably past the ~2 cm
+ * a four-year-old's fingertip lands reliably. Exported so a spec can assert it.
+ */
+export const VISITOR_TAP_MIN_CSS = 70
+
+/**
+ * Tap radius for a visitor — the circle a finger has to land in to shoo it.
+ *
+ * Deliberately roomier than a food's ~50 css hit radius: the visitor is the only
+ * target in the game that MOVES, and it is tappable from the moment it appears, so
+ * most taps are aimed at something mid-flight. Proportional to the tray on a wide
+ * screen, floored by the physical minimum above on a narrow one.
+ *
+ * On the narrowest viewport that circle reaches a little into the neighbouring
+ * plate. That is the right way to lose the tie: a tap that shoos the bird instead
+ * of starting a drag costs the child nothing (both are answered with delight),
+ * while a bird missed by a hair costs them the food.
+ */
+export function visitorTapRadius(m: LayoutMetrics): number {
+  return Math.max(traySlotWidth(m) * VISITOR_TAP_SLOT_FRAC, px(m, VISITOR_TAP_MIN_CSS))
+}
+
 // ─── Kitchen: the pot ────────────────────────────────────────────────────────
 //
 // The pot stands between the friend and the tray, well off to the right: the

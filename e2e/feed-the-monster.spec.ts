@@ -6,6 +6,7 @@ import type { FeedTestState } from '../src/games/feed-the-monster/testHook'
 import type { TaskKind } from '../src/games/feed-the-monster/logic'
 import type { JourneyState } from '../src/games/feed-the-monster/journey'
 import { EPISODES, FRIENDS_PER_EPISODE, GROW_STEPS } from '../src/games/feed-the-monster/journey'
+import { VISITOR_TAP_MIN_CSS } from '../src/games/feed-the-monster/layout'
 
 // The liveness polls below carry generous internal deadlines (a throttled
 // headless clock can freeze Phaser for 15s+ mid-celebration), so the default
@@ -744,6 +745,144 @@ test('feed: the butterfly takes nothing, whether it is tapped or left alone', as
   await page.mouse.up()
   await pollState(page, 'tapped butterfly left', (s) => s.visitor === null, 20_000)
   expect((await readState(page)).foods.length).toBe(trayBefore)
+})
+
+/** What an armed air-tap saw, and what it did. */
+interface AirTap {
+  /** The visit reached its end (the visitor left the stage). */
+  ended: boolean
+  /** Taps issued — one at most, exactly like a child's single shot at it. */
+  taps: number
+  /** Visit phase at the instant the tap was pressed. */
+  phaseAtTap: string
+  yAtTap: number
+  tapRadiusCss: number
+  /** How far off the bird's centre the press was aimed, in css px. */
+  aimedOffCentreCss: number
+  /** Was the visitor EVER seen on the plate (the peck phase)? */
+  perched: boolean
+  /** Did the tray ever lose a food (i.e. was anything stolen)? */
+  trayDipped: boolean
+}
+
+/**
+ * Arm an in-page frame loop that taps the visitor the instant it is in the air over
+ * the table, then reports what the whole visit did.
+ *
+ * Why the tap is dispatched in-page instead of through `page.mouse`: a
+ * read-then-tap over CDP costs ~150 ms of round trips, and this harness's clock
+ * advances in bursts around input (see keepAwake), so the bird can travel 200 css px
+ * — 3× its hit circle — between the read and the press, which no finger ever does.
+ * Fired from a frame callback, the press lands on the coordinates it was aimed at.
+ * It is still the real input path: a DOM `mousedown` on the game canvas, which
+ * Phaser hit-tests synchronously against the live sprite exactly as it does a
+ * finger's (`InputManager.onMouseDown` → `updateInputPlugins`). Only ONE press is
+ * ever issued, so a hit area that does not cover the flying bird fails the test
+ * rather than being sprayed at until something lands.
+ *
+ * The press is aimed deliberately OFF the bird's centre — high, the way a finger
+ * lags a target that is still descending — so it also proves the circle is as wide
+ * as the game reports, not just that a bullseye works.
+ *
+ * The test still nudges the mouse from outside to keep frames coming; this loop only
+ * decides where and when to press.
+ */
+const armAirTap = (page: Page, at: { trayYCss: number; wCss: number }): Promise<void> =>
+  page.evaluate((a) => {
+    const canvas = document.querySelector('canvas')!
+    const seen = {
+      started: false,
+      ended: false,
+      taps: 0,
+      phaseAtTap: '',
+      yAtTap: 0,
+      tapRadiusCss: 0,
+      aimedOffCentreCss: 0,
+      perched: false,
+      trayDipped: false,
+    }
+    ;(window as unknown as { __airTap: typeof seen }).__airTap = seen
+    const tick = (): void => {
+      const s = window.__feedTheMonster?.state()
+      if (!s) return
+      const v = s.visitor
+      if (v !== null) seen.started = true
+      if (v?.phase === 'peck') seen.perched = true
+      if (s.foods.length < 8) seen.trayDipped = true
+      if (seen.started && v === null) {
+        seen.ended = true
+        return
+      }
+      // Still flying, and its centre is on the glass — a press a finger could make.
+      if (v !== null && seen.taps === 0 && v.phase === 'approach' && v.xCss < a.wCss - 24) {
+        // 85 % of the way to the circle's edge, and HIGH — the way a finger lags a
+        // target that is still descending. Past the sprite's own half-height, so a
+        // hit proves the game's reported tap circle is really the hit area.
+        const offCentre = v.tapRadiusCss * 0.85
+        seen.taps++
+        seen.phaseAtTap = v.phase
+        seen.yAtTap = v.yCss
+        seen.tapRadiusCss = v.tapRadiusCss
+        seen.aimedOffCentreCss = offCentre
+        const init = {
+          bubbles: true,
+          cancelable: true,
+          clientX: v.xCss,
+          clientY: v.yCss - offCentre,
+          button: 0,
+        }
+        canvas.dispatchEvent(new MouseEvent('mousedown', { ...init, buttons: 1 }))
+        canvas.dispatchEvent(new MouseEvent('mouseup', { ...init, buttons: 0 }))
+      }
+      requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  }, at)
+
+const readAirTap = (page: Page): Promise<AirTap> =>
+  page.evaluate(() => (window as unknown as { __airTap: AirTap }).__airTap)
+
+test('feed: the thief can be shooed in mid-air, before it ever reaches the plate', async ({
+  page,
+}) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  const tray = await waitTraySettled(page)
+  const trayYCss = tray.foods[0].yCss
+  const wCss = page.viewportSize()!.width
+
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor('thief'))).toBe(true)
+  const visit = await pollState(page, 'thief telegraphed', (s) => s.visitor !== null)
+  const targeted = visit.visitor!.foodId
+
+  // One press, once the bird is on screen and still gliding.
+  await armAirTap(page, { trayYCss, wCss })
+  let air = await readAirTap(page)
+  const deadline = Date.now() + 40_000
+  while (!air.ended && Date.now() < deadline) {
+    await keepAwake(page) // input is what keeps frames — and the glide — coming
+    air = await readAirTap(page)
+  }
+
+  expect(air.taps, 'the bird was never found in the air to tap').toBe(1)
+  // The state at the instant of the press: still flying in, not on the plate.
+  expect(air.phaseAtTap).toBe('approach')
+  expect(air.yAtTap, 'the press was not above the plate row').toBeLessThan(trayYCss - 20)
+  // The target it offered a finger mid-flight is a real ~2.7 cm circle: the press
+  // landed near that circle's edge, not on the bird's centre.
+  expect(air.tapRadiusCss).toBeGreaterThanOrEqual(VISITOR_TAP_MIN_CSS)
+  expect(air.aimedOffCentreCss).toBeGreaterThan(air.tapRadiusCss * 0.8)
+  // The proof the press is what ended the visit: an untapped visitor always reaches
+  // the plate (the peck window runs 1.5–3 s — unmissable at frame rate), and this
+  // one never did. Nothing may be taken from the tray either.
+  expect(air.perched, 'the thief reached the plate — the in-flight tap did nothing').toBe(false)
+  expect(air.trayDipped, 'the tray lost a food to a thief that was tapped in flight').toBe(false)
+
+  // Same consequences as a perched tap: nothing taken, tray whole, round intact.
+  const after = await pollState(page, 'tray whole', (s) => s.foods.length === 8, 20_000)
+  expect(after.foods.map((f) => f.foodId)).toContain(targeted)
+  expect(after.visitor).toBeNull()
+  expect(after.transitioning).toBe(false)
 })
 
 // ─── The food the child drew ──────────────────────────────────────────────────
