@@ -409,6 +409,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
           yCss: this.monsterRig.mouthWorld().y / this.dpr,
         },
         bubbleTiles: this.bubbleUi.tileCount,
+        bubbleFoodIds: this.bubbleUi.tileFoodIds,
+        bubbleBox: this.bubbleUi.boxCss(),
         journey: { ...this.journey },
         episodeId: this.episode.id,
         growthScale: this.monsterRig.growthScale,

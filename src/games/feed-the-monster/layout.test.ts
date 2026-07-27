@@ -21,8 +21,12 @@ import {
   miniSlot,
   snapRadius,
   visitorTapRadius,
+  recipeCells,
+  recipePanel,
+  recipeWidthRatio,
   PANEL_CENTER_Y_CSS,
   PANEL_H_CSS,
+  RECIPE_TILE_CSS,
   VISITOR_TAP_MIN_CSS,
   type LayoutMetrics,
 } from './layout'
@@ -191,6 +195,143 @@ describe('the kitchen pot', () => {
     const narrow: LayoutMetrics = { ...m, w: 300, bodyR: 200 }
     const pot = potPos(narrow)
     expect(pot.x + potWidth(narrow) / 2).toBeLessThanOrEqual(narrow.w)
+  })
+})
+
+/**
+ * The pot's own recipe panel — `part + part … = dish`, hanging off the pot.
+ *
+ * A kitchen round is the only one with TWO task panels on screen at once (the
+ * friend's "bring me this" bar at the top and the pot's "cook this" panel), so this
+ * sweep is about the thing that computes fine and reads badly: the second panel
+ * landing on top of the first, on the friend, on the plate row, or off the screen.
+ *
+ * `dishMaxIngredients` tops out at 4, which is the widest equation the game can
+ * ever show: 4 tiles + 3 pluses + 1 equals + 1 result on ONE line.
+ */
+describe('the pot’s recipe panel', () => {
+  const INGREDIENTS = [2, 3, 4]
+  /** The top-left chrome GameFrame draws over every game: home + level badge. */
+  const CHROME_W_CSS = 12 + 56 + 12
+  const CHROME_H_CSS = 12 + 56 + 10 + 56 + 12
+
+  for (const device of DEVICES) {
+    describe(device.name, () => {
+      const d = device.metrics
+
+      for (const n of INGREDIENTS) {
+        describe(`${n} ingredients`, () => {
+          const box = recipePanel(d, n)
+          const left = box.x - box.w / 2
+          const right = box.x + box.w / 2
+          const top = box.y - box.h / 2
+          const bottom = box.y + box.h / 2
+
+          it('stays inside the screen and clear of the bottom safe strip', () => {
+            expect(left).toBeGreaterThan(0)
+            expect(right).toBeLessThanOrEqual(d.w)
+            expect(top).toBeGreaterThan(0)
+            expect(bottom).toBeLessThanOrEqual(d.h - d.safeInsetBottom * d.dpr)
+          })
+
+          it('never overlaps the friend’s request bar at the top', () => {
+            // The friend's bar is a FIXED-height band across the top centre; the
+            // recipe panel has to live entirely below it.
+            const barBottom = (PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) * d.dpr
+            expect(top).toBeGreaterThan(barBottom)
+          })
+
+          it('never overlaps the friend, even at FULL_SCALE', () => {
+            const friend = monsterPos(d)
+            const r = d.bodyR * FULL_SCALE
+            // Only a panel whose vertical span touches the friend has to clear it
+            // horizontally; the friend's blob is widest at its own centre line.
+            const touches = bottom > friend.y - r * 1.35 && top < friend.y + r
+            if (touches) expect(left).toBeGreaterThan(friend.x + r)
+          })
+
+          it('never overlaps the fed-friends pile', () => {
+            const pile = miniSlot(d, 3) // the slot that reaches furthest right
+            expect(left).toBeGreaterThan(pile.x + d.bodyR * 0.45)
+          })
+
+          it('never overlaps the tray / plate row', () => {
+            expect(bottom).toBeLessThan(trayY(d) - plateWidth(d) * 0.55)
+          })
+
+          it('never overlaps the top-left home + level chrome', () => {
+            const clearsRight = left > CHROME_W_CSS * d.dpr
+            const clearsBelow = top > CHROME_H_CSS * d.dpr
+            expect(clearsRight || clearsBelow).toBe(true)
+          })
+
+          it('hugs the pot on one side of it, never through it', () => {
+            const potTop = potPos(d).y - potWidth(d) * 0.4
+            const potBottom = potPos(d).y + potWidth(d) * 0.4
+            if (box.below) expect(top).toBeGreaterThanOrEqual(potBottom)
+            else expect(bottom).toBeLessThanOrEqual(potTop)
+            // And its tail points at the pot, from inside the panel's own edge.
+            expect(box.tailX).toBeGreaterThan(left)
+            expect(box.tailX).toBeLessThan(right)
+          })
+
+          it('keeps the whole equation legible and inside the panel', () => {
+            // Legible: a picture cell no smaller than the plate markers the child
+            // already reads foods off (a tray plate is ~85–110 css across).
+            expect(box.tile / d.dpr).toBeGreaterThanOrEqual(36)
+            expect(box.tile / d.dpr).toBeLessThanOrEqual(RECIPE_TILE_CSS)
+
+            const cells = recipeCells(box, n)
+            // 4 tiles + 3 pluses + 1 equals + 1 result = 2n+1 cells, one line.
+            expect(cells).toHaveLength(2 * n + 1)
+            expect(cells.filter((c) => c.kind === 'part')).toHaveLength(n)
+            expect(cells.filter((c) => c.kind === 'plus')).toHaveLength(n - 1)
+            expect(cells.filter((c) => c.kind === 'equals')).toHaveLength(1)
+            expect(cells.filter((c) => c.kind === 'result')).toHaveLength(1)
+            for (const cell of cells) {
+              expect(box.x + cell.dx - cell.size / 2).toBeGreaterThanOrEqual(left)
+              expect(box.x + cell.dx + cell.size / 2).toBeLessThanOrEqual(right)
+            }
+            // Reads left to right, in recipe order, ending on the result.
+            const order = cells.map((c) => c.kind).join(' ')
+            expect(order.endsWith('equals result')).toBe(true)
+            expect(cells.filter((c) => c.kind === 'part').map((c) => c.index)).toEqual(
+              Array.from({ length: n }, (_, i) => i),
+            )
+            for (let i = 1; i < cells.length; i++) {
+              expect(cells[i].dx).toBeGreaterThan(cells[i - 1].dx)
+            }
+          })
+        })
+      }
+
+      it('puts every recipe length on the SAME side of the pot', () => {
+        // Which side wins is a property of the device shape (the friend's
+        // silhouette), not of the recipe — so the child never hunts for the panel.
+        const sides = new Set(INGREDIENTS.map((n) => recipePanel(d, n).below))
+        expect(sides.size).toBe(1)
+      })
+
+      it('grows the panel with the recipe, one line at a time', () => {
+        const w = INGREDIENTS.map((n) => recipePanel(d, n).w)
+        expect(w[1]).toBeGreaterThan(w[0])
+        expect(w[2]).toBeGreaterThan(w[1])
+      })
+    })
+  }
+
+  it('sizes the equation from the space, never from a fixed tile', () => {
+    // Squeeze the width and the tile must shrink; the panel still holds the row.
+    const roomy = recipePanel(m, 4)
+    const tight = recipePanel({ ...m, w: 620 }, 4)
+    expect(tight.tile).toBeLessThan(roomy.tile)
+    expect(tight.w).toBeLessThanOrEqual(tight.tile * recipeWidthRatio(4) + 1)
+    expect(tight.w).toBeLessThan(620)
+  })
+
+  it('caps the tile at the target size however much room there is', () => {
+    const huge = recipePanel({ ...m, w: 6000, h: 4000 }, 2)
+    expect(huge.tile).toBe(RECIPE_TILE_CSS * m.dpr)
   })
 })
 

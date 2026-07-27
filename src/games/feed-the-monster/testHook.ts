@@ -42,6 +42,14 @@ export interface FeedTestState {
   mouth: { xCss: number; yCss: number }
   /** How many picture tiles the thought bubble shows. */
   bubbleTiles: number
+  /**
+   * The food each of those tiles shows, in panel order (null for a colour blot, a
+   * dots frame or an unfilled slot) — so a spec can assert WHAT the friend asked
+   * for, e.g. that a kitchen round's bubble holds exactly the finished dish.
+   */
+  bubbleFoodIds: Array<string | null>
+  /** The friend's task-panel box in css px (it must never collide with the pot's). */
+  bubbleBox: { xCss: number; yCss: number; wCss: number; hCss: number }
   /** The visible long-term journey (episode / friends fed / growth step). */
   journey: JourneyState
   /** Active episode theme id (drives the food pool + palette). */
@@ -112,6 +120,36 @@ export interface VisitorState {
   tapRadiusCss: number
 }
 
+/** One cell of the recipe equation on the pot's panel. */
+export interface RecipeCellState {
+  kind: 'part' | 'plus' | 'equals' | 'result'
+  /** The food a part/result cell shows; null for the `+` and `=` glyphs. */
+  foodId: string | null
+  /** Is this part already in the pot (solid + ✓)? */
+  done: boolean
+  /** Cell centre / side in css px, so a spec can assert the equation fits. */
+  xCss: number
+  sizeCss: number
+}
+
+/**
+ * The POT's own task panel — the recipe as `part + part … = dish`. Separate from
+ * the friend's bubble on purpose: a kitchen round carries two asks and each hangs
+ * over the thing it is about.
+ */
+export interface RecipePanelState {
+  /** Panel centre + box in css px (the two panels must never overlap). */
+  xCss: number
+  yCss: number
+  wCss: number
+  hCss: number
+  /** Side of one picture cell in css px — how legible the equation actually is. */
+  tileCss: number
+  /** Did the panel take the slot below the pot (else above it)? */
+  below: boolean
+  cells: RecipeCellState[]
+}
+
 /** The pot, mid-cook. */
 export interface KitchenState {
   recipeId: string
@@ -131,6 +169,8 @@ export interface KitchenState {
   potCss: { x: number; y: number }
   /** The pot's drop radius in css px. */
   snapCss: number
+  /** The pot's recipe panel while it is up (null once the dish is cooked). */
+  recipePanel: RecipePanelState | null
 }
 
 /**

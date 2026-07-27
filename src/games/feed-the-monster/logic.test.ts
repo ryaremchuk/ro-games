@@ -461,6 +461,16 @@ describe('thought bubble pictures', () => {
     expect(grayedBubbleItems(request, ['banana'])[5]).toBe(true)
   })
 
+  it('a kitchen round asks the friend for ONE thing: the finished dish', () => {
+    // The recipe is NOT in here — it hangs over the pot on its own panel
+    // (recipePanel.ts), which is the whole point of splitting the two asks: the
+    // friend's bubble says "bring me this", the pot's panel says "cook this".
+    const request: FoodRequest = { kind: 'dish', recipeId: 'burger', ordered: false }
+    expect(bubbleItems(request)).toEqual([{ foodId: 'burger' }])
+    expect(grayedBubbleItems(request, [])).toEqual([false])
+    expect(grayedBubbleItems(request, ['burger'])).toEqual([true])
+  })
+
   it('never overflows the bubble: at most 6 tiles for any generated request', () => {
     for (const seed of SEEDS.slice(0, 10)) {
       const rng = mulberry32(seed)

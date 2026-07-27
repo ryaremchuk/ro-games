@@ -1101,10 +1101,6 @@ export interface BubbleItem {
   banned?: boolean
   /** Empty pulsing slot: pattern answer, or a not-round progress placeholder. */
   slot?: boolean
-  /** The finished dish of a kitchen round — drawn LARGE, on its own row. */
-  dish?: boolean
-  /** One of that dish's parts — drawn small, in a row underneath. */
-  part?: boolean
 }
 
 /** The request rendered as pictures. */
@@ -1132,17 +1128,12 @@ export function bubbleItems(request: FoodRequest): BubbleItem[] {
     }
     case 'pattern':
       return [...request.sequence.map((id) => ({ foodId: id })), { slot: true }]
-    case 'dish': {
-      // No `+` and no `=` — both are abstract for a non-reader. The bubble reads
-      // top-to-bottom instead: the finished dish big, its parts in a row
-      // underneath. That vertical "big thing above, its parts below" arrangement
-      // IS the whole/parts relationship, so it needs no learning.
-      const recipe = recipeById(request.recipeId)
-      return [
-        { foodId: recipe.resultFoodId, dish: true },
-        ...recipe.ingredients.map((id) => ({ foodId: id, part: true })),
-      ]
-    }
+    case 'dish':
+      // ONE tile: the finished dish the friend wants. The RECIPE that makes it is
+      // not the friend's business — it hangs over the POT on its own panel
+      // (recipePanel.ts), so each of the round's two asks sits on the thing it is
+      // about instead of both being crammed into the friend's bubble.
+      return [{ foodId: dishResult(request) }]
   }
 }
 
@@ -1178,13 +1169,10 @@ export function grayedBubbleItems(request: FoodRequest, eaten: readonly string[]
     case 'pattern':
       return [...request.sequence.map(() => false), isRoundComplete(request, eaten)]
     case 'dish':
-      // A kitchen round's PARTS ghost as they go in the pot, which `eaten` cannot
-      // see (the parts are cooked, not eaten) — kitchenMode drives those tiles
-      // directly, exactly as dots drives its pips and `not` its sockets. Only the
-      // dish tile is answerable from `eaten`.
-      return [
-        isRoundComplete(request, eaten),
-        ...recipeById(request.recipeId).ingredients.map(() => false),
-      ]
+      // Only the finished dish lives in the friend's bubble, and it is answerable
+      // from `eaten`. The recipe's parts are never EATEN (they are cooked), so their
+      // progress is driven straight from the pot onto the pot's own panel — the same
+      // way dots drives its pips and `not` its sockets.
+      return [isRoundComplete(request, eaten)]
   }
 }

@@ -331,6 +331,45 @@ function buildButterflyFrames(scene: Phaser.Scene, px: (css: number) => number):
   }
 }
 
+/** Canvas the `+` / `=` glyphs are authored on, CSS px (square). */
+const OP_TEX_CSS = 40
+/**
+ * Operator ink: a soft slate, deliberately QUIETER than a food or a ✓ badge. The
+ * glyphs are grammar, not content — the child has to read the pictures first and
+ * the joins second.
+ */
+const OP_INK = 0x6f6b80
+
+/**
+ * `ftm-plus` and `ftm-equals` — two crossed rounded bars, and two stacked ones.
+ * The bar thickness and the gap are shares of the canvas, so the pair stays a
+ * matched set at whatever size the recipe panel resolves to.
+ */
+function buildOperatorGlyphs(scene: Phaser.Scene, px: (css: number) => number): void {
+  const side = px(OP_TEX_CSS)
+  const bar = side * 0.2
+  const arm = side * 0.72
+
+  if (!scene.textures.exists('ftm-plus')) {
+    const g = scene.add.graphics()
+    g.fillStyle(OP_INK, 1)
+    g.fillRoundedRect((side - arm) / 2, (side - bar) / 2, arm, bar, bar / 2)
+    g.fillRoundedRect((side - bar) / 2, (side - arm) / 2, bar, arm, bar / 2)
+    g.generateTexture('ftm-plus', side, side)
+    g.destroy()
+  }
+
+  if (!scene.textures.exists('ftm-equals')) {
+    const gap = side * 0.16
+    const g = scene.add.graphics()
+    g.fillStyle(OP_INK, 1)
+    g.fillRoundedRect((side - arm) / 2, side / 2 - gap / 2 - bar, arm, bar, bar / 2)
+    g.fillRoundedRect((side - arm) / 2, side / 2 + gap / 2, arm, bar, bar / 2)
+    g.generateTexture('ftm-equals', side, side)
+    g.destroy()
+  }
+}
+
 /**
  * Build every procedural texture the scene needs for the current journey point
  * (friend body, plate, splash, ban/check badges, "?" glyph, particles, halo,
@@ -394,6 +433,13 @@ export function buildSceneTextures(
   // "?" glyph — "a food goes here, you pick which" — on the you-choose slots
   // (colour requests, the pattern answer, the not-round progress sockets).
   glyphTexture(scene, opts.dpr, 'ftm-q', '?', 30)
+
+  // The recipe equation's operators, for the pot's panel: `part + part = dish`.
+  // Drawn as SHAPES, not text — the player cannot read, so "+" and "=" have to
+  // arrive as pictures with the same fat, soft, rounded look as the rest of the
+  // art. Authored square at OP_TEX_CSS and stretched to the solved cell size, so
+  // one texture serves every viewport (see layout.recipePanel).
+  buildOperatorGlyphs(scene, px)
 
   // Particles.
   if (!scene.textures.exists('ftm-confetti')) {

@@ -242,6 +242,230 @@ export function potSnapRadius(m: LayoutMetrics): number {
   return Math.max(potWidth(m) * 0.85, px(m, 100))
 }
 
+// ─── Kitchen: the pot's own RECIPE panel ─────────────────────────────────────
+//
+// The pot carries its own task panel — `ingredient + ingredient + … = dish` — and
+// it hangs off the pot, not off the top of the screen: the friend's bubble says
+// "bring me this", the pot's panel says "cook this", and each sits on the thing it
+// is about so neither needs a word of explanation.
+//
+// The panel HUGS the pot, on whichever side of it has room: above it by default,
+// below it when above cannot hold the equation at a legible size. Which side wins
+// is decided per DEVICE SHAPE, not per round (the tile size the equation lands at
+// is dominated by the friend's silhouette, which does not change with the recipe),
+// so the child never has to hunt for the panel between rounds.
+
+/**
+ * Tile side one recipe cell aims for, CSS px — the size a food picture reads at
+ * for a 3–4yo (the tray draws its foods at 64, the request bubble at 66). The
+ * equation NEVER grows past this; it shrinks from here to fit the space.
+ */
+export const RECIPE_TILE_CSS = 48
+/**
+ * Absolute floor for a recipe tile, CSS px. Only a pathologically small viewport
+ * reaches it — it exists so the panel degrades to "small" instead of "inverted".
+ */
+const RECIPE_TILE_FLOOR_CSS = 16
+/** Operator glyph (+ / =) side, as a share of a tile. */
+const RECIPE_OP_FRAC = 0.42
+/** Gap between two adjacent cells, as a share of a tile. */
+const RECIPE_GAP_FRAC = 0.06
+/** Panel padding around the equation, as a share of a tile. */
+const RECIPE_PAD_X_FRAC = 0.26
+const RECIPE_PAD_Y_FRAC = 0.24
+/** Panel height as a multiple of the tile (one row + padding). */
+const RECIPE_H_RATIO = 1 + 2 * RECIPE_PAD_Y_FRAC
+/** Screen-edge margin, and the clear air kept beside the friend — width shares. */
+const RECIPE_EDGE_FRAC = 0.014
+const RECIPE_FRIEND_GAP_FRAC = 0.02
+/** Clearance from the pot / the plate row / the friend's bubble, as a share of
+ * the pot's width (so it scales with the cast, like every other kitchen number). */
+const RECIPE_POT_GAP_FRAC = 0.09
+/** How far the fed-friends pile reaches out from its slot, in bodyR units (the
+ * minis are drawn at 0.3 scale — this leaves margin on top of that). */
+const PILE_HALF_MUL = 0.45
+
+/** Total panel width as a multiple of the tile, for `n` ingredients. */
+export function recipeWidthRatio(ingredients: number): number {
+  const n = Math.max(1, ingredients)
+  // n ingredient tiles + 1 result tile, n−1 pluses + 1 equals, 2n gaps, padding.
+  return n + 1 + n * RECIPE_OP_FRAC + 2 * n * RECIPE_GAP_FRAC + 2 * RECIPE_PAD_X_FRAC
+}
+
+/** The pot's recipe panel, as solved geometry (backing px). */
+export interface RecipeBox {
+  /** Panel centre. */
+  x: number
+  y: number
+  w: number
+  h: number
+  /** Ingredient / result tile side. */
+  tile: number
+  /** Operator glyph side. */
+  op: number
+  /** Gap between adjacent cells. */
+  gap: number
+  /** Does the panel sit BELOW the pot (else above it)? */
+  below: boolean
+  /** Where the panel's tail meets its pot-facing edge (absolute x). */
+  tailX: number
+}
+
+/**
+ * The friend's silhouette half-width over a vertical span — how far the panel's
+ * left edge has to stay out of the friend's way.
+ *
+ * The body is a blob of radius bodyR × growth, so the widest point inside a span
+ * is the one nearest the friend's centre; above the blob only the head and antenna
+ * remain (a fifth of the radius), and past the feet the friend is gone.
+ */
+function friendHalfWidthIn(m: LayoutMetrics, yTop: number, yBottom: number): number {
+  const at = monsterPos(m)
+  const r = m.bodyR * m.growth
+  if (yBottom < at.y - r * 1.35) return 0 // clear above the antenna
+  if (yTop > at.y + r) return 0 // clear below the feet
+  const dy =
+    yTop <= at.y && at.y <= yBottom ? 0 : Math.min(Math.abs(yTop - at.y), Math.abs(yBottom - at.y))
+  const body = dy >= r ? 0 : Math.sqrt(r * r - dy * dy)
+  return Math.max(body, r * 0.2)
+}
+
+/** Right edge of the fed-friends pile (it owns the bottom-left corner). */
+function pileRight(m: LayoutMetrics): number {
+  return miniSlot(m, 3).x + m.bodyR * PILE_HALF_MUL
+}
+
+/**
+ * Solve one candidate slot: the panel's pot-facing edge is pinned at `anchor` and
+ * it grows away from the pot (up when `below` is false), never past `limit`.
+ *
+ * The tile size and the free width are mutually dependent (a bigger tile makes a
+ * taller panel, which reaches further into the friend), so this relaxes from the
+ * target size down — four passes are far more than the fixed point needs.
+ */
+function solveRecipeSlot(
+  m: LayoutMetrics,
+  ingredients: number,
+  anchor: number,
+  limit: number,
+  below: boolean,
+): RecipeBox {
+  const ratio = recipeWidthRatio(ingredients)
+  const edge = m.w * RECIPE_EDGE_FRAC
+  const right = m.w - edge
+  const roomY = below ? limit - anchor : anchor - limit
+  let tile = px(m, RECIPE_TILE_CSS)
+  let left = edge
+  for (let pass = 0; pass < 4; pass++) {
+    const h = tile * RECIPE_H_RATIO
+    const yTop = below ? anchor : anchor - h
+    const yBottom = below ? anchor + h : anchor
+    left = Math.max(
+      edge,
+      monsterPos(m).x + friendHalfWidthIn(m, yTop, yBottom) + m.w * RECIPE_FRIEND_GAP_FRAC,
+      pileRight(m) + m.w * RECIPE_FRIEND_GAP_FRAC,
+    )
+    tile = Math.min(px(m, RECIPE_TILE_CSS), (right - left) / ratio, roomY / RECIPE_H_RATIO)
+    if (tile <= 0) break
+  }
+  if (tile <= 0) return { x: 0, y: 0, w: 0, h: 0, tile: 0, op: 0, gap: 0, below, tailX: 0 }
+
+  const w = tile * ratio
+  const h = tile * RECIPE_H_RATIO
+  // Centred on the pot, then pulled inside the free band (the band is at least
+  // `w` wide by construction, so the two clamps can never fight).
+  const x = Math.max(left + w / 2, Math.min(potPos(m).x, right - w / 2))
+  const y = below ? anchor + h / 2 : anchor - h / 2
+  const corner = tile * 0.5
+  return {
+    x,
+    y,
+    w,
+    h,
+    tile,
+    op: tile * RECIPE_OP_FRAC,
+    gap: tile * RECIPE_GAP_FRAC,
+    below,
+    tailX: Math.max(x - w / 2 + corner, Math.min(potPos(m).x, x + w / 2 - corner)),
+  }
+}
+
+/**
+ * Geometry of the pot's recipe panel for a recipe of `ingredients` parts.
+ *
+ * Two candidate slots, both touching the pot; the one that can draw the equation
+ * BIGGER wins, ties going to the slot above the pot (a task panel reads best over
+ * the thing it belongs to — the same rule the friend's bubble follows).
+ *
+ * On a 4:3 portrait iPad the friend's equator sits level with the pot and squeezes
+ * the band beside it, so the panel lands under the pot in the clear strip above the
+ * plate row. On both landscape shapes that strip does not exist (the pot is already
+ * hugging the plates) while the air above the pot is free, so the panel goes there.
+ */
+export function recipePanel(m: LayoutMetrics, ingredients: number): RecipeBox {
+  const pot = potPos(m)
+  const potH = potWidth(m) * 0.4 // the pot is drawn w × 0.8w
+  const gap = potWidth(m) * RECIPE_POT_GAP_FRAC
+  const above = solveRecipeSlot(
+    m,
+    ingredients,
+    pot.y - potH - gap,
+    px(m, PANEL_CENTER_Y_CSS + PANEL_H_CSS / 2) + gap,
+    false,
+  )
+  const below = solveRecipeSlot(
+    m,
+    ingredients,
+    pot.y + potH + gap,
+    trayY(m) - plateWidth(m) * 0.55 - gap,
+    true,
+  )
+  const best = below.tile > above.tile ? below : above
+  // Both slots collapsed (a viewport far outside anything shipped): draw the panel
+  // at the floor over the pot rather than returning a degenerate box.
+  if (best.tile > 0) return best
+  const floor = px(m, RECIPE_TILE_FLOOR_CSS)
+  return solveRecipeSlot(m, ingredients, pot.y - potH - gap, pot.y - potH - gap - floor * 40, false)
+}
+
+/** What one cell of the equation is. */
+export type RecipeCellKind = 'part' | 'plus' | 'equals' | 'result'
+
+export interface RecipeCell {
+  kind: RecipeCellKind
+  /** Ingredient index for a `part` (0-based); −1 for everything else. */
+  index: number
+  /** Offset from the panel's centre. */
+  dx: number
+  /** Cell side (tile for pictures, op for the glyphs). */
+  size: number
+}
+
+/**
+ * The equation laid out left to right: part + part + … = result. One shared
+ * function so the widget that draws it and the test that checks it can never
+ * disagree about where a cell is.
+ */
+export function recipeCells(box: RecipeBox, ingredients: number): RecipeCell[] {
+  const n = Math.max(1, ingredients)
+  const cells: Array<{ kind: RecipeCellKind; index: number; size: number }> = []
+  for (let i = 0; i < n; i++) {
+    if (i > 0) cells.push({ kind: 'plus', index: -1, size: box.op })
+    cells.push({ kind: 'part', index: i, size: box.tile })
+  }
+  cells.push({ kind: 'equals', index: -1, size: box.op })
+  cells.push({ kind: 'result', index: -1, size: box.tile })
+
+  const total =
+    cells.reduce((sum, cell) => sum + cell.size, 0) + Math.max(0, cells.length - 1) * box.gap
+  let cursor = -total / 2
+  return cells.map((cell) => {
+    const dx = cursor + cell.size / 2
+    cursor += cell.size + box.gap
+    return { ...cell, dx }
+  })
+}
+
 // ─── Conveyor belt ───────────────────────────────────────────────────────────
 //
 // The belt occupies the same band the plate row uses (trayY), full width. Unlike

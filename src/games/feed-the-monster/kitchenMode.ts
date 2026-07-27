@@ -2,11 +2,18 @@
  * The KITCHEN — the pot, and the round where the child COOKS what the friend
  * wants instead of finding it.
  *
- * The beat: the bubble shows the finished dish large with its parts in a row
- * underneath; a pot stands on the table; each correct part dropped in drops with a
- * puff of steam and ghosts its picture in the bubble (the exact ghosting language
- * count rounds already use); the last part in rattles the lid and the finished
- * dish POPS OUT, draggable; feeding it completes the round normally.
+ * A kitchen round is the only one with TWO asks on screen, and each hangs over the
+ * thing it is about: the friend's bubble shows the finished dish it wants ("bring
+ * me this"), and the POT carries its own panel with the recipe as an equation
+ * ("cook this" — see ./recipePanel). Splitting them is what makes a compound
+ * instruction readable to a non-reader: what goes IN is written on the pot, what
+ * comes OUT is written on the friend.
+ *
+ * The beat: a pot stands on the table under its recipe; each correct part dropped
+ * in drops with a puff of steam and solidifies its picture on the pot's panel (the
+ * exact ghost→solid+✓ language count rounds already use); the last part in rattles
+ * the lid, the recipe panel bows out and the finished dish POPS OUT, draggable;
+ * feeding it completes the round normally.
  *
  * Two things keep the round honest rather than merely long:
  *  • The pot spits a wrong part back with the same arc-home motion and "blegh"
@@ -29,6 +36,7 @@ import type { DishRequest } from './logic'
 import { recipeById } from './recipes'
 import { artKey } from './art'
 import * as layout from './layout'
+import { RecipePanel } from './recipePanel'
 import type { KitchenState } from './testHook'
 import type FeedTheMonsterScene from './FeedTheMonsterScene'
 
@@ -38,6 +46,13 @@ const MADE_DISH_SLOT = -1
 export class KitchenMode {
   /** True while a kitchen round is on stage. */
   active = false
+
+  /**
+   * The pot's own recipe panel. Owned here rather than by the round, so a pot that
+   * later stays on stage for a whole friend (or episode) keeps its panel and is
+   * simply re-tasked with the next recipe — see `setRecipe`.
+   */
+  readonly panel: RecipePanel
 
   private readonly scene: FeedTheMonsterScene
   private request: DishRequest | null = null
@@ -51,6 +66,7 @@ export class KitchenMode {
 
   constructor(scene: FeedTheMonsterScene) {
     this.scene = scene
+    this.panel = new RecipePanel(scene)
   }
 
   private px(css: number): number {
@@ -67,12 +83,11 @@ export class KitchenMode {
 
   // ─── Start / stop ──────────────────────────────────────────────────────────
 
-  /** Stand the pot up for a kitchen round. */
+  /** Stand the pot up for a kitchen round, under its recipe. */
   start(request: DishRequest): void {
     this.stop()
     this.active = true
-    this.request = request
-    this.contents = []
+    this.setRecipe(request)
 
     const m = this.scene.metrics()
     const at = layout.potPos(m)
@@ -114,12 +129,27 @@ export class KitchenMode {
     })
     playTone(392, 110, 'triangle', 0.08)
     this.scene.time.delayedCall(130, () => playTone(523, 130, 'triangle', 0.08))
+    // The recipe is read out AFTER the friend's own ask (the scene plays that at
+    // 450ms), so the two panels speak in turn instead of over each other.
+    this.scene.time.delayedCall(950, () => this.panel.playCue())
+  }
+
+  /**
+   * Point the pot at a recipe — empty it and put that recipe on its panel. Split
+   * out of `start` because the panel belongs to the POT: a pot that stays on stage
+   * across rounds is re-tasked through here, without being rebuilt.
+   */
+  setRecipe(request: DishRequest): void {
+    this.request = request
+    this.contents = []
+    this.panel.show(recipeById(request.recipeId), request.ordered)
   }
 
   stop(): void {
     this.active = false
     this.request = null
     this.contents = []
+    this.panel.hide()
     this.glowPulse?.remove()
     this.glowPulse = undefined
     if (this.potGlow) {
@@ -138,9 +168,10 @@ export class KitchenMode {
     }
   }
 
-  /** Re-anchor the pot after a resize / orientation change. */
+  /** Re-anchor the pot (and its panel) after a resize / orientation change. */
   place(): void {
     if (!this.active || !this.pot) return
+    this.panel.place()
     const m = this.scene.metrics()
     const at = layout.potPos(m)
     const w = layout.potWidth(m)
@@ -223,16 +254,17 @@ export class KitchenMode {
 
     const index = this.contents.length
     this.contents.push(foodId)
-    // The matching picture in the bubble ghosts out — the same language counts use.
-    this.scene.bubbleUi.markDishPart(index)
+    // The matching picture on the POT's panel solidifies and takes a ✓ — the same
+    // ghost→solid language counts use, on the panel that asked for it.
+    this.scene.time.delayedCall(180, () => this.panel.markPart(index))
     this.bumpPot(1.08)
 
     if (isDishCooked(request, this.contents)) {
       this.scene.time.delayedCall(320, () => this.cook(request))
     } else if (request.ordered) {
-      // Ordered rounds pulse the next-needed slot so "which one now" is answered
+      // Ordered rounds pulse the next-needed part so "which one now" is answered
       // without words.
-      this.scene.bubbleUi.pulseDishPart(this.contents.length)
+      this.scene.time.delayedCall(360, () => this.panel.pulsePart(this.contents.length))
     }
   }
 
@@ -263,7 +295,7 @@ export class KitchenMode {
       ease: 'Quad.easeOut',
     })
     // In an ordered round, say which one WAS wanted rather than just refusing.
-    if (this.request?.ordered) this.scene.bubbleUi.pulseDishPart(this.contents.length)
+    if (this.request?.ordered) this.panel.pulsePart(this.contents.length)
   }
 
   private bumpPot(by: number): void {
@@ -306,6 +338,10 @@ export class KitchenMode {
         playTone(392 + i * 90, 70, 'sine', 0.05)
       })
     }
+    // The recipe is finished, so the pot's ask bows out — one panel, one live task:
+    // from here the only thing left to read is the friend's "bring me this". It
+    // also frees the pot's airspace for the dish that is about to pop out.
+    this.panel.finish()
 
     this.scene.time.delayedCall(430, () => {
       if (!this.active || !this.pot) return
@@ -320,7 +356,7 @@ export class KitchenMode {
       // child feeds it, which keeps the game's core verb intact.
       const foodId = dishResult(request)
       const dish = this.scene.tray.makeFood(foodId, at.x, at.y, MADE_DISH_SLOT)
-      dish.setDepth(6)
+      dish.setDepth(7)
       this.made = dish
       const base = this.scene.tray.foodBaseScale(dish)
       dish.setScale(base * 0.3)
@@ -365,7 +401,7 @@ export class KitchenMode {
       420,
       () => {
         dish.setInteractive()
-        dish.setDepth(6)
+        dish.setDepth(7)
       },
     )
     this.scene.tweens.add({
@@ -405,6 +441,7 @@ export class KitchenMode {
       madeDish: this.madeDishId,
       potCss: { x: at.x / this.scene.dpr, y: at.y / this.scene.dpr },
       snapCss: layout.potSnapRadius(m) / this.scene.dpr,
+      recipePanel: this.panel.snapshotState(),
     }
   }
 }
