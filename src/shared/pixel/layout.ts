@@ -37,6 +37,51 @@ const TOOL_HEIGHT_SHARE = 0.66
 const CANVAS_H_FRAC = 0.9
 const GAP_FRAC = 0.02
 
+// ─── Easel ───────────────────────────────────────────────────────────────────
+//
+// The pad is dressed as an easel: a wooden frame around the paper, a ledge under
+// it and, when the box is tall enough, splayed legs. That is not decoration for
+// its own sake — the pad opens over a running game, and a bare white square over
+// a live scene reads as a system dialog rather than as a thing in the world.
+//
+// The rule that keeps it honest: the easel is built from what is LEFT after the
+// instrument has been sized, never by taking room from it. The frame's thickness
+// is a share of the paper (so it looks the same on every device) and the legs are
+// simply skipped when the leftover height cannot hold them.
+
+/** Frame thickness as a share of the paper's side. */
+const EASEL_BORDER_FRAC = 0.055
+/** Frame thickness bounds, CSS px — thin enough to stay furniture, thick enough to read. */
+const EASEL_BORDER_MIN = 12
+const EASEL_BORDER_MAX = 30
+/** Ledge depth, in frame thicknesses. */
+const EASEL_LEDGE_MUL = 1.7
+/**
+ * Ledge depth floor, in tool-button sides. The done button (1.2 buttons across)
+ * rests centred on the ledge, so this fixes how far it overhangs: at 0.9 it
+ * overhangs 0.15 of a button top and bottom, which the frame's own thickness
+ * covers above (EASEL_BORDER_MIN ≥ 0.15 × MIN_BUTTON_CSS).
+ */
+const LEDGE_BUTTON_MUL = 0.9
+/** Leg length, in frame thicknesses. */
+const EASEL_LEG_MUL = 2.2
+/**
+ * Smallest share of the box height the paper may shrink to in order to pay for
+ * legs. Above it the easel gets its silhouette; below it the instrument wins and
+ * the board just rests on its shelf.
+ */
+const EASEL_MIN_PAPER_FRAC = 0.62
+
+/** The easel chrome around the paper, CSS px. Zeroed when `legs` does not fit. */
+export interface PadEasel {
+  /** Wooden frame around the paper, all four sides. */
+  border: number
+  /** Ledge under the frame — the shelf the finish button rests on. */
+  ledge: number
+  /** Splayed legs below the ledge; 0 on a box too short for them. */
+  legs: number
+}
+
 export interface PadMetrics {
   /** Visible viewport width in CSS px. */
   vw: number
@@ -80,6 +125,8 @@ export interface PadLayout {
   toolColumns: number
   /** Rail columns for swatches (denser than tools). */
   swatchColumns: number
+  /** Easel chrome, or null for a bare pad. */
+  easel: PadEasel | null
 }
 
 /** Height one zone needs: `count` items of `side`, packed into `columns`. */
@@ -117,6 +164,7 @@ export function railFits(layout: PadLayout, contents: RailContents): boolean {
 export function padLayout(
   m: PadMetrics,
   contents: RailContents = { tools: 7, swatches: 15 },
+  framed = false,
 ): PadLayout {
   const gap = Math.max(8, Math.min(m.vw, m.vh) * GAP_FRAC)
   const chromeTop = Math.max(0, m.chromeTop ?? 0)
@@ -154,10 +202,52 @@ export function padLayout(
   const railY = Math.min(chromeTop, Math.max(0, m.vh - railH))
 
   const availableW = Math.max(m.vw - railW - gap * 2, button)
-  const side = Math.max(Math.min(m.vh * CANVAS_H_FRAC, availableW, m.vh - gap * 2), button)
-  // Centre the canvas in the space right of the rail.
-  const canvasX = railX + railW + gap + Math.max(0, (m.vw - railW - gap * 2 - side) / 2)
-  const canvasY = (m.vh - side) / 2
+  const bare = Math.max(Math.min(m.vh * CANVAS_H_FRAC, availableW, m.vh - gap * 2), button)
+
+  // The frame is sized from the paper it would go around, then the paper is
+  // re-sized to leave room for it. Two passes rather than one because each
+  // depends on the other, and a fixed-px frame would be a different fraction of
+  // the drawing on every device.
+  const border = framed
+    ? Math.round(Math.min(EASEL_BORDER_MAX, Math.max(EASEL_BORDER_MIN, bare * EASEL_BORDER_FRAC)))
+    : 0
+  // The ledge is also the shelf the finish button rests on, so it is never
+  // shallower than that button — a button floating over a hairline shelf is what
+  // makes a frame look pasted on rather than built.
+  const ledge = framed
+    ? Math.round(Math.max(border * EASEL_LEDGE_MUL, button * LEDGE_BUTTON_MUL))
+    : 0
+  /** The paper that fits once the frame, the ledge and (maybe) legs are paid for. */
+  const paperWith = (legs: number): number =>
+    Math.max(
+      Math.min(
+        availableW - border * 2,
+        m.vh - gap * 2 - border * 2 - ledge - legs,
+        m.vh * CANVAS_H_FRAC,
+      ),
+      button,
+    )
+
+  // Legs are RESERVED up front, not given the leftovers — height is always fully
+  // spent, so waiting for a surplus means they never appear at all. They are then
+  // dropped again if paying for them would shrink the paper below what is
+  // comfortable to draw on: on a phone in landscape the board simply rests on its
+  // shelf, which reads as furniture, while a stubby leg reads as a bug.
+  const wantLegs = Math.round(border * EASEL_LEG_MUL)
+  const legs =
+    framed && paperWith(wantLegs) >= Math.min(availableW - border * 2, m.vh * EASEL_MIN_PAPER_FRAC)
+      ? wantLegs
+      : 0
+  const side = framed ? paperWith(legs) : bare
+  const easel: PadEasel | null = framed ? { border, ledge, legs } : null
+
+  // Centre the whole easel (paper + frame + ledge + legs) in the space right of
+  // the rail, so the paper itself sits slightly high — which is where a board on
+  // a real easel sits.
+  const blockW = side + border * 2
+  const blockH = side + border * 2 + ledge + legs
+  const canvasX = railX + railW + gap + border + Math.max(0, (m.vw - railW - gap * 2 - blockW) / 2)
+  const canvasY = Math.max(0, (m.vh - blockH) / 2) + border
 
   return {
     side,
@@ -172,6 +262,7 @@ export function padLayout(
     swatch,
     toolColumns,
     swatchColumns,
+    easel,
   }
 }
 

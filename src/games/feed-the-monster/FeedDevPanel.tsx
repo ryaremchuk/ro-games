@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { EPISODES, FRIENDS_PER_EPISODE, GROW_STEPS } from './journey'
+import { COMMISSION_MIN_EPISODE, EPISODES, FRIENDS_PER_EPISODE, GROW_STEPS } from './journey'
+import type { FeedTestState } from './testHook'
 
 /**
  * Developer cheat overlay for Feed the Monster, shown only when the URL
@@ -44,6 +45,8 @@ interface DevSnapshot {
   visitor: string | null
   drawnFoods: number
   commission: string | null
+  /** One line answering "why did the drawing ask (not) just fire?". */
+  drawGate: string
 }
 
 function readSnapshot(): DevSnapshot | null {
@@ -64,8 +67,34 @@ function readSnapshot(): DevSnapshot | null {
     thiefSkill: s.thiefSkill,
     visitor: s.visitor ? `${s.visitor.kind}:${s.visitor.phase}` : null,
     drawnFoods: s.drawnFoodIds.length,
-    commission: s.commission ? s.commission.color : null,
+    commission: s.commission ? `${s.commission.color}:${s.commission.phase}` : null,
+    drawGate: describeGate(s),
   }
+}
+
+/**
+ * The trigger rule in one line. Ros could not tell when the drawing ask fires, and
+ * the honest fix for that on the device is to print the live rule: what it would
+ * ask for now, or which gate is holding it, plus the two inputs an adult would
+ * otherwise have to guess (when it last fired, and whether the ask names a colour
+ * yet).
+ */
+function describeGate(s: FeedTestState): string {
+  const g = s.commissionGate
+  const names = g.namesColor ? 'colour' : 'anything'
+  const last = g.lastEpisode < 0 ? 'never' : `ep${g.lastEpisode}`
+  const owned = g.ownedColors.length
+  const verdict =
+    g.dueColor !== null
+      ? `DUE ${g.dueColor}`
+      : g.blockedBy === 'episode'
+        ? `wait: ep ≥ ${COMMISSION_MIN_EPISODE}`
+        : g.blockedBy === 'already-this-episode'
+          ? 'done this ep'
+          : g.blockedBy === 'friend-in-progress'
+            ? 'mid-friend'
+            : 'no'
+  return `${verdict} · asks ${names} · last ${last} · owns ${owned}/6`
 }
 
 export default function FeedDevPanel() {
@@ -203,6 +232,10 @@ export default function FeedDevPanel() {
           {snap.visitor !== null ? ` · ${snap.visitor}` : ''}
         </div>
       )}
+      {/* The drawing ask is the rarest beat in the game (once per episode), so its
+          gate gets its own line — otherwise "why has this never happened?" has no
+          answer on the device. */}
+      {ready && <div style={styles.readout}>✏️ {snap.drawGate}</div>}
     </div>
   )
 }

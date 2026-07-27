@@ -20,11 +20,16 @@ import FeedTheMonsterScene from './FeedTheMonsterScene'
  * down via zoom so emoji textures and vector art stay crisp on retina iPads.
  * The scene relayouts itself on window resize/orientation change.
  *
- * One thing lives OUTSIDE the canvas: the pixel pad. When the scene commissions
- * a food ("draw me something red") it emits `commission`, and the shared
- * `PixelPad` slides up over the running game — no route change, no lost game
- * state. The panel deliberately leaves the top of the screen uncovered so the
- * friend who asked stays visible (and impatient) above it.
+ * One thing lives OUTSIDE the canvas: the pixel pad, dressed as an easel. When the
+ * scene commissions a food ("draw me something red") the friend asks first, alone
+ * on stage, and only then does the scene emit `commission` and the shared `PixelPad`
+ * rise over the running game — no route change, no lost game state.
+ *
+ * The panel leaves the top strip of the screen uncovered. That strip is where the
+ * ASK lives (the pencil bubble, which keeps pulsing and chirping while the child
+ * draws — see requestBubble.nudgeCommission), not the friend: an easel big enough
+ * to draw on and a friend big enough to read do not both fit, so the friend is
+ * behind it and the bubble carries the "someone is waiting" signal.
  */
 
 interface Commission {

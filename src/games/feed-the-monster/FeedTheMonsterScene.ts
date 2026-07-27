@@ -22,6 +22,7 @@ import {
 import type { DuoContext, Food, FoodColor, FoodRequest, Round, TaskKind } from './logic'
 import {
   BIG_BITE,
+  COMMISSION_ANNOUNCE_MS,
   COMMISSION_COLOR_MIN_SKILL,
   DRAWN_CALLBACK_ROUNDS,
   FRIENDS_PER_EPISODE,
@@ -29,6 +30,7 @@ import {
   NORMAL_BITE,
   auraIntensity,
   commissionColor,
+  commissionGate,
   episodeFor,
   feedStep,
   friendColor,
@@ -197,7 +199,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    * The live commission, while the pad is open over the scene. The React shell
    * watches this through the `commission` scene event.
    */
-  private commission: { color: FoodColor; askColor: boolean } | null = null
+  private commission: { color: FoodColor; askColor: boolean; asked: boolean } | null = null
   /** Episode index of the last commission OFFERED (−1 = never). Persisted. */
   private lastCommissionEpisode = -1
   /** The friend nagging for its drawing while the pad is open; cleared on submit. */
@@ -421,8 +423,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         duoActive: this.duoMode.active,
         duo: this.duoMode.active ? this.duoMode.snapshot() : null,
         commission: this.commission
-          ? { color: this.commission.color, askColor: this.commission.askColor }
+          ? {
+              color: this.commission.color,
+              askColor: this.commission.askColor,
+              phase: this.commission.asked ? ('drawing' as const) : ('asking' as const),
+            }
           : null,
+        commissionGate: this.commissionGateNow(),
         drawnFoodIds: this.drawnFoods.map((f) => f.id),
         conveyorActive: this.conveyorMode.active,
         conveyor: this.conveyorMode.active ? this.conveyorMode.snapshotState() : null,
@@ -1027,6 +1034,32 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   // ─── Commission: "draw me something red" ───────────────────────────────────
 
   /**
+   * The live trigger state, straight off the pure rule — what the dev panel reads
+   * so an adult on the device can see why the ask did or did not just fire.
+   */
+  private commissionGateNow(): {
+    dueColor: string | null
+    blockedBy: string | null
+    lastEpisode: number
+    namesColor: boolean
+    ownedColors: string[]
+  } {
+    const ownedColors = this.drawnFoods.map((f) => f.color)
+    const gate = commissionGate({
+      journey: this.journey,
+      lastCommissionEpisode: this.lastCommissionEpisode,
+      ownedColors,
+    })
+    return {
+      dueColor: gate.color,
+      blockedBy: gate.blockedBy,
+      lastEpisode: this.lastCommissionEpisode,
+      namesColor: this.skill >= COMMISSION_COLOR_MIN_SKILL,
+      ownedColors,
+    }
+  }
+
+  /**
    * Offer this episode's commission, if one is due. Returns true when the pad is
    * taking over the round: no tray is dealt, the bubble shows the ask instead,
    * and play resumes from `submitCommission`.
@@ -1054,7 +1087,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // Below the colour-round unlock the ask is simply "draw anything" — a colour
     // the child has not met as a CONCEPT yet is not an ask, it is a riddle.
     const askColor = this.skill >= COMMISSION_COLOR_MIN_SKILL
-    this.commission = { color, askColor }
+    this.commission = { color, askColor, asked: false }
     this.round = null
     // The friend arrives with an EMPTY PLATE: nothing to be fed, only something
     // to be given. Any leftover food would also be draggable behind the pad.
@@ -1063,16 +1096,34 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.thiefMode.cancel()
     this.tray.clearFoods()
     this.bubbleUi.showCommission(askColor ? color : null)
-    // The friend stays visible above the pad and gets visibly impatient — the
-    // one real risk of this feature is the child settling into the pad and
-    // forgetting who asked.
+    // ANNOUNCE FIRST, then hand the screen over. The friend asks while it is still
+    // the only thing on stage — pencil in the bubble, a lip smack, its own two-note
+    // cue — and only then does the easel rise. Opening the pad on the same frame as
+    // the ask was the whole reason this beat read as arbitrary: the easel arrived
+    // before the child had seen anyone ask for it. Same shape as the big-bite
+    // announcement (see dressBigBite).
+    this.monsterRig.lickLips()
+    this.time.delayedCall(COMMISSION_ANNOUNCE_MS, () => {
+      const live = this.commission
+      if (!live || live.asked) return
+      // A dev world-rebuild dealt a round underneath the ask: abandon it rather
+      // than dropping an easel over a playable tray.
+      if (this.round !== null) {
+        this.commission = null
+        return
+      }
+      live.asked = true
+      this.events.emit('commission', live)
+    })
+    // The easel covers the friend, so "someone is still waiting" has to live in the
+    // strip that stays visible: the ask bubble pulses and chirps. (A lip smack
+    // behind the pad is a signal nobody can see.)
     this.impatience?.remove()
     this.impatience = this.time.addEvent({
       delay: 4200,
       loop: true,
-      callback: () => this.monsterRig.lickLips(),
+      callback: () => this.bubbleUi.nudgeCommission(),
     })
-    this.events.emit('commission', this.commission)
     return true
   }
 

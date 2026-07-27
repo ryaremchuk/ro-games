@@ -78,11 +78,34 @@ export interface FeedTestState {
    * each mouth the food it wants. */
   duo: DuoState | null
   /**
-   * The live commission while the pixel pad is open over the scene (else null):
-   * which colour was asked, and whether the ask NAMES the colour (it does not
-   * below the colour-round unlock, where it is simply "draw anything").
+   * The live commission (else null): which colour was asked, whether the ask NAMES
+   * the colour (it does not below the colour-round unlock, where it is simply
+   * "draw anything"), and which half of the beat is playing — `asking` while the
+   * friend is visibly asking and the easel has NOT arrived yet, `drawing` once it
+   * has.
    */
-  commission: { color: string; askColor: boolean } | null
+  commission: {
+    color: string
+    askColor: boolean
+    phase: 'asking' | 'drawing'
+  } | null
+  /**
+   * Why the drawing ask will or will not fire right now — read straight off the
+   * pure rule (journey.commissionGate), so the dev panel can answer "why did that
+   * not just happen?" without keeping a second copy of the rule.
+   */
+  commissionGate: {
+    /** Colour the rule would ask for right now, or null when nothing is due. */
+    dueColor: string | null
+    /** Which gate said no (null when one is due). */
+    blockedBy: string | null
+    /** Episode index of the last ask offered; −1 = never. */
+    lastEpisode: number
+    /** Does the ask NAME a colour yet, or is it still "draw anything"? */
+    namesColor: boolean
+    /** Colours the child already owns a drawing for, newest first. */
+    ownedColors: string[]
+  }
   /** Food ids of the child's drawings currently in the rotation (max 6). */
   drawnFoodIds: string[]
   /** True while this round's food rides the conveyor belt instead of the tray. */

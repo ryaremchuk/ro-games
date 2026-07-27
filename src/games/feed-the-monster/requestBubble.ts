@@ -179,6 +179,26 @@ export class RequestBubble {
     this.scene.time.delayedCall(180, () => playTone(880, 200, 'triangle', 0.1))
   }
 
+  /**
+   * "I am still waiting" while the easel covers the friend. The bubble is in the
+   * one strip the pad leaves alone, so the nudge has to happen HERE — a lip smack
+   * behind the pad is a signal nobody can see. Deliberately gentle: a curious
+   * chirp, not a hurry-up.
+   */
+  nudgeCommission(): void {
+    if (!this.bubble.visible) return
+    for (const pic of this.bubblePics) this.pulse(pic)
+    this.scene.tweens.add({
+      targets: this.bubble,
+      scale: { from: this.bubble.scale, to: this.bubble.scale * 1.07 },
+      duration: 220,
+      yoyo: true,
+      ease: 'Sine.easeInOut',
+    })
+    playTone(659, 120, 'sine', 0.06)
+    this.scene.time.delayedCall(150, () => playTone(784, 140, 'sine', 0.05))
+  }
+
   /** Tear down the current tiles + decorations (shared by every show*). */
   private clearTiles(): void {
     for (const pic of this.bubblePics) {

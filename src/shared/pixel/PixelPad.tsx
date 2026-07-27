@@ -88,6 +88,13 @@ export interface PixelPadProps {
   chromeTop?: number
   /** Label for the done button; defaults to a big check. */
   doneLabel?: string
+  /**
+   * How the pad is dressed. The default EASEL (wooden frame, ledge, legs) is the
+   * house look: the pad opens over a running game, and a bare white square over a
+   * live scene reads as a system dialog instead of as a thing in the world.
+   * `'plain'` is kept for a consumer that genuinely wants only the instrument.
+   */
+  frame?: 'easel' | 'plain'
   /** Expose the dev/e2e hook (so a spec can paint real cells). */
   exposeTestApi?: boolean
 }
@@ -108,6 +115,7 @@ export default function PixelPad({
   railTools = 0,
   chromeTop = 0,
   doneLabel = '✓',
+  frame = 'easel',
   exposeTestApi = false,
 }: PixelPadProps) {
   const rootRef = useRef<HTMLDivElement>(null)
@@ -137,8 +145,9 @@ export default function PixelPad({
         { vw: box.vw || 1, vh: box.vh || 1, chromeTop },
         // Eraser + undo + bin, plus whatever the shell added.
         { tools: 3 + railTools, swatches: SWATCHES.length },
+        frame === 'easel',
       ),
-    [box.vw, box.vh, chromeTop, railTools],
+    [box.vw, box.vh, chromeTop, railTools, frame],
   )
 
   // ─── Rendering ─────────────────────────────────────────────────────────────
@@ -403,8 +412,82 @@ export default function PixelPad({
     ...extra,
   })
 
+  // ─── Easel chrome ──────────────────────────────────────────────────────────
+  // Pure decoration derived from the instrument's own geometry: the frame hugs
+  // the paper, the ledge hangs under it and the legs splay from the ledge. All of
+  // it is `aria-hidden` — there is nothing here for a child (or a screen reader)
+  // to operate.
+  const easel = layout.easel
+  const frameBox = easel && {
+    x: layout.canvasX - easel.border,
+    y: layout.canvasY - easel.border,
+    side: layout.side + easel.border * 2,
+  }
+  const doneSide = layout.button * 1.2
+  // The finish button RESTS ON THE LEDGE (clamped so it can never hang out of the
+  // pad's own box on a short overlay), which is what makes the shelf load-bearing
+  // rather than ornamental.
+  const doneAnchor: CSSProperties =
+    easel && frameBox
+      ? {
+          left: Math.min(
+            frameBox.x + frameBox.side - doneSide * 0.92,
+            Math.max(0, box.vw - doneSide - 8),
+          ),
+          top: Math.min(
+            frameBox.y + frameBox.side + easel.ledge / 2 - doneSide / 2,
+            Math.max(0, box.vh - doneSide - 6),
+          ),
+        }
+      : {
+          right: Math.max(12, layout.canvasX * 0.12),
+          bottom: 'max(14px, env(safe-area-inset-bottom))',
+        }
+
   return (
     <div ref={rootRef} style={styles.root}>
+      {easel && frameBox && (
+        <>
+          {easel.legs > 0 &&
+            [-1, 1].map((lean) => (
+              <span
+                key={lean}
+                aria-hidden
+                style={{
+                  ...styles.easelLeg,
+                  left: frameBox.x + frameBox.side * (lean < 0 ? 0.2 : 0.8),
+                  top: frameBox.y + frameBox.side + easel.ledge - easel.border * 0.2,
+                  width: Math.max(6, easel.border * 0.5),
+                  height: easel.legs,
+                  borderRadius: easel.border * 0.25,
+                  transform: `translateX(-50%) rotate(${lean * 9}deg)`,
+                }}
+              />
+            ))}
+          <span
+            aria-hidden
+            style={{
+              ...styles.easelFrame,
+              left: frameBox.x,
+              top: frameBox.y,
+              width: frameBox.side,
+              height: frameBox.side,
+              borderRadius: easel.border * 0.9,
+            }}
+          />
+          <span
+            aria-hidden
+            style={{
+              ...styles.easelLedge,
+              left: frameBox.x - easel.border * 0.5,
+              top: frameBox.y + frameBox.side - easel.border * 0.2,
+              width: frameBox.side + easel.border,
+              height: easel.ledge,
+              borderRadius: `${easel.border * 0.3}px ${easel.border * 0.3}px ${easel.border * 0.7}px ${easel.border * 0.7}px`,
+            }}
+          />
+        </>
+      )}
       <div
         style={{
           ...styles.canvasBox,
@@ -474,7 +557,7 @@ export default function PixelPad({
 
       {/* Done is the loudest thing on screen: the pad must never become a place
           a child settles into and forgets the game that asked for the drawing. */}
-      <div style={{ ...styles.doneBox, right: Math.max(12, layout.canvasX * 0.12) }}>
+      <div style={{ ...styles.doneBox, ...doneAnchor }}>
         {askColor !== undefined && (
           <span aria-label="Asked colour" style={{ ...styles.blot, background: askColor }} />
         )}
@@ -548,10 +631,30 @@ const styles: Record<string, CSSProperties> = {
   },
   doneBox: {
     position: 'absolute',
-    bottom: 'max(14px, env(safe-area-inset-bottom))',
     display: 'flex',
     alignItems: 'center',
     gap: 10,
+  },
+  // Wood tones taken from the pad's OWN palette (#b08968 / #6b4f3a) so the easel
+  // is painted in colours the child can also paint with.
+  easelFrame: {
+    position: 'absolute',
+    background: 'linear-gradient(158deg, #c9a483 0%, #b08968 46%, #8f6b4c 100%)',
+    boxShadow: '0 14px 34px rgba(0,0,0,0.26), inset 0 2px 0 rgba(255,255,255,0.34)',
+    pointerEvents: 'none',
+  },
+  easelLedge: {
+    position: 'absolute',
+    background: 'linear-gradient(180deg, #d0ab88 0%, #a87f5c 58%, #7d5c40 100%)',
+    boxShadow: '0 10px 22px rgba(0,0,0,0.24), inset 0 2px 0 rgba(255,255,255,0.42)',
+    pointerEvents: 'none',
+  },
+  easelLeg: {
+    position: 'absolute',
+    transformOrigin: 'top center',
+    background: 'linear-gradient(180deg, #8a6a4d 0%, #6b4f3a 100%)',
+    boxShadow: '0 4px 10px rgba(0,0,0,0.22)',
+    pointerEvents: 'none',
   },
   blot: {
     display: 'block',
