@@ -14,8 +14,8 @@
  * meter owns difficulty, the journey owns visible progress.
  */
 
-import { foodById } from './logic'
-import type { Food, Rng } from './logic'
+import { FOOD_COLORS, foodById } from './logic'
+import type { Food, FoodColor, Rng } from './logic'
 
 // ─── Growth ──────────────────────────────────────────────────────────────────
 
@@ -222,6 +222,112 @@ export function duoComplete(journey: JourneyState): { next: JourneyState; outcom
     outcome: 'episode-complete',
   }
 }
+
+// ─── Commissions: the food the child draws ────────────────────────────────────
+//
+// A commission is a JOURNEY beat, not a task-registry row: it arrives with the
+// first friend of an episode, at most once per episode, so it never competes with
+// the round generator and always lands on an existing seam (the child has just
+// watched a dance party — the pad is not interrupting a round).
+
+/**
+ * 0-based episode index a commission can first arrive in — i.e. episode TWO. By
+ * then the child has fed five friends and seen one full transition before the
+ * game ever asks them to MAKE something.
+ */
+export const COMMISSION_MIN_EPISODE = 1
+
+/** The colour meter at which the ask upgrades from "draw anything" to "draw
+ * something <colour>" — mirrors the `color` task kind's own unlock. */
+export const COMMISSION_COLOR_MIN_SKILL = 2
+
+export interface CommissionContext {
+  journey: JourneyState
+  /** Episode index of the last commission OFFERED (−1 if never). */
+  lastCommissionEpisode: number
+  /**
+   * Colours the child already owns a drawn food for, NEWEST FIRST (that is the
+   * order shared/pixel/artStore.newestPerTag returns).
+   */
+  ownedColors: readonly FoodColor[]
+}
+
+/** Which gate turned the ask down, or null when one is due. */
+export type CommissionBlock =
+  /** Too early in the journey — episode < COMMISSION_MIN_EPISODE. */
+  | 'episode'
+  /** This episode has already had its one ask. */
+  | 'already-this-episode'
+  /** Mid-friend: the ask only lands on a fresh friend, before its first feed. */
+  | 'friend-in-progress'
+
+export interface CommissionGate {
+  /** The colour to ask for, or null for "not now". */
+  color: FoodColor | null
+  /** Why not, when color is null. */
+  blockedBy: CommissionBlock | null
+}
+
+/**
+ * Whether a drawing is asked for right now, which colour, and — when it is not —
+ * WHICH RULE said no.
+ *
+ * The reason is part of the return value rather than something a caller re-derives
+ * because the cadence of this beat is the least settled thing in the game: Ros's
+ * own words on 2026-07-27 were that he cannot tell when it triggers. The dev panel
+ * reads this, so the answer an adult sees on the device is the rule itself and not
+ * a second copy of it that can drift.
+ *
+ * The colour asked is the one the child does NOT own yet, in FOOD_COLORS order, so
+ * the ask has a reason the child can feel ("there is nothing brown here") and over
+ * a few sessions they end up owning one food of every colour — a collection that
+ * fills itself. Once all six are owned the OLDEST slot is refreshed.
+ *
+ * Checks run most-informative first (all of them must pass either way, so the order
+ * changes only which reason is reported).
+ */
+export function commissionGate(ctx: CommissionContext): CommissionGate {
+  const { journey } = ctx
+  if (journey.episode < COMMISSION_MIN_EPISODE) return { color: null, blockedBy: 'episode' }
+  if (ctx.lastCommissionEpisode >= journey.episode) {
+    return { color: null, blockedBy: 'already-this-episode' }
+  }
+  // The first friend of the episode, before it has been fed anything.
+  if (journey.friendsFed !== 0 || journey.growthStep !== 0) {
+    return { color: null, blockedBy: 'friend-in-progress' }
+  }
+
+  const owned = new Set(ctx.ownedColors)
+  const missing = FOOD_COLORS.find((color) => !owned.has(color))
+  // All six owned — refresh the one whose drawing is oldest (last, newest-first).
+  const color = missing ?? ctx.ownedColors[ctx.ownedColors.length - 1] ?? FOOD_COLORS[0]
+  return { color, blockedBy: null }
+}
+
+/** Which colour to commission right now, or null for "not now". */
+export function commissionColor(ctx: CommissionContext): FoodColor | null {
+  return commissionGate(ctx).color
+}
+
+/**
+ * Rounds after a drawing is made before the friend asks for it BY NAME. This is
+ * the emotional payoff of the whole feature and it costs nothing mechanically —
+ * an ordinary count request whose foodId is the drawn food (logic's
+ * RoundContext.preferFoodId).
+ */
+export const DRAWN_CALLBACK_ROUNDS = 3
+
+/**
+ * How long the friend has the stage to itself to ASK for a drawing before the
+ * easel rises over it.
+ *
+ * The easel fills the screen, so whatever is not understood in this window is not
+ * understood at all: without it the pad appeared on the same frame as the ask and
+ * the child never saw anyone ask. Long enough for a 3-year-old to look at the
+ * bubble and the friend (the two-note cue plus a lip smack land inside it), short
+ * enough that an adult does not think the game has stalled.
+ */
+export const COMMISSION_ANNOUNCE_MS = 1500
 
 // ─── Friend looks: colors + growth details ───────────────────────────────────
 

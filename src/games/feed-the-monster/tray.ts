@@ -14,7 +14,8 @@
  */
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
-import { TRAY_SIZE } from './logic'
+import { drawingTextureKey } from '../../shared/pixel/drawingTexture'
+import { TRAY_SIZE, drawingIdOf } from './logic'
 import { BIG_BITE_FOOD_BOOST } from './journey'
 import { artKey } from './art'
 import * as layout from './layout'
@@ -73,6 +74,14 @@ export class Tray {
    */
   dragged: Phaser.GameObjects.Image | null = null
 
+  /**
+   * Foods currently flying under an arc the tray owns (home, or spat back). Kept
+   * because an arc animates x/y from a tween on a helper object, so it is
+   * invisible to `tweens.isTweening(food)` — and a round MODE that repositions
+   * food every frame (the belt) would otherwise fight it and teleport the food.
+   */
+  private readonly arcs = new Map<Phaser.GameObjects.Image, Phaser.Tweens.Tween>()
+
   private readonly scene: FeedTheMonsterScene
 
   constructor(scene: FeedTheMonsterScene) {
@@ -84,10 +93,17 @@ export class Tray {
   }
 
   /**
-   * Texture for a food: reskin sprite when shipped, emoji strike otherwise.
-   * Public — RequestBubble fills its tiles/slots with the same textures.
+   * Texture for a food, in preference order: the CHILD'S OWN DRAWING when this
+   * food was commissioned from them, then the shipped reskin sprite, then the
+   * emoji strike. Public — RequestBubble fills its tiles/slots with the same
+   * textures, so the child's art shows up in the thought bubble too.
    */
   foodTexture(foodId: string): string {
+    const drawingId = drawingIdOf(foodId)
+    if (drawingId !== null) {
+      const key = drawingTextureKey(drawingId)
+      if (this.scene.textures.exists(key)) return key
+    }
     return this.scene.hasArt(`food-${foodId}`) ? artKey(`food-${foodId}`) : `ftm-food-${foodId}`
   }
 
@@ -117,7 +133,7 @@ export class Tray {
       glow.setTint(GLOW_TINT).setAlpha(0).setBlendMode(Phaser.BlendModes.ADD)
       this.glows.push(glow)
 
-      const plate = this.scene.add.image(0, 0, 'ftm-plate').setDepth(4)
+      const plate = this.scene.add.image(0, 0, this.scene.look('plate', 'ftm-plate')).setDepth(4)
       this.dressPlate(plate)
       plate.setInteractive()
       plate.on('pointerdown', () => {
@@ -146,8 +162,9 @@ export class Tray {
       if (plate.texture.key !== artKey(marker)) plate.setTexture(artKey(marker))
       plate.setDisplaySize(w, w * 0.5) // marker art is a 2:1 doily oval
     } else {
-      if (plate.texture.key !== 'ftm-plate') plate.setTexture('ftm-plate')
-      plate.setDisplaySize(w, w * 0.55) // procedural plate keeps its flatter oval
+      const dish = this.scene.look('plate', 'ftm-plate')
+      if (plate.texture.key !== dish) plate.setTexture(dish)
+      plate.setDisplaySize(w, w * 0.55) // round dish, foreshortened into an oval
     }
     plate.setData('baseSX', plate.scaleX)
     plate.setData('baseSY', plate.scaleY)
@@ -223,59 +240,92 @@ export class Tray {
     }
   }
 
-  buildTray(tray: string[]): void {
+  /** Destroy every food currently on the tray (or the belt). */
+  clearFoods(): void {
     for (const food of this.foods) {
+      this.stopArc(food)
       this.scene.tweens.killTweensOf(food)
       food.destroy()
     }
     this.foods = []
     this.dragged = null
+  }
 
+  /**
+   * Cancel any arc flying this food home. Needed on every disposal path: an arc
+   * animates the food from a tween on a helper object, so `killTweensOf(food)`
+   * does not touch it and it would go on writing x/y to a destroyed sprite.
+   */
+  private stopArc(img: Phaser.GameObjects.Image): void {
+    this.arcs.get(img)?.remove()
+    this.arcs.delete(img)
+  }
+
+  /**
+   * Build one draggable food sprite and enrol it in `foods`.
+   *
+   * Every food source goes through here — the still plate row below, and the
+   * conveyor's belt dishes — so the drag mechanics, the snap assist, the tap
+   * wiggle and the feed handoff are shared rather than reimplemented per mode.
+   * `slot` is the food's home index, which `homePos` resolves back to a position.
+   */
+  makeFood(foodId: string, x: number, y: number, slot: number): Phaser.GameObjects.Image {
+    const texKey = this.foodTexture(foodId)
+    const img = this.scene.add.image(x, y, texKey).setDepth(5)
+    img.setData('foodId', foodId)
+    img.setData('slot', slot)
+    const frame = this.scene.textures.getFrame(texKey)
+    // Reskin sprites arrive at atlas resolution — normalize them to the
+    // emoji footprint; the hit circle stays ~100 css px either way (the
+    // shape lives in unscaled frame coords, hence the /base).
+    const base =
+      (texKey === `ftm-food-${foodId}`
+        ? 1
+        : this.px(FOOD_CSS * 1.12) / Math.max(frame.width, frame.height)) *
+      textures.foodScale(foodId)
+    img.setData('baseScale', base)
+    // Resting scale reads through foodBaseScale, so a big-bite round's foods
+    // drop in already boosted (and the hit circle, sized in unscaled frame
+    // coords below, grows with them).
+    img.setScale(this.foodBaseScale(img))
+    img.setInteractive(
+      new Phaser.Geom.Circle(
+        frame.width / 2,
+        frame.height / 2,
+        this.px(layout.FOOD_HIT_RADIUS_CSS) / base,
+      ),
+      Phaser.Geom.Circle.Contains,
+    )
+    this.scene.input.setDraggable(img)
+
+    // Touch-down ack < 100ms; a plain tap (no drag) wiggles + boops.
+    img.on('pointerdown', () => {
+      if (this.dragged) return
+      this.scene.tweens.add({
+        targets: img,
+        scaleX: base * 0.9,
+        scaleY: base * 0.9,
+        duration: 80,
+        yoyo: true,
+        ease: 'Quad.easeOut',
+      })
+    })
+    img.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      if (pointer.getDistance() < this.px(8)) {
+        playTone(659, 45, 'sine', 0.05)
+        this.wiggle(img)
+      }
+    })
+
+    this.foods.push(img)
+    return img
+  }
+
+  buildTray(tray: string[]): void {
+    this.clearFoods()
     tray.forEach((foodId, i) => {
       const slot = layout.slotPos(this.scene.metrics(), i)
-      const texKey = this.foodTexture(foodId)
-      const img = this.scene.add.image(slot.x, -this.px(80), texKey).setDepth(5)
-      img.setData('foodId', foodId)
-      img.setData('slot', i)
-      const frame = this.scene.textures.getFrame(texKey)
-      // Reskin sprites arrive at atlas resolution — normalize them to the
-      // emoji footprint; the hit circle stays ~100 css px either way (the
-      // shape lives in unscaled frame coords, hence the /base).
-      const base =
-        (texKey === `ftm-food-${foodId}`
-          ? 1
-          : this.px(FOOD_CSS * 1.12) / Math.max(frame.width, frame.height)) *
-        textures.foodScale(foodId)
-      img.setData('baseScale', base)
-      // Resting scale reads through foodBaseScale, so a big-bite round's foods
-      // drop in already boosted (and the hit circle, sized in unscaled frame
-      // coords below, grows with them).
-      img.setScale(this.foodBaseScale(img))
-      img.setInteractive(
-        new Phaser.Geom.Circle(frame.width / 2, frame.height / 2, this.px(50) / base),
-        Phaser.Geom.Circle.Contains,
-      )
-      this.scene.input.setDraggable(img)
-
-      // Touch-down ack < 100ms; a plain tap (no drag) wiggles + boops.
-      img.on('pointerdown', () => {
-        if (this.dragged) return
-        this.scene.tweens.add({
-          targets: img,
-          scaleX: base * 0.9,
-          scaleY: base * 0.9,
-          duration: 80,
-          yoyo: true,
-          ease: 'Quad.easeOut',
-        })
-      })
-      img.on('pointerup', (pointer: Phaser.Input.Pointer) => {
-        if (pointer.getDistance() < this.px(8)) {
-          playTone(659, 45, 'sine', 0.05)
-          this.wiggle(img)
-        }
-      })
-
+      const img = this.makeFood(foodId, slot.x, -this.px(80), i)
       // Drop-in: staggered bounce onto the tray.
       this.scene.tweens.add({
         targets: img,
@@ -284,8 +334,48 @@ export class Tray {
         duration: 600,
         ease: 'Bounce.easeOut',
       })
-      this.foods.push(img)
     })
+  }
+
+  /**
+   * Where a food belongs when it is not in the child's hand. A round MODE can
+   * take this over — a belt dish's home is wherever its lane has ridden to, not a
+   * fixed plate — which is what lets "arc back home" and the spit-back reuse the
+   * same motion in every mode.
+   */
+  homeProvider: ((img: Phaser.GameObjects.Image) => layout.XY) | null = null
+
+  homePos(img: Phaser.GameObjects.Image): layout.XY {
+    return (
+      this.homeProvider?.(img) ??
+      layout.slotPos(this.scene.metrics(), img.getData('slot') as number)
+    )
+  }
+
+  /**
+   * Replace the food in one tray slot, dropping the new one in with the same
+   * bounce a fresh tray uses. Used when the thief flies off with something: the
+   * plate is briefly empty and then refills, so the round stays completable and
+   * the child never loses ground to a bird.
+   */
+  dropReplacement(slot: number, foodId: string): Phaser.GameObjects.Image {
+    const at = layout.slotPos(this.scene.metrics(), slot)
+    const img = this.makeFood(foodId, at.x, -this.px(80), slot)
+    this.scene.tweens.add({
+      targets: img,
+      y: at.y,
+      duration: 620,
+      ease: 'Bounce.easeOut',
+    })
+    return img
+  }
+
+  /** Take a food off the tray and destroy it cleanly, mid-tween or not. */
+  removeFood(food: Phaser.GameObjects.Image): void {
+    this.stopArc(food)
+    this.scene.tweens.killTweensOf(food)
+    this.foods = this.foods.filter((f) => f !== food)
+    food.destroy()
   }
 
   // ─── Drag mechanics ────────────────────────────────────────────────────────
@@ -294,8 +384,8 @@ export class Tray {
    * Make each food draggable: lift on dragstart, follow + snap-assist toward
    * the mouth on drag, and on dragend decide — a release inside the mouth snap
    * zone (while not transitioning) hands off to the scene to feed; otherwise the
-   * food arcs back to its plate. The drop→feed decision stays orchestrated here
-   * exactly as before (mouthWorld + snapRadius test), calling `scene.feed`.
+   * food arcs back home (`returnHome`). The drop→feed decision stays orchestrated
+   * here exactly as before (mouthWorld + snapRadius test), calling `scene.feed`.
    */
   wireDrag(): void {
     this.scene.input.dragDistanceThreshold = this.px(8)
@@ -325,12 +415,12 @@ export class Tray {
         if (img !== this.dragged) return
         img.x = dragX
         img.y = dragY
-        // Magnetic snap assist toward the NEAREST open mouth (one in a solo
-        // round, two in a duo); that mouth opens as the food approaches, the
-        // others close.
-        const snap = layout.snapRadius(this.scene.metrics())
+        // Magnetic snap assist toward the NEAREST drop target (one mouth in a
+        // solo round, two in a duo, plus the pot in a kitchen round); that mouth
+        // opens as the food approaches, the others close.
         const mouths = this.scene.feedMouths()
         const near = this.nearestMouth(img, mouths)
+        const snap = this.snapFor(near.mouth)
         for (const mouth of mouths) {
           if (mouth === near.mouth && near.dist < snap) {
             img.x += (mouth.x - img.x) * 0.3
@@ -349,17 +439,22 @@ export class Tray {
         const img = obj as Phaser.GameObjects.Image
         if (img !== this.dragged) return
         this.dragged = null
-        const snap = layout.snapRadius(this.scene.metrics())
         const mouths = this.scene.feedMouths()
         const near = this.nearestMouth(img, mouths)
+        const snap = this.snapFor(near.mouth)
         if (near.mouth && near.dist < snap && !this.scene.transitioning) {
           near.mouth.accept(img)
         } else {
           for (const mouth of mouths) mouth.setOpen(0, 160)
-          this.returnToTray(img)
+          this.returnHome(img)
         }
       },
     )
+  }
+
+  /** A target's own drop radius, falling back to the mouth's default. */
+  private snapFor(mouth: FeedMouth | null): number {
+    return mouth?.snap ?? layout.snapRadius(this.scene.metrics())
   }
 
   /** The feed mouth closest to a dragged food, and its distance. */
@@ -384,6 +479,7 @@ export class Tray {
   fadeOutFood(food: Phaser.GameObjects.Image): void {
     if (!food.active) return
     food.disableInteractive()
+    this.stopArc(food)
     this.scene.tweens.killTweensOf(food)
     this.scene.tweens.add({
       targets: food,
@@ -398,14 +494,26 @@ export class Tray {
     })
   }
 
-  private returnToTray(img: Phaser.GameObjects.Image): void {
-    const slot = layout.slotPos(this.scene.metrics(), img.getData('slot') as number)
+  /**
+   * Send a food back where it belongs. Public because a round MODE releases food
+   * the drag system never sees — a belt dish tapped and let go without ever
+   * crossing the drag threshold fires no `dragend`, and it must still come home.
+   */
+  returnHome(img: Phaser.GameObjects.Image): void {
     const base = this.foodBaseScale(img)
     img.disableInteractive()
-    this.arcTo(img, slot.x, slot.y, 450, () => {
-      img.setInteractive()
-      if (this.scene.transitioning) this.fadeOutFood(img)
-    })
+    // A LIVE home, re-read every frame: on the belt "home" is a plate that is
+    // still riding, so a fixed target would land the food where its plate used
+    // to be and leave the belt to snap it the rest of the way.
+    this.arcTo(
+      img,
+      () => this.homePos(img),
+      450,
+      () => {
+        img.setInteractive()
+        if (this.scene.transitioning) this.fadeOutFood(img)
+      },
+    )
     this.scene.tweens.add({
       targets: img,
       scaleX: base,
@@ -415,40 +523,58 @@ export class Tray {
     })
   }
 
-  /** Move along a little arc (never teleport), with a playful spin. */
+  /**
+   * Is a tray-owned animation moving this food right now (an arc home, a drop-in
+   * bounce, a fade-out, the flight into a mouth)? A round mode must not reposition
+   * food while one is running.
+   */
+  isAnimating(img: Phaser.GameObjects.Image): boolean {
+    return this.arcs.has(img) || this.scene.tweens.isTweening(img)
+  }
+
+  /**
+   * Move along a little arc (never teleport), with a playful spin. `to` may be a
+   * live resolver — a moving destination is re-read every frame, which is what
+   * lets a belt dish fly back onto a plate that has not stopped riding.
+   */
   arcTo(
     img: Phaser.GameObjects.Image,
-    toX: number,
-    toY: number,
+    to: layout.XY | (() => layout.XY),
     duration: number,
     onComplete: () => void,
   ): void {
     this.scene.tweens.killTweensOf(img)
+    this.arcs.get(img)?.remove()
     img.setDepth(20)
     const fromX = img.x
     const fromY = img.y
-    const peak = Math.min(fromY, toY) - this.px(110)
+    const target = typeof to === 'function' ? to : () => to
     const state = { t: 0 }
-    this.scene.tweens.add({
+    let landing = target()
+    const tween = this.scene.tweens.add({
       targets: state,
       t: 1,
       duration,
       ease: 'Sine.easeInOut',
       onUpdate: () => {
+        landing = target()
         const t = state.t
         const u = 1 - t
-        img.x = fromX + (toX - fromX) * t
-        img.y = u * u * fromY + 2 * u * t * peak + t * t * toY
+        const peak = Math.min(fromY, landing.y) - this.px(110)
+        img.x = fromX + (landing.x - fromX) * t
+        img.y = u * u * fromY + 2 * u * t * peak + t * t * landing.y
         img.rotation = t * Math.PI * 2
       },
       onComplete: () => {
+        this.arcs.delete(img)
         if (!img.active) return
         img.setRotation(0)
         img.setDepth(5)
-        img.setPosition(toX, toY)
+        img.setPosition(landing.x, landing.y)
         onComplete()
       },
     })
+    this.arcs.set(img, tween)
   }
 
   // ─── Reactions ───────────────────────────────────────────────────────────

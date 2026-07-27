@@ -15,6 +15,7 @@ import {
   TRAY_SIZE,
   activePoolForRound,
   bubbleItems,
+  dishResult,
   colorTargetRange,
   countTargetRange,
   dotsTargetRange,
@@ -22,8 +23,10 @@ import {
   generateDuoRound,
   generateRound,
   grayedBubbleItems,
+  isDishCooked,
   isRoundComplete,
   pickTaskKind,
+  potAccepts,
   requestTotal,
   shouldInjectDuo,
   unlockedKinds,
@@ -48,10 +51,26 @@ const ROUNDS = Array.from({ length: 30 }, (_, i) => i + 1)
 const SKILLS = Array.from({ length: SKILL_MAX + 1 }, (_, i) => i)
 const ALL_KINDS = TASK_REGISTRY.map((def) => def.kind)
 
-/** Greedily feed the monster from the tray; true if the round can complete. */
+/**
+ * Greedily play a round to completion; true if it can be cleared at all.
+ *
+ * A KITCHEN round has a different completion path from every other kind: the
+ * tray holds the PARTS, and the only feedable thing is the dish that comes out of
+ * the pot once they are all in. So model the pot, then feed the result.
+ */
 function simulateFeed(request: FoodRequest, tray: readonly string[]): boolean {
-  const eaten: string[] = []
   const remaining = [...tray]
+  if (request.kind === 'dish') {
+    const pot: string[] = []
+    while (!isDishCooked(request, pot)) {
+      const at = remaining.findIndex((id) => potAccepts(request, pot, id))
+      if (at < 0) return false
+      pot.push(remaining[at])
+      remaining.splice(at, 1)
+    }
+    return wantsFood(request, [], dishResult(request))
+  }
+  const eaten: string[] = []
   while (!isRoundComplete(request, eaten)) {
     const index = remaining.findIndex((id) => wantsFood(request, eaten, id))
     if (index < 0) return false
@@ -397,7 +416,11 @@ describe('thought bubble pictures', () => {
       color: 'green',
       colorCount: 1,
     }
-    expect(bubbleItems(request)).toEqual([{ emoji: '🍎' }, { emoji: '🍎' }, { color: 'green' }])
+    expect(bubbleItems(request)).toEqual([
+      { foodId: 'apple' },
+      { foodId: 'apple' },
+      { color: 'green' },
+    ])
     // Green pear eaten first: the splash grays, not the first apple tile.
     expect(grayedBubbleItems(request, ['pear'])).toEqual([false, false, true])
     expect(grayedBubbleItems(request, ['pear', 'apple'])).toEqual([true, false, true])
@@ -405,7 +428,7 @@ describe('thought bubble pictures', () => {
 
   it('dots renders one food tile and one pip tile', () => {
     const request: FoodRequest = { kind: 'dots', foodId: 'banana', count: 4 }
-    expect(bubbleItems(request)).toEqual([{ emoji: '🍌' }, { dots: 4 }])
+    expect(bubbleItems(request)).toEqual([{ foodId: 'banana' }, { dots: 4 }])
     expect(grayedBubbleItems(request, [])).toEqual([false, false])
     expect(grayedBubbleItems(request, ['banana', 'banana', 'banana', 'banana'])).toEqual([
       true,
@@ -416,7 +439,7 @@ describe('thought bubble pictures', () => {
   it('not renders the crossed tile then one slot per wanted food', () => {
     const request: FoodRequest = { kind: 'not', bannedFoodId: 'apple', count: 2 }
     expect(bubbleItems(request)).toEqual([
-      { emoji: '🍎', banned: true },
+      { foodId: 'apple', banned: true },
       { slot: true },
       { slot: true },
     ])
@@ -436,6 +459,16 @@ describe('thought bubble pictures', () => {
     expect(items[5]).toEqual({ slot: true })
     expect(grayedBubbleItems(request, [])[5]).toBe(false)
     expect(grayedBubbleItems(request, ['banana'])[5]).toBe(true)
+  })
+
+  it('a kitchen round asks the friend for ONE thing: the finished dish', () => {
+    // The recipe is NOT in here — it hangs over the pot on its own panel
+    // (recipePanel.ts), which is the whole point of splitting the two asks: the
+    // friend's bubble says "bring me this", the pot's panel says "cook this".
+    const request: FoodRequest = { kind: 'dish', recipeId: 'burger', ordered: false }
+    expect(bubbleItems(request)).toEqual([{ foodId: 'burger' }])
+    expect(grayedBubbleItems(request, [])).toEqual([false])
+    expect(grayedBubbleItems(request, ['burger'])).toEqual([true])
   })
 
   it('never overflows the bubble: at most 6 tiles for any generated request', () => {

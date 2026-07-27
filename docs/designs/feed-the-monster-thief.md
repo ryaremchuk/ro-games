@@ -1,6 +1,7 @@
 # Design — The thief
 
-> Status: **draft**, awaiting the design conversation.
+> Status: **SHIPPED, both phases** (`thief.ts`, `thiefMode.ts`). Every open
+> question below is answered at the end.
 > Adds: sustained attention while a main task is running; later, go/no-go
 > response inhibition.
 
@@ -63,19 +64,26 @@ telegraphed, it never blocks the round, and its frequency is capped by the same
 ### The beat
 
 ```
- telegraph (~1.2 s)      approach        peck window        exit
- shadow slides in    →   bird glides  →  1.5–3.0 s      →   flies off
+ telegraph 1.0–1.5 s     glide 1.24 s    peck window        exit
+ shadow slides in    →   bird flies   →  1.5–3.0 s      →   flies off
  + a distant caw         to a plate      (tap → shoo)        (with or without)
+                         └──────── tappable ─────┘
 ```
 
 - **Telegraph is mandatory.** A moving shadow on the table plus a distant caw,
   well before the bird is on screen. Nothing may ever appear on a plate without
   warning — at this age an unannounced grab reads as unfair, not exciting.
+- **The glide is half the catch window.** The visitor is tappable from its first
+  frame on screen, and it flies slowly enough (`thief.APPROACH_MS`) for a
+  four-year-old to land a finger on it in mid-air. Shortening it would buy
+  difficulty by making the visit less catchable rather than more demanding, so it
+  is the same length at every skill.
 - **Target choice**: a plate that currently holds a food. Prefer a **distractor**
   over a food the request wants (see no-fail).
-- **Tap to shoo**: a generous hit area (the bird plus a margin, at least as big
-  as a food's), a squawk, a puff of feathers, the bird arcs off screen. The
-  friend does a `beHappy` giggle.
+- **Tap to shoo**: a generous hit area (`layout.visitorTapRadius` — a ~2.7 cm
+  circle, roomier than a food's, because it is the only target that moves), a
+  squawk, a puff of feathers, the bird arcs off screen. The friend does a
+  `beHappy` giggle.
 - **Success (from the bird's side)**: it lifts the food and flies off with it in
   its beak; the plate is briefly empty and a replacement food drops in with the
   existing bounce. **The round stays completable at all times.**
@@ -107,12 +115,17 @@ withholding hard). It only unlocks once the child reliably catches thieves.
 The thief rides its **own axis**, like the duo — driven by live data plus chance,
 never by the cognitive meter, and gated so it never lands on a struggling child.
 
-| Dial                        | Easiest        | Hardest         |
-| --------------------------- | -------------- | --------------- |
-| Peck window (time to react) | 3.0 s          | 1.5 s           |
-| Telegraph lead              | 1.5 s          | 1.0 s           |
-| Frequency                   | ~1 in 4 rounds | ~1 in 2 rounds  |
-| No-go visitor rate          | 0 %            | ~30 % of visits |
+| Dial                        | Easiest             | Hardest         |
+| --------------------------- | ------------------- | --------------- |
+| Glide (tappable flight)     | 1.24 s — never less | 1.24 s          |
+| Peck window (time to react) | 3.0 s               | 1.5 s           |
+| Telegraph lead              | 1.5 s               | 1.0 s           |
+| Frequency                   | ~1 in 4 rounds      | ~1 in 2 rounds  |
+| No-go visitor rate          | 0 %                 | ~30 % of visits |
+
+The whole tappable window (glide + peck) therefore runs 4.24 s → 2.74 s, floored by
+`thief.MIN_TAPPABLE_MS` so the hardest visit still measures attention rather than
+reflexes.
 
 Its own small persisted meter (`thief`), moved by whether the last few visits
 were caught in time. Gates, mirroring `shouldInjectDuo`:
@@ -194,20 +207,46 @@ glance.
 - **Device** — is the telegraph enough warning; is the tap target big enough for
   a four-year-old's finger on a moving bird; is it funny rather than stressful.
 
-## Open questions for the design session
+## Answered as built
 
-1. **Which animal?** Seagull (classic food thief, but a stretch in a garden),
-   magpie (thief by reputation, fits every episode), raccoon (ground-based, no
-   flight animation needed), mouse. Recommendation: **magpie** — flies, universally
-   reads as a thief, and looks at home in all four episode themes.
-2. **Should the thief be per-episode** (a seagull at the picnic, a mouse in the
-   kitchen)? Lovely, but ×4 the art.
-3. **Reward for catching**: joy only (recommended, per the TOCHI finding), or a
-   small tangible payoff like turning the round into a big bite?
-4. **Ship phase 2 (the butterfly) at the same time**, or land the thief first and
-   watch whether the child even notices it before adding the no-go trial?
-5. **Does the thief ever visit the friend** instead of a plate — tugging its ear,
-   stealing its aura sparkle — as pure comedy with nothing at stake?
-6. **What happens if the child taps the thief the instant it lands**, before the
-   peck window really starts? Should there be a short grace period so an eager
-   child does not learn "spam-tap the sky"?
+1. **Magpie** — flies, reads as a thief everywhere, at home in all four themes.
+2. **One bird for every episode.** Per-episode visitors are ×4 the art for a beat
+   that lasts three seconds.
+3. **Joy only.** Confetti, a squawk and a delighted friend; no growth, no stars.
+   The journey stays tied to care performed.
+4. **Both phases shipped together.** The butterfly is gated behind the thief's OWN
+   meter (`BUTTERFLY_MIN_SKILL`), so it cannot reach a child who is not yet
+   reliably catching thieves — which is what "land the thief first" was protecting
+   against, enforced by the adaptive axis instead of by a release order.
+5. **Not yet.** Worth adding once the plate version has been watched on a device.
+6. **Every tap on a visible visitor counts**, including one during the glide in.
+   Punishing an eager child for being early is the wrong lesson, and there is
+   nothing to tap during the telegraph — so spam-tapping the sky can never pay off.
+
+### What building it changed
+
+- Tapping the butterfly **holds** the thief meter rather than dropping it. The
+  reward was already withheld (no giggle); deducting on top of that would punish
+  the same slip twice.
+- The stolen food's replacement is scheduled OFF the visit's own timer list. It was
+  on it, and `finish()` cleared that list on the very next line — so the bird flew
+  off with the food and nothing ever came back. Only a cancelled round (the round
+  is over, there is no plate to refill) calls the replacement off now.
+- Visitors are gated off belt rounds and commissions as well as duos: a bird on a
+  moving belt is two new mechanics in one round.
+- Both visitors are drawn **procedurally for now** — three magpie frames sharing
+  one body anchor plus two butterfly frames, following the whack-critter
+  separate-full-body-frames pattern rather than anything face-anchored.
+
+### After watching it played on the iPad
+
+- **The glide was twice too fast** (620 ms). The bird was on the plate before the
+  child had finished turning their head, so "you may tap it in the air" was true in
+  code and false in practice: every catch was made on the perch. It is now 1.24 s
+  (`thief.APPROACH_MS`), a pure design dial in the pure module and unit-tested. The
+  telegraph was left alone at 1.0–1.5 s — it already reads, and stretching it would
+  only add waiting, not another chance to act.
+- **The hit area is a circle, not the sprite rectangle** (`layout.visitorTapRadius`):
+  proportional to a tray slot, floored at ~1.3 cm of radius, and re-derived on every
+  frame swap. Phaser's `setInteractive` silently ignores a new shape once an object
+  is interactive, so the shape is assigned in place — a lesson worth keeping.

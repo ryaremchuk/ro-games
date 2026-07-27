@@ -1,6 +1,7 @@
 # Design — Kitchen: build a dish
 
-> Status: **draft**, awaiting the design conversation.
+> Status: **SHIPPED — phase 1** (`recipes.ts`, `kitchenMode.ts`). Every open
+> question below is answered at the end; the dish sheet is still phase 2.
 > Adds: sequencing, part–whole composition ("this thing is made of those things").
 
 ## The pitch
@@ -65,37 +66,53 @@ familiar spit-back rather than accepting them.
 
 ### The round
 
-1. The bubble shows the **finished dish, large**, with its ingredients in a row
-   underneath.
-2. A **pot** stands on the table between the friend and the tray.
+1. The friend's bubble shows the **finished dish** it wants — an ordinary
+   one-item request ("bring me this").
+2. A **pot** stands on the table between the friend and the tray, carrying its
+   OWN panel with the recipe ("cook this").
 3. Dragging a correct ingredient into the pot: it drops in, steam puffs, the
-   matching picture in the bubble ghosts out — the exact ghosting language the
-   game already uses for counts (`grayedBubbleItems`).
+   matching picture on the pot's panel goes solid and takes a ✓ — the exact
+   ghost→solid language the game already uses for counts.
 4. A wrong ingredient: the pot **spits it back**, same arc-home motion and
    "blegh" beat as the friend's spit-back. Consistency matters more than novelty
    here — the child already knows what that means.
 5. Last ingredient in: a little cook animation (lid rattle, steam burst, a
-   chime), and the finished dish **pops out of the pot** and sits on top of it,
-   draggable.
+   chime), the recipe panel bows out (its job is done, and it frees the pot's
+   airspace), and the finished dish **pops out of the pot** and sits on top of
+   it, draggable.
 6. Drag the dish to the friend → normal eat, normal round completion.
 
 The friend refuses raw ingredients during a kitchen round (spit-back), so there
 is exactly one right thing to do at every moment.
 
-### Recipe representation (no text, no symbols)
+### Recipe representation: two panels, one per ask
 
-No `+` and no `=` — both are abstract for a non-reader. The bubble reads
-top-to-bottom instead:
+**Superseded (2026-07).** Phase one put the whole recipe in the friend's bubble —
+the finished dish big, its parts in a row underneath. That reads as ONE compound
+instruction, and a non-reader cannot tell where "what goes in the pot" ends and
+"what the friend wants" begins. The round now draws **two panels, each hanging
+over the thing it is about**:
 
 ```
-        ┌─────────┐
-        │   🥪    │   ← the finished dish, big
-        └─────────┘
-         🍞 🧀 🍅      ← its parts, in a row, ghosting as each goes in
+                ┌────┐                       ┌──────────────────────────┐
+                │ 🍔 │  ← the friend's ask   │ 🍞 + 🧀 + 🍅 = 🍔 │  ← the pot's ask
+                └────┘     "bring me this"   └──────────────────────────┘
+                  🐰                                     ▼
+                                                        🫕
 ```
 
-The vertical "big thing above, its parts below" arrangement is the same
-whole/parts relationship the picture itself expresses, so it needs no learning.
+`+` and `=` are drawn GLYPHS (`textures.ts`: crossed / stacked rounded bars in a
+quiet slate), never text characters — but they are the only abstract marks in the
+game, and they earn their place: the equation is read aloud as a rising note per
+ingredient landing on a chord, and the panel is tappable to replay it, so the
+relationship is taught by sound and motion before the symbols mean anything.
+
+The panel belongs to the POT (`recipePanel.ts`, owned by `kitchenMode`), keyed off
+a `Recipe` rather than a round, so a pot that later stays on stage for a whole
+friend or episode is simply re-tasked. `layout.recipePanel` hugs it to the pot —
+above it by default, below it when above cannot hold the equation legibly — with a
+tail pointing back at the pot, and derives the tile size from the free width beside
+the friend so four ingredients still read on the narrowest viewport.
 
 ### Order
 
@@ -217,20 +234,38 @@ side benefit.
   ingredient is spat back and the tray stays whole; the friend refuses a raw
   ingredient; the made dish completes the round.
 
-## Open questions for the design session
+## Answered as built
 
-1. **Pot or board?** A pot says "cooking"; a plate/board says "assembling" and
-   suits sandwiches and salads better. A pot is more fun to animate.
-2. **Should the made dish be fed by the child, or hop into the friend's mouth by
-   itself** once cooked? Feeding it keeps the game's core verb; auto-feeding
-   shortens a long round. Recommendation: the child feeds it.
-3. **Does the pot live only in kitchen rounds, or permanently on the table?**
-   Permanent is calmer (the world stops rearranging itself) but takes space every
-   round.
-4. **Phase 1 recipe set** — is burger/hotdog/waffle/custard enough to prove it,
-   or do you want the dish sheet generated up front?
-5. **A "Kitchen" episode** (theme + background + its own pool) as a home for
-   this, or purely a task kind inside existing episodes?
-6. **Wrong-ingredient reaction** — pot spits it back (proposed, consistent) or
-   the pot accepts everything and the _result_ is a funny mess dish (very Toca,
-   much more work, and it weakens the learning signal)?
+1. **Pot** — more fun to animate, and the lid-rattle + steam burst is what sells
+   "it cooked" without any new art.
+2. **The child feeds it.** Feeding is the game's core verb; the made dish pops out
+   of the pot, bobs to say "take me", and arcs back onto the pot if dropped
+   anywhere else.
+3. **Only in kitchen rounds.** A permanent pot would take that ground every round
+   for nothing.
+4. **Phase 1 as recommended**, six recipes over four results that already exist in
+   the catalog — so the only new art is the pot. Every ingredient tier (2 / 3 / 4
+   parts) has more than one recipe, so a round is never predictable.
+5. **A task kind inside existing episodes**, owned by the cognitive meter. A
+   recipe's parts are pushed onto the tray by id whatever the episode, and
+   `buildSceneTextures` now covers every food a recipe can name.
+6. **The pot spits it back**, with the same arc-home motion and "blegh" beat as
+   the friend's spit-back. Consistency beats novelty: the child already knows what
+   that means. It also counts as a cognitive slip, because it is the same mistake.
+
+### What building it changed
+
+- The pot's vertical anchor is a share of the **hero→tray band**, not of the
+  height. A share of the height read fine on a 4:3 iPad and put the pot straight
+  through the plate row on a short phone-landscape viewport (caught by the new
+  `layout.test.ts` device sweep), so there is also a hard floor keeping its foot
+  clear of a plate.
+- The friend's bubble is back to ONE fixed height for every task kind: the recipe
+  moved onto the pot's own panel, so the two-row special case (and the centre nudge
+  that kept its upper row on screen) is gone.
+- A kitchen round's parts go solid from `kitchenMode`, not from `eaten`: the parts
+  are cooked, never eaten, which is the same reason dots drives its pips directly.
+- Where the recipe panel can go is dictated by the FRIEND, not by the pot: on a 4:3
+  portrait iPad a fully-grown friend's equator sits level with the pot and squeezes
+  the air beside it, which is why the panel takes the clear strip under the pot
+  there and the air above the pot on both landscape shapes.
