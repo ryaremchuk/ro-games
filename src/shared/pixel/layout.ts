@@ -71,6 +71,13 @@ const EASEL_LEG_MUL = 2.2
  * the board just rests on its shelf.
  */
 const EASEL_MIN_PAPER_FRAC = 0.62
+/**
+ * Smallest paper the easel may be worn on at all, CSS px: 16 cells × 18 css px,
+ * which is ~3 mm a cell on a phone (5.9 css/mm) — NN/g's floor for this age, below
+ * which a finger cannot reliably hit one cell. A box shorter than this gets a bare
+ * pad instead of a frame.
+ */
+const EASEL_MIN_PAPER_CSS = 16 * 18
 
 /** The easel chrome around the paper, CSS px. Zeroed when `legs` does not fit. */
 export interface PadEasel {
@@ -231,23 +238,32 @@ export function padLayout(
   // Legs are RESERVED up front, not given the leftovers — height is always fully
   // spent, so waiting for a surplus means they never appear at all. They are then
   // dropped again if paying for them would shrink the paper below what is
-  // comfortable to draw on: on a phone in landscape the board simply rests on its
-  // shelf, which reads as furniture, while a stubby leg reads as a bug.
+  // comfortable to draw on, because a stubby leg reads as a bug.
   const wantLegs = Math.round(border * EASEL_LEG_MUL)
   const legs =
     framed && paperWith(wantLegs) >= Math.min(availableW - border * 2, m.vh * EASEL_MIN_PAPER_FRAC)
       ? wantLegs
       : 0
-  const side = framed ? paperWith(legs) : bare
-  const easel: PadEasel | null = framed ? { border, ledge, legs } : null
+  const framedSide = paperWith(legs)
+  // THE INSTRUMENT WINS. Below this the whole easel goes, not just its legs: on a
+  // phone in landscape the box is short enough that a frame would push a 16-grid
+  // cell under the size a 3-year-old can hit at all, and a prettier pad that
+  // cannot be drawn on is not a trade — it is a regression.
+  const dressed = framed && framedSide >= EASEL_MIN_PAPER_CSS
+  const side = dressed ? framedSide : bare
+  const easel: PadEasel | null = dressed ? { border, ledge, legs } : null
 
   // Centre the whole easel (paper + frame + ledge + legs) in the space right of
-  // the rail, so the paper itself sits slightly high — which is where a board on
-  // a real easel sits.
-  const blockW = side + border * 2
-  const blockH = side + border * 2 + ledge + legs
-  const canvasX = railX + railW + gap + border + Math.max(0, (m.vw - railW - gap * 2 - blockW) / 2)
-  const canvasY = Math.max(0, (m.vh - blockH) / 2) + border
+  // the rail, so the paper itself sits slightly high — which is where a board on a
+  // real easel sits. Read the chrome back off `easel`, never off the provisional
+  // border/ledge above: an undressed pad must land in EXACTLY the position it had
+  // before the easel existed.
+  const chrome = easel ?? { border: 0, ledge: 0, legs: 0 }
+  const blockW = side + chrome.border * 2
+  const blockH = side + chrome.border * 2 + chrome.ledge + chrome.legs
+  const canvasX =
+    railX + railW + gap + chrome.border + Math.max(0, (m.vw - railW - gap * 2 - blockW) / 2)
+  const canvasY = Math.max(0, (m.vh - blockH) / 2) + chrome.border
 
   return {
     side,

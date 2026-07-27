@@ -34,7 +34,9 @@ import {
   COMMISSION_MIN_EPISODE,
   EPISODES,
   FRIENDS_PER_EPISODE,
+  COMMISSION_ANNOUNCE_MS,
   commissionColor,
+  commissionGate,
 } from './journey'
 import { PALETTE } from '../../shared/pixel/palette'
 
@@ -399,5 +401,62 @@ describe('when a commission arrives', () => {
         journey: { episode: 1, friendsFed: FRIENDS_PER_EPISODE - 1, growthStep: 0 },
       }),
     ).toBeNull()
+  })
+
+  it('says WHICH rule refused, so an adult can read the answer off the device', () => {
+    // The reason is part of the rule's own output rather than something the dev
+    // panel re-derives: this beat fires once per episode, so "why has it never
+    // happened?" is otherwise unanswerable without reading the source.
+    expect(
+      commissionGate({ ...base, journey: { episode: 0, friendsFed: 0, growthStep: 0 } }).blockedBy,
+    ).toBe('episode')
+    expect(
+      commissionGate({
+        ...base,
+        journey: { episode: 2, friendsFed: 0, growthStep: 0 },
+        lastCommissionEpisode: 2,
+      }).blockedBy,
+    ).toBe('already-this-episode')
+    expect(
+      commissionGate({ ...base, journey: { episode: 1, friendsFed: 2, growthStep: 0 } }).blockedBy,
+    ).toBe('friend-in-progress')
+    expect(
+      commissionGate({ ...base, journey: { episode: 1, friendsFed: 0, growthStep: 1 } }).blockedBy,
+    ).toBe('friend-in-progress')
+  })
+
+  it('reports no reason when one IS due, and the colour it would ask for', () => {
+    const gate = commissionGate({ ...base, journey: { episode: 1, friendsFed: 0, growthStep: 0 } })
+    expect(gate.blockedBy).toBeNull()
+    expect(gate.color).toBe('red')
+  })
+
+  it('keeps commissionColor and commissionGate in lockstep on every input', () => {
+    // Two entry points, ONE rule: the gate is the implementation and the colour
+    // helper is a view of it, so they can never disagree about whether to ask.
+    for (const episode of [0, 1, 2]) {
+      for (const friendsFed of [0, 1]) {
+        for (const growthStep of [0, 1]) {
+          for (const lastCommissionEpisode of [-1, 1, 2]) {
+            for (const ownedColors of [[], ['red'], ['red', 'yellow']] as FoodColor[][]) {
+              const ctx = {
+                journey: { episode, friendsFed, growthStep },
+                lastCommissionEpisode,
+                ownedColors,
+              }
+              expect(commissionColor(ctx)).toBe(commissionGate(ctx).color)
+            }
+          }
+        }
+      }
+    }
+  })
+
+  it('announces before it opens the easel, with time to notice the ask', () => {
+    // The pad used to appear on the same frame as the ask, which is exactly why
+    // the beat read as arbitrary. Long enough to look at the friend and the
+    // bubble, short enough not to read as a stall.
+    expect(COMMISSION_ANNOUNCE_MS).toBeGreaterThanOrEqual(1000)
+    expect(COMMISSION_ANNOUNCE_MS).toBeLessThanOrEqual(2500)
   })
 })
