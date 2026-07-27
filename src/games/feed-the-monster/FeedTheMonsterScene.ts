@@ -493,6 +493,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       },
       forceVisitor: (kind) => {
         if (this.transitioning || this.thiefMode.active || !this.round) return false
+        // A visitor never shares a round with the belt (scheduleVisit's `busy`
+        // says so), and it aims at a STILL tray slot — which a belt round has
+        // stood down. Forcing one here would peck at an invisible plate.
+        if (this.conveyorMode.active) return false
         this.visitTimer?.remove()
         this.visitTimer = undefined
         this.roundsSinceLastVisit = 0
@@ -1386,12 +1390,18 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       })
     }
 
-    const slot = this.tray.homePos(img)
+    // A LIVE home, re-read every frame: on the belt the plate a rejected dish
+    // belongs on has not stopped riding while the friend pulled its face.
     const base = this.tray.foodBaseScale(img)
-    this.tray.arcTo(img, slot.x, slot.y, 550, () => {
-      img.setInteractive()
-      if (this.transitioning) this.tray.fadeOutFood(img)
-    })
+    this.tray.arcTo(
+      img,
+      () => this.tray.homePos(img),
+      550,
+      () => {
+        img.setInteractive()
+        if (this.transitioning) this.tray.fadeOutFood(img)
+      },
+    )
     this.tweens.add({
       targets: img,
       scaleX: base,

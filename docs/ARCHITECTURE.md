@@ -162,6 +162,13 @@ objects, reads live scene state through the passed `this`, and reuses the shared
 `Tray` for anything draggable — so the drag mechanics, the magnetic snap and the
 feed handoff exist once.
 
+A mode plugs into the tray through three seams rather than reimplementing food
+motion: `homeProvider` (where a released food belongs — for the conveyor, a plate
+that is still riding), `returnHome` (send a food back when no `dragend` will,
+e.g. a belt dish that was tapped rather than dragged) and `isAnimating` (do not
+reposition a food the tray is already flying). `arcTo` accepts a live target, so
+"arc home" works when home is moving.
+
 Every decision a mode acts on lives in a **pure, unit-tested sibling**:
 `belt.ts`, `recipes.ts`, `thief.ts`, `journey.ts`, `logic.ts`. The widget draws;
 the sibling decides. That split is what lets a mode's adaptive curves and no-fail

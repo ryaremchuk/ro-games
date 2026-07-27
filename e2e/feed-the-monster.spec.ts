@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import type { Page } from '@playwright/test'
 // Importing the type also loads the `declare global { Window.__feedTheMonster }`
 // augmentation so the in-browser evaluate() callbacks below are typed.
-import type { FeedTestState } from '../src/games/feed-the-monster/testHook'
+import type { ConveyorLaneState, FeedTestState } from '../src/games/feed-the-monster/testHook'
 import type { TaskKind } from '../src/games/feed-the-monster/logic'
 import type { JourneyState } from '../src/games/feed-the-monster/journey'
 import { EPISODES, FRIENDS_PER_EPISODE, GROW_STEPS } from '../src/games/feed-the-monster/journey'
@@ -441,62 +441,200 @@ for (const kind of ['dots', 'not', 'pattern', 'mix'] as const) {
 }
 
 // ─── The conveyor ─────────────────────────────────────────────────────────────
+//
+// The belt NEVER STOPS. Touching a dish lifts it clean off its plate instead of
+// freezing the world, and the plate it came off keeps riding, empty. Everything
+// below proves that contract rather than the old freeze.
 
-test('feed: a conveyor round serves food from a moving belt, and freezes it to grab', async ({
+/** Plates on the belt that currently carry a dish. */
+const filledPlates = (s: FeedTestState): number =>
+  (s.conveyor?.lanes ?? []).filter((l) => l.foodId !== null).length
+
+/**
+ * A dish is LOOSE when a food sprite exists that no plate is carrying — in the
+ * child's hand, or flying home. Exactly one while a dish is held, and zero once
+ * everything has settled: that difference is the "nothing is ever lost" invariant,
+ * readable without seeing the canvas.
+ */
+const looseDishes = (s: FeedTestState): number => s.foods.length - filledPlates(s)
+
+/** Deal a belt round and wait until it is loaded. */
+async function startConveyor(page: Page): Promise<FeedTestState> {
+  const deadline = Date.now() + 20_000
+  for (;;) {
+    await keepAwake(page)
+    const ok = await page.evaluate(() => window.__feedTheMonster!.forceConveyor())
+    if (ok) break
+    if (Date.now() > deadline) throw new Error('forceConveyor never accepted')
+    await page.waitForTimeout(400)
+  }
+  return pollState(
+    page,
+    'belt on stage',
+    (s) => s.conveyorActive && (s.conveyor?.lanes.length ?? 0) > 0,
+  )
+}
+
+/**
+ * Put a real pointer down on a moving belt dish and confirm it came off its plate.
+ * Retries, because nothing freezes: a dish travels between the state read and the
+ * pointer landing, which is exactly the grab the child has to make.
+ * Leaves the pointer DOWN — the caller drags or releases.
+ */
+async function grabBeltDish(
+  page: Page,
+  pick: (lane: ConveyorLaneState) => boolean = () => true,
+): Promise<{ lane: number; foodId: string; xCss: number; yCss: number }> {
+  // Generous: the belt does not stop, so a wanted dish reaching the near half of
+  // the loop is something the spec WAITS for, exactly as the child does.
+  const deadline = Date.now() + 40_000
+  while (Date.now() < deadline) {
+    await keepAwake(page)
+    const s = await readState(page)
+    const lanes = s.conveyor?.lanes ?? []
+    // Only the left half: a dish grabbed at the far edge wraps through the hatch
+    // (and its plate is re-dressed) before a spec can finish looking at it.
+    const index = lanes.findIndex(
+      (l) =>
+        l.foodId !== null &&
+        l.visible &&
+        l.msUntilReachable === 0 &&
+        l.xCss < page.viewportSize()!.width * 0.55 &&
+        pick(l),
+    )
+    if (index < 0) {
+      await page.waitForTimeout(300)
+      continue
+    }
+    const lane = lanes[index]
+    await page.mouse.move(lane.xCss, lane.yCss)
+    await page.mouse.down()
+    const now = await readState(page)
+    if (now.conveyor?.lifted === lane.foodId && now.conveyor.lanes[index].foodId === null) {
+      return { lane: index, foodId: lane.foodId!, xCss: lane.xCss, yCss: lane.yCss }
+    }
+    await page.mouse.up()
+    await page.waitForTimeout(200)
+  }
+  throw new Error('never managed to lift a dish off the moving belt')
+}
+
+/** Drag the dish already under the pointer to a point, then let go. */
+async function dragHeldTo(
+  page: Page,
+  from: { xCss: number; yCss: number },
+  to: { x: number; y: number },
+): Promise<void> {
+  const steps = 14
+  for (let i = 1; i <= steps; i++) {
+    await page.mouse.move(
+      from.xCss + ((to.x - from.xCss) * i) / steps,
+      from.yCss + ((to.y - from.yCss) * i) / steps,
+    )
+    await page.waitForTimeout(16)
+  }
+  await page.mouse.up()
+}
+
+test('feed: a conveyor round serves food from a belt that never stops', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  const s0 = await startConveyor(page)
+  // The belt derives its plate count from the viewport — never the tray's fixed 8.
+  expect(s0.conveyor!.lanes.length).toBeGreaterThanOrEqual(5)
+  expect(s0.conveyor!.dishSpeedCss).toBeGreaterThan(0)
+  expect(s0.conveyor!.traverseMs).toBeGreaterThan(0)
+  expect(
+    s0.conveyor!.lanes.some((l) => l.wanted),
+    'the belt is loaded with something feedable from the first frame',
+  ).toBe(true)
+  await page.screenshot({ path: 'e2e/__screenshots__/feed-conveyor.png' })
+
+  // It really moves, and it says so: the loop offset climbs on its own.
+  const before = await readState(page)
+  await pollState(
+    page,
+    'belt advanced a whole plate',
+    (s) => (s.conveyor?.offset ?? 0) > before.conveyor!.offset + 1,
+    30_000,
+  )
+  expect((await readState(page)).conveyor!.moving).toBe(true)
+
+  // The anti-drought guarantee, as the child experiences it: something feedable
+  // is always within the budget.
+  const live = await readState(page)
+  const soonest = Math.min(
+    ...live.conveyor!.lanes.filter((l) => l.wanted).map((l) => l.msUntilReachable),
+  )
+  expect(soonest).toBeLessThanOrEqual(live.conveyor!.maxWaitMs + live.conveyor!.traverseMs)
+})
+
+test('feed: the belt keeps running while a dish is held, and its plate rides on empty', async ({
   page,
 }) => {
   await page.goto('./#/feed-the-monster')
   await waitForReady(page)
   await waitTraySettled(page)
 
-  const started = await page.evaluate(() => window.__feedTheMonster!.forceConveyor())
-  expect(started).toBe(true)
-  const s0 = await pollState(
-    page,
-    'belt on stage',
-    (s) => s.conveyorActive && (s.conveyor?.dishes.length ?? 0) > 0,
-  )
-  // The belt derives its dish count from the viewport — never the tray's fixed 8.
-  expect(s0.conveyor!.dishes.length).toBeGreaterThanOrEqual(4)
-  expect(s0.conveyor!.traverseMs).toBeGreaterThan(0)
-  expect(
-    s0.conveyor!.dishes.some((d) => d.wanted),
-    'the belt is loaded with something feedable from the first frame',
-  ).toBe(true)
-  await page.screenshot({ path: 'e2e/__screenshots__/feed-conveyor.png' })
+  const s0 = await startConveyor(page)
+  const plates = s0.conveyor!.lanes.length
 
-  // It really moves: a dish's x changes on its own.
-  const before = await readState(page)
-  const tracked = before.conveyor!.dishes[0]
-  await pollState(
+  const grabbed = await grabBeltDish(page)
+  const held = await readState(page)
+  // The plate did not vanish with its dish — it is still there, and it is empty.
+  expect(held.conveyor!.lanes.length, 'the plate count never changes').toBe(plates)
+  expect(held.conveyor!.lanes[grabbed.lane].foodId).toBeNull()
+  expect(looseDishes(held), 'exactly the held dish is off a plate').toBe(1)
+
+  // …and the world did NOT stop under the finger: the loop keeps advancing and
+  // the emptied plate keeps riding with it.
+  const advanced = await pollState(
     page,
-    'belt advanced',
-    (s) => {
-      const now = s.conveyor?.dishes.find((d) => d.foodId === tracked.foodId)
-      return now !== undefined && Math.abs(now.xCss - tracked.xCss) > 4
-    },
+    'the belt kept running while the dish was held',
+    (s) => (s.conveyor?.offset ?? 0) > held.conveyor!.offset + 0.4,
     20_000,
   )
+  expect(advanced.conveyor!.moving).toBe(true)
+  expect(advanced.conveyor!.lifted).toBe(grabbed.foodId)
+  expect(
+    advanced.conveyor!.lanes[grabbed.lane].xCss,
+    'the emptied plate travelled too',
+  ).not.toBeCloseTo(held.conveyor!.lanes[grabbed.lane].xCss, 0)
+  expect(advanced.conveyor!.lanes[grabbed.lane].foodId).toBeNull()
 
-  // Freeze rule: touching a dish stops the belt (motion is only in the SCAN).
-  const held = (await readState(page)).conveyor!.dishes.find((d) => d.visible && d.xCss > 0)!
-  expect(held, 'a dish must be on screen to be grabbed').toBeTruthy()
-  await page.mouse.move(held.xCss, held.yCss)
-  await page.mouse.down()
-  await pollState(page, 'belt stopped while held', (s) => s.conveyor?.moving === false, 10_000)
   await page.mouse.up()
-  await pollState(page, 'belt resumed on release', (s) => s.conveyor?.moving === true, 15_000)
-
-  // The anti-drought guarantee, as the child experiences it: something feedable
-  // is always within the budget.
-  const live = await readState(page)
-  const soonest = Math.min(
-    ...live.conveyor!.dishes.filter((d) => d.wanted).map((d) => d.msUntilReachable),
-  )
-  expect(soonest).toBeLessThanOrEqual(live.conveyor!.maxWaitMs + live.conveyor!.traverseMs)
 })
 
-test('feed: feeding from the belt completes the round and returns the still tray', async ({
+test('feed: a belt dish let go without being fed lands back on a plate', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  const s0 = await startConveyor(page)
+  const plates = s0.conveyor!.lanes.length
+  const dishesBefore = s0.foods.length
+
+  const grabbed = await grabBeltDish(page)
+  expect(looseDishes(await readState(page))).toBe(1)
+
+  // Let go over empty stage, nowhere near the mouth — the child changed their mind.
+  const size = page.viewportSize()!
+  await dragHeldTo(page, grabbed, { x: size.width * 0.12, y: size.height * 0.45 })
+
+  const landed = await pollState(
+    page,
+    'the dish flew back onto a plate',
+    (s) => s.conveyor !== null && s.conveyor.lifted === null && looseDishes(s) === 0,
+    20_000,
+  )
+  expect(landed.conveyor!.lanes.length, 'no plate was consumed by the round trip').toBe(plates)
+  expect(landed.foods.length, 'no dish was lost').toBeGreaterThanOrEqual(dishesBefore)
+  expect(landed.conveyor!.moving, 'and the belt never stopped for any of it').toBe(true)
+})
+
+test('feed: feeding from the belt leaves its plate riding empty, then the still tray returns', async ({
   page,
 }) => {
   await page.goto('./#/feed-the-monster')
@@ -504,16 +642,37 @@ test('feed: feeding from the belt completes the round and returns the still tray
   await waitTraySettled(page)
   await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
 
-  expect(await page.evaluate(() => window.__feedTheMonster!.forceConveyor())).toBe(true)
-  const start = await pollState(page, 'belt on stage', (s) => s.conveyorActive)
+  const start = await startConveyor(page)
   const startRound = start.round
+  const plates = start.conveyor!.lanes.length
 
-  // Feed straight off the belt: grab a wanted dish (which freezes the belt) and
-  // drag it to the mouth, exactly as a plate food.
+  // Feed one dish straight off the moving belt. Grabbed from the LEFT half, so
+  // the plate it came off is still several seconds from the hatch and cannot have
+  // been re-dressed by the time this is read — whether or not the round completed
+  // (the belt is torn down only when the NEXT round is dealt).
+  const eatenBefore = start.eaten.length
+  const grabbed = await grabBeltDish(page, (l) => l.wanted)
+  await dragHeldTo(page, grabbed, { x: start.mouth.xCss, y: start.mouth.yCss })
+  const fed = await pollState(
+    page,
+    'belt feed registered',
+    (s) => s.eaten.length > eatenBefore || s.round !== startRound || s.transitioning,
+    15_000,
+  )
+  // The eaten dish is gone — its PLATE is not. It keeps going round, empty, until
+  // it rides through the hatch and is dressed again.
+  expect(fed.conveyorActive, 'the belt is still on stage right after a feed').toBe(true)
+  expect(fed.conveyor!.lanes.length, 'the plate count never changes').toBe(plates)
+  expect(fed.conveyor!.lanes[grabbed.lane].foodId, 'the fed plate rides on empty').toBeNull()
+  expect(looseDishes(fed), 'nothing was left hanging by the feed').toBe(0)
+
+  // Finish the round off the belt and hand the still plate row back.
   for (let guard = 0; guard < 12; guard++) {
     const s = await readState(page)
     if (!s.conveyorActive || s.transitioning || s.round !== startRound) break
-    const dish = s.conveyor!.dishes.find((d) => d.wanted && d.visible && d.xCss > 0)
+    const dish = (s.conveyor?.lanes ?? []).find(
+      (l) => l.wanted && l.visible && l.msUntilReachable === 0,
+    )
     if (!dish) {
       await keepAwake(page)
       await page.waitForTimeout(400)
@@ -534,7 +693,6 @@ test('feed: feeding from the belt completes the round and returns the still tray
   }
 
   await pollState(page, 'round after the belt started', (s) => s.round > startRound, 45_000)
-  // The still plate row comes back for the next round.
   const after = await pollState(page, 'still tray restored', (s) => !s.conveyorActive, 30_000)
   await waitTraySettled(page)
   expect(after.foods.length).toBeGreaterThan(0)

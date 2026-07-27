@@ -343,12 +343,16 @@ export class DuoMode {
     friend.rig.squintEyes()
     friend.rig.shakeHead()
 
-    const slot = this.scene.tray.homePos(img)
     const base = this.scene.tray.foodBaseScale(img)
-    this.scene.tray.arcTo(img, slot.x, slot.y, 520, () => {
-      img.setInteractive()
-      if (!this.active) this.scene.tray.fadeOutFood(img)
-    })
+    this.scene.tray.arcTo(
+      img,
+      () => this.scene.tray.homePos(img),
+      520,
+      () => {
+        img.setInteractive()
+        if (!this.active) this.scene.tray.fadeOutFood(img)
+      },
+    )
     this.scene.tweens.add({
       targets: img,
       scaleX: base,

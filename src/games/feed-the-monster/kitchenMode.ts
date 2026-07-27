@@ -244,13 +244,17 @@ export class KitchenMode {
     const at = layout.potPos(this.scene.metrics())
     this.scene.puffs.explode(6, at.x, at.y - this.px(6))
     this.bumpPot(0.94)
-    const home = this.scene.tray.homePos(img)
     const base = this.scene.tray.foodBaseScale(img)
     img.disableInteractive()
-    this.scene.tray.arcTo(img, home.x, home.y, 520, () => {
-      img.setInteractive()
-      if (this.scene.transitioning) this.scene.tray.fadeOutFood(img)
-    })
+    this.scene.tray.arcTo(
+      img,
+      () => this.scene.tray.homePos(img),
+      520,
+      () => {
+        img.setInteractive()
+        if (this.scene.transitioning) this.scene.tray.fadeOutFood(img)
+      },
+    )
     this.scene.tweens.add({
       targets: img,
       scaleX: base,
@@ -357,8 +361,7 @@ export class KitchenMode {
     dish.disableInteractive()
     this.scene.tray.arcTo(
       dish,
-      layout.potPos(this.scene.metrics()).x,
-      this.madeDishY(),
+      { x: layout.potPos(this.scene.metrics()).x, y: this.madeDishY() },
       420,
       () => {
         dish.setInteractive()

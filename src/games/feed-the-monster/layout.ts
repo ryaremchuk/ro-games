@@ -148,6 +148,17 @@ export function miniSlot(m: LayoutMetrics, index: number): XY {
 }
 
 /**
+ * Touch radius of a food sprite, CSS px — deliberately bigger than the art (a
+ * ~64 css px emoji footprint) so a fingertip that lands near it counts.
+ *
+ * Exported because it is not only the tray's business: on the conveyor it is half
+ * of the motor-fairness budget (belt.grabWindowMs divides it by the belt's speed
+ * to get how long a passing dish stays under a finger), so the two numbers have to
+ * be reasoned about together rather than drifting apart.
+ */
+export const FOOD_HIT_RADIUS_CSS = 50
+
+/**
  * Generous feed drop zone, centered on the visible mouth. Slightly roomier than
  * a tight mouth radius so a 3–4yo who releases a touch above the open mouth
  * still lands the food.

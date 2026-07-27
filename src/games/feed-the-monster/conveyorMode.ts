@@ -1,7 +1,7 @@
 /**
  * The CONVEYOR round mode — the belt on screen. Every rule it obeys is decided
  * in belt.ts (pure, tested); this file only draws the loop and enforces the
- * freeze rules.
+ * lift rules.
  *
  * Follows the duoMode.ts template: a self-contained widget the scene delegates
  * to, so the polished still-tray flow is left completely untouched. It owns the
@@ -11,16 +11,25 @@
  * correct and shared, and a belt dish must behave exactly like a plate food the
  * moment it is picked up.
  *
- * The freeze rules, in order of how much frustration each one prevents:
- *  1. Touching a dish LIFTS IT OFF the belt — from pointerdown it stops moving.
- *  2. The belt eases to a stop while a dish is held, and resumes on release. So
- *     the child can look up at the bubble, think, and aim without the stream
- *     escaping. It reads as "the waiter pauses the belt for you".
- *  3. A returned dish rejoins the belt at its own lane — which, because the belt
- *     was paused the whole time it was held, is exactly where it left. No gap can
- *     appear and no dish can vanish.
- *  4. The belt never moves during a spit-back reaction, a celebration or a
- *     transition.
+ * **The belt never stops.** Not while a dish is held, not during a spit-back, not
+ * through the celebration that ends the round. A belt that halts stops being a
+ * belt — the whole read of the mechanic ("food keeps coming, wait for yours") is
+ * carried by constant motion, and a child who has just seen the world freeze under
+ * their finger has learned that touching things pauses the game.
+ *
+ * The lift rules, which are what make a never-stopping belt safe:
+ *  1. Touching a dish LIFTS IT CLEAN OFF its plate. From pointerdown it is an
+ *     ordinary dragged object: it cannot slide out from under the finger, so no
+ *     stop is needed to protect the drag. Motion stays in the SCAN only.
+ *  2. **Its plate keeps riding, empty**, and is CLAIMED for it. That is the whole
+ *     of the parent's "кращий УІ": the plate you took your food off is visibly
+ *     still yours, going round with everything else.
+ *  3. A dish let go without being fed always lands on a plate again — its own, or
+ *     the nearest free one in view (belt.returnLane) — flying to a target that is
+ *     re-read every frame, so it settles onto a plate that never stopped moving.
+ *  4. An eaten dish leaves its plate EMPTY on the belt; the plate refills only
+ *     when it next rides through the hatch. Gaps riding past are the intended
+ *     look — they are what tells the child the next one is coming.
  */
 
 import Phaser from 'phaser'
@@ -36,33 +45,47 @@ import {
   needsRescue,
   nextDishFood,
   pickWantedFood,
+  pitchMs,
   rescueLane,
+  returnLane,
+  slotAtPitchX,
   slotPitchX,
-  stepMs,
+  traverseMs,
 } from './belt'
 import type { BeltDials, BeltLaneSnapshot } from './belt'
 import { artKey } from './art'
 import * as layout from './layout'
-import type { ConveyorState } from './testHook'
+import type { ConveyorLaneState, ConveyorState } from './testHook'
 import type FeedTheMonsterScene from './FeedTheMonsterScene'
 
-/** How long the belt takes to ease to a stop / back up to speed. */
-const EASE_MS = 320
-/**
- * Pause held after the finger lifts, so a dish arcing back to its lane
- * (Tray.returnToTray, ~450 ms) lands before the lane moves out from under it.
- */
-const RESUME_DELAY_MS = 460
 /** Plate under a dish, as a fraction of the pitch. */
 const PLATE_W_MUL = 0.78
 /** Tread scroll per pitch travelled, in texture px — pure decoration. */
 const TREAD_SCROLL = 48
 
+/**
+ * A dish that is off its plate but still owns it: in the child's hand, or flying
+ * back. Nothing else may be put on a claimed plate, which is what makes "the dish
+ * you picked up always has somewhere to go back to" structural rather than a
+ * fallback chain that can run out.
+ */
+interface LaneClaim {
+  dish: Phaser.GameObjects.Image
+  /**
+   * Has the child let go, and is this plate the one it was COMMITTED to? The
+   * landing plate is chosen once, at release, and then followed: re-deciding
+   * every frame would jerk the dish sideways the moment a plate wrapped past
+   * the hatch mid-flight.
+   */
+  landing: boolean
+}
+
 interface Lane {
-  /** What rides this lane; null is a gap (an eaten dish leaves one behind). */
+  /** What rides this plate; null is an EMPTY PLATE, still riding. */
   foodId: string | null
   food: Phaser.GameObjects.Image | null
   plate: Phaser.GameObjects.Image
+  claim: LaneClaim | null
   /** Slot the lane held on the previous frame, to detect the hatch wrap. */
   lastSlot: number
   /** Was this lane's dish wanted while it rode the visible span un-taken? */
@@ -77,15 +100,18 @@ export class ConveyorMode {
   private lanes: Lane[] = []
   /** Position along the loop in pitches; grows forever, read modulo laneCount. */
   private offset = 0
-  /** 1 = full speed, 0 = stopped. Eased, never snapped (see EASE_MS). */
-  private speed = { scale: 1 }
-  private speedTween?: Phaser.Tweens.Tween
-  private dials: BeltDials = { traverseMs: 18_000, maxWaitMs: 4_000, wantedEvery: 3 }
+  private dials: BeltDials = { dishSpeedCss: 48, maxWaitMs: 4_000, wantedEvery: 3 }
   private belt?: Phaser.GameObjects.TileSprite
   private rollers: Phaser.GameObjects.Image[] = []
   private hatch?: Phaser.GameObjects.Image
-  /** The dish in the child's hand right now (lifted off the belt). */
+  /** The dish in the child's hand right now (lifted off its plate). */
   private held: Phaser.GameObjects.Image | null = null
+  /**
+   * Has the held dish crossed the drag threshold? A dragged dish is routed by the
+   * tray's `dragend` (into a mouth, or arced home); a dish merely TAPPED fires no
+   * dragend at all, so the belt has to put that one back itself.
+   */
+  private heldDragged = false
   /** Wanted dishes that rode past un-taken — the belt meter's signal. */
   private missedPasses = 0
 
@@ -95,6 +121,16 @@ export class ConveyorMode {
 
   private px(css: number): number {
     return css * this.scene.dpr
+  }
+
+  /** One dish's slot width, in CSS px — the unit the belt's speed is set in. */
+  private pitchCss(): number {
+    return layout.dishPitch(this.scene.metrics()) / this.scene.dpr
+  }
+
+  /** ms for a dish to advance one pitch at the current speed. */
+  private step(): number {
+    return pitchMs(this.dials.dishSpeedCss, this.pitchCss())
   }
 
   /** Wanted dishes that rode the visible span un-taken this round. */
@@ -115,7 +151,7 @@ export class ConveyorMode {
     this.offset = 0
     this.missedPasses = 0
     this.held = null
-    this.speed.scale = 1
+    this.heldDragged = false
 
     const m = this.scene.metrics()
     const visible = layout.visibleDishCount(m)
@@ -125,7 +161,7 @@ export class ConveyorMode {
     // The still plate row stands down; the belt carries its own plates.
     for (const plate of this.scene.tray.plates) plate.setVisible(false)
     this.scene.tray.clearFoods()
-    // A belt dish's home is wherever its lane has ridden to — that is what makes
+    // A belt dish's home is wherever its plate has ridden to — that is what makes
     // "arc back home" put it back ON the belt instead of onto a hidden plate.
     this.scene.tray.homeProvider = (img) => this.laneHome(img)
 
@@ -135,7 +171,14 @@ export class ConveyorMode {
     this.lanes = []
     for (let i = 0; i < total; i++) {
       const plate = this.scene.add.image(0, 0, 'ftm-plate').setDepth(4)
-      const lane: Lane = { foodId: null, food: null, plate, lastSlot: 0, passedWanted: false }
+      const lane: Lane = {
+        foodId: null,
+        food: null,
+        plate,
+        claim: null,
+        lastSlot: 0,
+        passedWanted: false,
+      }
       this.lanes.push(lane)
       const slot = laneSlot(i, this.offset, total)
       const seeded = isSlotVisible(slot, total)
@@ -146,10 +189,12 @@ export class ConveyorMode {
     }
     this.place()
     // Release has to be a SCENE-level listener, not a per-dish one: a dish
-    // dragged to the mouth comes up nowhere near its own sprite, so a
-    // GameObject `pointerup` would never fire and the belt would stay frozen.
+    // dragged to the mouth comes up nowhere near its own sprite, so a GameObject
+    // `pointerup` would never fire and a tapped dish would be left hanging in
+    // mid-air while its plate rode away underneath it.
     this.scene.input.on('pointerup', this.release)
     this.scene.input.on('pointerupoutside', this.release)
+    this.scene.input.on('dragstart', this.noteDragStart)
     playTone(392, 90, 'triangle', 0.07)
     this.scene.time.delayedCall(120, () => playTone(523, 120, 'triangle', 0.07))
   }
@@ -160,9 +205,9 @@ export class ConveyorMode {
     this.active = false
     this.scene.input.off('pointerup', this.release)
     this.scene.input.off('pointerupoutside', this.release)
-    this.speedTween?.remove()
-    this.speedTween = undefined
+    this.scene.input.off('dragstart', this.noteDragStart)
     this.held = null
+    this.heldDragged = false
     for (const lane of this.lanes) {
       this.scene.tweens.killTweensOf(lane.plate)
       lane.plate.destroy()
@@ -222,12 +267,14 @@ export class ConveyorMode {
 
   // ─── Lanes ─────────────────────────────────────────────────────────────────
 
-  /** Everything the pure scheduler needs to know about the OTHER lanes. */
-  private snapshot(exclude: number): BeltLaneSnapshot[] {
+  /** Everything the pure scheduler and the return rule need about every lane. */
+  private snapshot(): BeltLaneSnapshot[] {
     const total = this.lanes.length
-    return this.lanes
-      .map((lane, i) => ({ slot: laneSlot(i, this.offset, total), foodId: lane.foodId }))
-      .filter((_, i) => i !== exclude)
+    return this.lanes.map((lane, i) => ({
+      slot: laneSlot(i, this.offset, total),
+      foodId: lane.foodId,
+      reserved: lane.claim !== null,
+    }))
   }
 
   private wanted = (foodId: string): boolean => {
@@ -242,9 +289,9 @@ export class ConveyorMode {
     if (pool.length === 0) return ''
     return nextDishFood(
       {
-        others: this.snapshot(laneIndex),
+        others: this.snapshot().filter((_, i) => i !== laneIndex),
         lanes: this.lanes.length || laneCount(layout.visibleDishCount(this.scene.metrics())),
-        step: stepMs(this.dials.traverseMs, layout.visibleDishCount(this.scene.metrics())),
+        step: this.step(),
         maxWaitMs: this.dials.maxWaitMs,
         wantedEvery: this.dials.wantedEvery,
         pool,
@@ -256,16 +303,23 @@ export class ConveyorMode {
 
   private fillLane(index: number, foodId: string): void {
     const lane = this.lanes[index]
-    if (!lane || foodId === '') return
+    if (!lane || foodId === '' || lane.claim !== null) return
     lane.foodId = foodId
     lane.passedWanted = false
     const at = this.dishPos(laneSlot(index, this.offset, this.lanes.length))
     lane.food = this.scene.tray.makeFood(foodId, at.x, at.y, index)
     lane.food.setData('lane', index)
-    // Freeze rule 1+2: from pointerDOWN (not from the drag threshold) the dish is
-    // in the child's hand and the belt pauses. Waiting for `dragstart` would let
-    // the stream slide on under a finger that has already committed.
-    lane.food.on('pointerdown', () => this.hold(lane.food!))
+    // Lift rule 1: from pointerDOWN (not from the drag threshold) the dish is off
+    // its plate and in the child's hand. Waiting for `dragstart` would let the
+    // stream slide on under a finger that has already committed.
+    lane.food.on('pointerdown', () => this.lift(lane.food!))
+  }
+
+  /** Empty a plate — the plate itself rides on, which is the whole point. */
+  private emptyLane(lane: Lane): void {
+    lane.foodId = null
+    lane.food = null
+    lane.passedWanted = false
   }
 
   /** A lane's current dish position (the plate and the food share it). */
@@ -273,86 +327,153 @@ export class ConveyorMode {
     return layout.beltDishPos(this.scene.metrics(), slotPitchX(slot))
   }
 
-  /** Where a held/returning dish belongs — its lane, wherever the belt has it. */
-  private laneHome(img: Phaser.GameObjects.Image): layout.XY {
-    const index = img.getData('lane') as number | undefined
-    if (index === undefined || !this.lanes[index]) {
-      return layout.beltDishPos(this.scene.metrics(), 0.5)
-    }
-    return this.dishPos(laneSlot(index, this.offset, this.lanes.length))
+  /** The lane this dish rides on or has claimed, or null when it is loose. */
+  private laneOf(img: Phaser.GameObjects.Image): number | null {
+    const index = this.lanes.findIndex((l) => l.food === img || l.claim?.dish === img)
+    return index < 0 ? null : index
   }
 
-  // ─── Freeze rules ──────────────────────────────────────────────────────────
+  // ─── Lift and land ─────────────────────────────────────────────────────────
 
-  private hold(img: Phaser.GameObjects.Image): void {
-    if (this.held) return
+  /**
+   * The child put a finger on a dish: take it off its plate. The plate stays on
+   * the belt, empty and claimed, and keeps riding — the belt itself does not so
+   * much as slow down.
+   */
+  private lift(img: Phaser.GameObjects.Image): void {
+    if (!this.active || this.held) return
+    const index = this.laneOf(img)
+    if (index === null) return
+    const lane = this.lanes[index]
+    if (lane.food !== img) return
     this.held = img
-    this.easeSpeed(0)
+    this.heldDragged = false
+    this.emptyLane(lane)
+    lane.claim = { dish: img, landing: false }
+    img.setData('lane', index)
+  }
+
+  /** Did the held dish become a real drag? Then the tray's dragend routes it. */
+  private noteDragStart = (_p: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject): void => {
+    if (obj === this.held) this.heldDragged = true
   }
 
   /**
-   * The finger came up. Resumption waits out the arc-home tween: a dish flying
-   * back to a lane that has already slid on would land visibly behind itself.
+   * The finger came up. A dish that was DRAGGED has already been routed by the
+   * tray (into a mouth, or arced home through `homePos` → `laneHome`); a dish that
+   * was merely tapped fires no dragend at all, so it is sent home from here.
+   * Either way nothing is left loose past this frame.
    */
   private release = (): void => {
-    if (!this.held) return
+    const img = this.held
+    if (!img) return
     this.held = null
-    this.scene.time.delayedCall(RESUME_DELAY_MS, () => {
-      if (this.active && this.held === null) this.easeSpeed(1)
+    const dragged = this.heldDragged
+    this.heldDragged = false
+    if (dragged || !img.active) return
+    this.scene.tray.returnHome(img)
+  }
+
+  /**
+   * Where a lifted dish belongs — a plate, chosen once (belt.returnLane) at the
+   * moment it is let go and then followed wherever the belt rides it. Called every
+   * frame of the flight home, so answering with the SAME lane each time is a
+   * correctness requirement, not an optimisation.
+   */
+  private laneHome(img: Phaser.GameObjects.Image): layout.XY {
+    const total = this.lanes.length
+    const fallback = (): layout.XY =>
+      layout.beltDishPos(this.scene.metrics(), slotPitchX(FIRST_VISIBLE_SLOT))
+    if (total === 0) return fallback()
+
+    const current = this.laneOf(img)
+    if (current !== null) {
+      const lane = this.lanes[current]
+      // Never lifted (a second finger dragged it straight off a moving plate), or
+      // already committed to this plate: follow it, do not re-decide.
+      if (lane.food === img || lane.claim?.landing) {
+        return this.dishPos(laneSlot(current, this.offset, total))
+      }
+    }
+
+    const dropSlot = slotAtPitchX(img.x / layout.dishPitch(this.scene.metrics()))
+    const index = returnLane(this.snapshot(), current, dropSlot, total) ?? current
+    if (index === null) return fallback()
+    // Move the claim to whichever plate won, so the plate it came off can be
+    // re-dressed and the new one cannot be taken while the dish is in the air.
+    for (const lane of this.lanes) if (lane.claim?.dish === img) lane.claim = null
+    this.lanes[index].claim = { dish: img, landing: true }
+    img.setData('lane', index)
+    return this.dishPos(laneSlot(index, this.offset, total))
+  }
+
+  /**
+   * A dish that has finished flying home settles back ONTO its plate, and the belt
+   * carries it again. Polled rather than driven by a landing callback so that every
+   * way a flight can end — landed, eaten in mid-air, faded out by a celebration —
+   * leaves the plate in a consistent state.
+   */
+  private settleClaims(): void {
+    this.lanes.forEach((lane, index) => {
+      const claim = lane.claim
+      if (!claim) return
+      const dish = claim.dish
+      if (!dish.active) {
+        lane.claim = null
+        return
+      }
+      // Still in a hand, or let go but not yet routed home (it may be on its way
+      // into a mouth): the plate stays claimed and stays empty.
+      if (!claim.landing || dish === this.held || dish === this.scene.tray.dragged) return
+      if (this.scene.tray.isAnimating(dish)) return
+      lane.claim = null
+      lane.food = dish
+      lane.foodId = dish.getData('foodId') as string
+      lane.passedWanted = false
+      dish.setData('lane', index)
     })
   }
 
-  private easeSpeed(to: number): void {
-    this.speedTween?.remove()
-    this.speedTween = this.scene.tweens.add({
-      targets: this.speed,
-      scale: to,
-      duration: EASE_MS,
-      ease: 'Sine.easeInOut',
-    })
-  }
-
-  /** A dish left the belt for good (eaten): its lane becomes a gap. */
+  /** A dish left the belt for good (eaten): its plate rides on, empty. */
   noteEaten(img: Phaser.GameObjects.Image): void {
-    const index = img.getData('lane') as number | undefined
-    if (index === undefined) return
-    const lane = this.lanes[index]
-    if (!lane || lane.food !== img) return
-    lane.foodId = null
-    lane.food = null
-    lane.passedWanted = false
-    if (this.held === img) this.release()
+    if (!this.active) return
+    for (const lane of this.lanes) {
+      if (lane.claim?.dish === img) lane.claim = null
+      if (lane.food === img) this.emptyLane(lane)
+    }
+    if (this.held === img) {
+      this.held = null
+      this.heldDragged = false
+    }
   }
 
   // ─── Per-frame ─────────────────────────────────────────────────────────────
 
-  /** Advance the loop and reposition everything. Frozen during celebrations. */
+  /**
+   * Advance the loop and reposition everything. Nothing here is conditional on the
+   * child, the friend or a celebration: the belt runs from `serve` to `stop`.
+   */
   update(deltaMs: number): void {
     if (!this.active || this.lanes.length === 0) return
     const m = this.scene.metrics()
-    const visible = layout.visibleDishCount(m)
     const total = this.lanes.length
-    // Freeze rule 4: nothing moves during a spit-back, a celebration or a
-    // transition — the child's attention is owed to the reaction, not the belt.
-    const moving = !this.scene.transitioning && this.held === null
-    if (moving) {
-      const step = stepMs(this.dials.traverseMs, visible)
-      this.offset += (deltaMs / step) * this.speed.scale
-      if (this.belt) this.belt.tilePositionX += (deltaMs / step) * TREAD_SCROLL * this.speed.scale
-    }
+    const step = this.step()
+    this.offset += deltaMs / step
+    if (this.belt) this.belt.tilePositionX += (deltaMs / step) * TREAD_SCROLL
+
+    this.settleClaims()
 
     for (let i = 0; i < total; i++) {
       const lane = this.lanes[i]
       const slot = laneSlot(i, this.offset, total)
       // The wrap past the hatch is the spawn decision: a lane that has come all
-      // the way round gets a fresh dish (or fills the gap an eaten one left).
+      // the way round gets a fresh dish (or fills the gap an eaten one left) —
+      // unless a dish in the child's hand has claimed that plate, in which case it
+      // rides through empty and stays theirs.
       if (slot < lane.lastSlot) {
         if (lane.passedWanted) this.missedPasses++
-        if (lane.food) {
-          this.scene.tray.removeFood(lane.food)
-          lane.food = null
-          lane.foodId = null
-        }
+        if (lane.food) this.scene.tray.removeFood(lane.food)
+        this.emptyLane(lane)
         this.fillLane(i, this.scheduleFood(i))
       }
       lane.lastSlot = slot
@@ -368,7 +489,7 @@ export class ConveyorMode {
       this.placeLane(lane, slot, layout.dishPitch(m))
     }
 
-    this.rescueIfDry(visible, total)
+    this.rescueIfDry(total, step)
   }
 
   /**
@@ -378,21 +499,20 @@ export class ConveyorMode {
    * nothing and shows them nothing.
    *
    * Doing this per frame rather than only when a lane wraps is what removes a
-   * whole pitch of latency from the promise (see belt.needsRescue).
+   * whole pitch of latency from the promise (see belt.needsRescue). Running OUT of
+   * wanted dishes for a while is not a defect — waiting for the right dish to come
+   * round is the mechanic — so this is a ceiling on the wait, not a floor on supply.
    */
-  private rescueIfDry(visible: number, total: number): void {
+  private rescueIfDry(total: number, step: number): void {
     const round = this.scene.round
     if (!round || this.scene.transitioning) return
     const pool = [...new Set(round.tray)]
     if (pool.length === 0) return
-    const snapshot = this.lanes.map((lane, i) => ({
-      slot: laneSlot(i, this.offset, total),
-      foodId: lane.foodId,
-    }))
+    const snapshot = this.snapshot()
     const dry = needsRescue({
       others: snapshot,
       lanes: total,
-      step: stepMs(this.dials.traverseMs, visible),
+      step,
       maxWaitMs: this.dials.maxWaitMs,
       wantedEvery: this.dials.wantedEvery,
       pool,
@@ -404,32 +524,32 @@ export class ConveyorMode {
     const foodId = pickWantedFood(pool, this.wanted, Math.random)
     if (foodId === null) return
     const lane = this.lanes[index]
-    if (lane.food) {
-      this.scene.tray.removeFood(lane.food)
-      lane.food = null
-      lane.foodId = null
-    }
+    if (lane.food) this.scene.tray.removeFood(lane.food)
+    this.emptyLane(lane)
     this.fillLane(index, foodId)
   }
 
   /** Put one lane's plate and dish where its slot says they belong. */
   private placeLane(lane: Lane, slot: number, pitch: number): void {
     const at = this.dishPos(slot)
-    lane.plate.setVisible(lane.foodId !== null)
+    // The plate ALWAYS rides, dish or no dish. An emptied plate that vanished made
+    // the belt look like it was losing pieces of itself; an emptied plate going
+    // round is both better UI and the promise that it will be refilled.
     lane.plate.setPosition(at.x, at.y + this.px(12))
     this.dressPlate(lane.plate, pitch)
-    // The held dish and any dish mid-tween (arcing home, flying to a mouth) are
-    // owned by the tray's animations — the belt must not fight them.
+
     const food = lane.food
-    if (food && !food.active) {
-      // The tray disposed of it (eaten, or a leftover tumbling away at the end
-      // of the round); the lane becomes a gap the scheduler will refill.
-      lane.food = null
-      lane.foodId = null
-      lane.passedWanted = false
-    } else if (food && food !== this.held && food !== this.scene.tray.dragged) {
-      if (!this.scene.tweens.isTweening(food)) food.setPosition(at.x, at.y)
+    if (!food) return
+    if (!food.active) {
+      // The tray disposed of it (eaten, or a leftover tumbling away at the end of
+      // the round); the plate rides on empty until the scheduler refills it.
+      this.emptyLane(lane)
+      return
     }
+    // A dish mid-drag or mid-animation (flying home, flying to a mouth, fading
+    // out) is owned by the tray — the belt must not fight it.
+    if (food === this.scene.tray.dragged || this.scene.tray.isAnimating(food)) return
+    food.setPosition(at.x, at.y)
   }
 
   /** Skin one belt plate: the episode's doily marker, or the plate fallback. */
@@ -460,27 +580,28 @@ export class ConveyorMode {
   snapshotState(): ConveyorState {
     const m = this.scene.metrics()
     const total = this.lanes.length
-    const step = stepMs(this.dials.traverseMs, layout.visibleDishCount(m))
+    const step = this.step()
+    const lanes: ConveyorLaneState[] = this.lanes.map((lane, i) => {
+      const slot = laneSlot(i, this.offset, total)
+      const at = this.dishPos(slot)
+      return {
+        foodId: lane.foodId,
+        wanted: lane.foodId !== null && this.wanted(lane.foodId),
+        visible: isSlotVisible(slot, total),
+        msUntilReachable: msUntilReachable(slot, total, step),
+        xCss: at.x / this.scene.dpr,
+        yCss: at.y / this.scene.dpr,
+      }
+    })
     return {
-      traverseMs: this.dials.traverseMs,
+      dishSpeedCss: this.dials.dishSpeedCss,
+      traverseMs: traverseMs(step, layout.visibleDishCount(m)),
       maxWaitMs: this.dials.maxWaitMs,
-      moving: this.held === null && !this.scene.transitioning,
+      moving: this.active,
+      offset: this.offset,
+      lifted: (this.held?.getData('foodId') as string | undefined) ?? null,
       misses: this.missedPasses,
-      dishes: this.lanes.flatMap((lane, i) => {
-        if (lane.foodId === null) return []
-        const slot = laneSlot(i, this.offset, total)
-        const at = this.dishPos(slot)
-        return [
-          {
-            foodId: lane.foodId,
-            wanted: this.wanted(lane.foodId),
-            visible: isSlotVisible(slot, total),
-            msUntilReachable: msUntilReachable(slot, total, step),
-            xCss: at.x / this.scene.dpr,
-            yCss: at.y / this.scene.dpr,
-          },
-        ]
-      }),
+      lanes,
     }
   }
 }

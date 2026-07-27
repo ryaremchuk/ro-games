@@ -74,6 +74,14 @@ export class Tray {
    */
   dragged: Phaser.GameObjects.Image | null = null
 
+  /**
+   * Foods currently flying under an arc the tray owns (home, or spat back). Kept
+   * because an arc animates x/y from a tween on a helper object, so it is
+   * invisible to `tweens.isTweening(food)` — and a round MODE that repositions
+   * food every frame (the belt) would otherwise fight it and teleport the food.
+   */
+  private readonly arcs = new Map<Phaser.GameObjects.Image, Phaser.Tweens.Tween>()
+
   private readonly scene: FeedTheMonsterScene
 
   constructor(scene: FeedTheMonsterScene) {
@@ -234,11 +242,22 @@ export class Tray {
   /** Destroy every food currently on the tray (or the belt). */
   clearFoods(): void {
     for (const food of this.foods) {
+      this.stopArc(food)
       this.scene.tweens.killTweensOf(food)
       food.destroy()
     }
     this.foods = []
     this.dragged = null
+  }
+
+  /**
+   * Cancel any arc flying this food home. Needed on every disposal path: an arc
+   * animates the food from a tween on a helper object, so `killTweensOf(food)`
+   * does not touch it and it would go on writing x/y to a destroyed sprite.
+   */
+  private stopArc(img: Phaser.GameObjects.Image): void {
+    this.arcs.get(img)?.remove()
+    this.arcs.delete(img)
   }
 
   /**
@@ -269,7 +288,11 @@ export class Tray {
     // coords below, grows with them).
     img.setScale(this.foodBaseScale(img))
     img.setInteractive(
-      new Phaser.Geom.Circle(frame.width / 2, frame.height / 2, this.px(50) / base),
+      new Phaser.Geom.Circle(
+        frame.width / 2,
+        frame.height / 2,
+        this.px(layout.FOOD_HIT_RADIUS_CSS) / base,
+      ),
       Phaser.Geom.Circle.Contains,
     )
     this.scene.input.setDraggable(img)
@@ -348,6 +371,7 @@ export class Tray {
 
   /** Take a food off the tray and destroy it cleanly, mid-tween or not. */
   removeFood(food: Phaser.GameObjects.Image): void {
+    this.stopArc(food)
     this.scene.tweens.killTweensOf(food)
     this.foods = this.foods.filter((f) => f !== food)
     food.destroy()
@@ -359,8 +383,8 @@ export class Tray {
    * Make each food draggable: lift on dragstart, follow + snap-assist toward
    * the mouth on drag, and on dragend decide — a release inside the mouth snap
    * zone (while not transitioning) hands off to the scene to feed; otherwise the
-   * food arcs back to its plate. The drop→feed decision stays orchestrated here
-   * exactly as before (mouthWorld + snapRadius test), calling `scene.feed`.
+   * food arcs back home (`returnHome`). The drop→feed decision stays orchestrated
+   * here exactly as before (mouthWorld + snapRadius test), calling `scene.feed`.
    */
   wireDrag(): void {
     this.scene.input.dragDistanceThreshold = this.px(8)
@@ -421,7 +445,7 @@ export class Tray {
           near.mouth.accept(img)
         } else {
           for (const mouth of mouths) mouth.setOpen(0, 160)
-          this.returnToTray(img)
+          this.returnHome(img)
         }
       },
     )
@@ -454,6 +478,7 @@ export class Tray {
   fadeOutFood(food: Phaser.GameObjects.Image): void {
     if (!food.active) return
     food.disableInteractive()
+    this.stopArc(food)
     this.scene.tweens.killTweensOf(food)
     this.scene.tweens.add({
       targets: food,
@@ -468,14 +493,26 @@ export class Tray {
     })
   }
 
-  private returnToTray(img: Phaser.GameObjects.Image): void {
-    const slot = this.homePos(img)
+  /**
+   * Send a food back where it belongs. Public because a round MODE releases food
+   * the drag system never sees — a belt dish tapped and let go without ever
+   * crossing the drag threshold fires no `dragend`, and it must still come home.
+   */
+  returnHome(img: Phaser.GameObjects.Image): void {
     const base = this.foodBaseScale(img)
     img.disableInteractive()
-    this.arcTo(img, slot.x, slot.y, 450, () => {
-      img.setInteractive()
-      if (this.scene.transitioning) this.fadeOutFood(img)
-    })
+    // A LIVE home, re-read every frame: on the belt "home" is a plate that is
+    // still riding, so a fixed target would land the food where its plate used
+    // to be and leave the belt to snap it the rest of the way.
+    this.arcTo(
+      img,
+      () => this.homePos(img),
+      450,
+      () => {
+        img.setInteractive()
+        if (this.scene.transitioning) this.fadeOutFood(img)
+      },
+    )
     this.scene.tweens.add({
       targets: img,
       scaleX: base,
@@ -485,40 +522,58 @@ export class Tray {
     })
   }
 
-  /** Move along a little arc (never teleport), with a playful spin. */
+  /**
+   * Is a tray-owned animation moving this food right now (an arc home, a drop-in
+   * bounce, a fade-out, the flight into a mouth)? A round mode must not reposition
+   * food while one is running.
+   */
+  isAnimating(img: Phaser.GameObjects.Image): boolean {
+    return this.arcs.has(img) || this.scene.tweens.isTweening(img)
+  }
+
+  /**
+   * Move along a little arc (never teleport), with a playful spin. `to` may be a
+   * live resolver — a moving destination is re-read every frame, which is what
+   * lets a belt dish fly back onto a plate that has not stopped riding.
+   */
   arcTo(
     img: Phaser.GameObjects.Image,
-    toX: number,
-    toY: number,
+    to: layout.XY | (() => layout.XY),
     duration: number,
     onComplete: () => void,
   ): void {
     this.scene.tweens.killTweensOf(img)
+    this.arcs.get(img)?.remove()
     img.setDepth(20)
     const fromX = img.x
     const fromY = img.y
-    const peak = Math.min(fromY, toY) - this.px(110)
+    const target = typeof to === 'function' ? to : () => to
     const state = { t: 0 }
-    this.scene.tweens.add({
+    let landing = target()
+    const tween = this.scene.tweens.add({
       targets: state,
       t: 1,
       duration,
       ease: 'Sine.easeInOut',
       onUpdate: () => {
+        landing = target()
         const t = state.t
         const u = 1 - t
-        img.x = fromX + (toX - fromX) * t
-        img.y = u * u * fromY + 2 * u * t * peak + t * t * toY
+        const peak = Math.min(fromY, landing.y) - this.px(110)
+        img.x = fromX + (landing.x - fromX) * t
+        img.y = u * u * fromY + 2 * u * t * peak + t * t * landing.y
         img.rotation = t * Math.PI * 2
       },
       onComplete: () => {
+        this.arcs.delete(img)
         if (!img.active) return
         img.setRotation(0)
         img.setDepth(5)
-        img.setPosition(toX, toY)
+        img.setPosition(landing.x, landing.y)
         onComplete()
       },
     })
+    this.arcs.set(img, tween)
   }
 
   // ─── Reactions ───────────────────────────────────────────────────────────

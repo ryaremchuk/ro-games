@@ -19,12 +19,16 @@
  *     budget, forces the next dish to be a wanted one. Same shape as
  *     logic.shouldInjectDuo's anti-drought ramp: live data in, deterministic
  *     decision out, seedable, tested.
- *  2. **Motion is only in the SCAN.** Touching a dish lifts it off the belt and
- *     the belt eases to a stop — so the grab, the drag and the drop are exactly
- *     as static as they are today. Children's touchscreen accuracy collapses on
- *     the final approach to a target, and drag-and-drop is already the expensive
- *     gesture at this age; a MOVING drag source would stack the two hardest
- *     things on top of each other. (That rule is enforced in conveyorMode.)
+ *  2. **Motion is only in the SCAN — and the BELT NEVER STOPS.** Touching a dish
+ *     lifts it clean off its plate: from pointerdown it is an ordinary dragged
+ *     object, so the drag and the drop are exactly as static as a still tray's,
+ *     while the loop behind it keeps running. Children's touchscreen accuracy
+ *     collapses on the final approach to a target, and drag-and-drop is already
+ *     the expensive gesture at this age; a MOVING drag source would stack the two
+ *     hardest things on top of each other. Lifting removes that without stopping
+ *     the world — and the plate the dish came off keeps riding, empty, which is
+ *     what tells the child their dish is still theirs. (Enforced in conveyorMode;
+ *     `returnLane` below decides where a released dish lands.)
  *
  * The belt rides its own persisted meter (`belt`), separate from the cognitive
  * one: a child can be great at colours and bad at timing, and measuring that
@@ -101,10 +105,45 @@ export function slotPitchX(slot: number): number {
   return slot - BELT_HIDDEN_LANES - 0.5
 }
 
-/** ms for a dish to advance one pitch, from the visible-traverse time. */
-export function stepMs(traverseMs: number, visibleDishes: number): number {
-  return traverseMs / Math.max(1, Math.floor(visibleDishes))
+/**
+ * ms for a dish to advance one pitch, from how fast the belt runs and how wide a
+ * dish's slot is.
+ *
+ * The dial is a PHYSICAL SPEED (css px/s) rather than a time-to-cross, and that is
+ * a fairness constraint rather than a preference: a dish is the same physical size
+ * on every device, so "how hard is it to put a finger on a passing dish" depends on
+ * px/s and nothing else. A time-to-cross dial would make the belt half again as
+ * fast on a wide iPad as on a phone in landscape (more dishes crossing in the same
+ * seconds), i.e. a different game per device — see grabWindowMs.
+ */
+export function pitchMs(dishSpeedCss: number, pitchCss: number): number {
+  return (pitchCss / Math.max(1, dishSpeedCss)) * 1000
 }
+
+/** ms for one dish to cross the whole visible belt (derived; for the dev hook). */
+export function traverseMs(step: number, visibleDishes: number): number {
+  return step * Math.max(1, Math.floor(visibleDishes))
+}
+
+/**
+ * How long a passing dish keeps its hit circle over one fixed point — the window a
+ * finger has to land in. This is THE motor-fairness number for the whole mechanic,
+ * and it is why the speed dial is capped where it is (see beltDials).
+ */
+export function grabWindowMs(dishSpeedCss: number, hitDiameterCss: number): number {
+  return (hitDiameterCss / Math.max(1, dishSpeedCss)) * 1000
+}
+
+/**
+ * The shortest grab window the fastest belt may ever offer.
+ *
+ * Children's touchscreen accuracy collapses on the final approach to a target and
+ * their reach times run ~0.7–1.2 s at this age, so a window under a second means a
+ * finger that commits and then travels arrives after the dish has gone. A little
+ * over a second at the very top of an eight-step ladder — which a child only
+ * reaches by never missing — leaves margin without making the axis toothless.
+ */
+export const MIN_GRAB_WINDOW_MS = 1100
 
 /**
  * How long until the dish in this slot can actually be taken. Zero when it is on
@@ -125,8 +164,8 @@ export function msUntilReachable(slot: number, lanes: number, step: number): num
 export const BELT_SKILL_MAX = 8
 
 export interface BeltDials {
-  /** ms for one dish to cross the whole visible belt. */
-  traverseMs: number
+  /** How fast a dish travels, in CSS px per second (see pitchMs). */
+  dishSpeedCss: number
   /** The anti-drought budget: the longest wait the child may ever face. */
   maxWaitMs: number
   /** Roughly one dish in this many is one the request wants. */
@@ -139,14 +178,20 @@ function lerp(from: number, to: number, t: number): number {
 
 /**
  * Belt dials for a meter value — all three monotone in skill, all three easiest
- * at 0. The easiest belt is genuinely slow (18 s to cross) with a wanted dish
- * every third plate and never more than 4 s of waiting; the hardest halves the
- * traverse, thins the wanted dishes to one in six and stretches the wait to 9 s.
+ * at 0. The easiest belt ambles (48 css px/s ≈ a 21 s crossing on an iPad) with a
+ * wanted dish every third plate and never more than 4 s of waiting; the hardest
+ * runs at 84, thins the wanted dishes to one in six and stretches the wait to 9 s.
+ *
+ * The top of the speed ladder is set by the grab, not by taste: 84 css px/s leaves
+ * ~1.19 s of hit circle over any fixed point (see grabWindowMs / MIN_GRAB_WINDOW_MS,
+ * asserted in belt.test.ts). Nothing freezes when a dish is touched any more — the
+ * dish is lifted off instead — so this window is the only thing standing between a
+ * four-year-old and a dish that slides out from under them.
  */
 export function beltDials(beltSkill: number): BeltDials {
   const t = Math.min(Math.max(beltSkill, 0), BELT_SKILL_MAX) / BELT_SKILL_MAX
   return {
-    traverseMs: Math.round(lerp(18_000, 9_000, t)),
+    dishSpeedCss: Math.round(lerp(48, 84, t)),
     maxWaitMs: Math.round(lerp(4_000, 9_000, t)),
     wantedEvery: lerp(3, 6, t),
   }
@@ -183,8 +228,15 @@ export function updateBeltSkill(beltSkill: number, result: BeltRoundResult): num
 export interface BeltLaneSnapshot {
   /** Slots from the hatch (see laneSlot). */
   slot: number
-  /** What rides this lane, or null for a gap (an eaten dish leaves one). */
+  /** What rides this lane, or null for an EMPTY PLATE (still riding). */
   foodId: string | null
+  /**
+   * Is a dish currently in the child's hand promised this plate? A reserved plate
+   * rides on empty and nothing else may be put on it — that is what makes "the
+   * dish you picked up always has somewhere to go back to" structural rather than
+   * a fallback chain.
+   */
+  reserved?: boolean
 }
 
 export interface BeltRefillContext {
@@ -255,19 +307,77 @@ export function beltIsDry(ctx: BeltRefillContext): boolean {
  * Closest to emerging, not furthest: the child is waiting, and the lane about to
  * come out of the hatch reaches them in a single pitch instead of a whole loop.
  *
- * Returns the lane's index into the array passed in, or null if none is hidden.
+ * A plate RESERVED for a dish in the child's hand is never re-dressed — it is
+ * riding empty on purpose. With one hidden lane that can cost the rescue a pitch
+ * of latency, which is the right trade: the child is holding a dish, so they are
+ * not the one waiting.
+ *
+ * Returns the lane's index into the array passed in, or null if none is free.
  */
 export function rescueLane(lanes: readonly BeltLaneSnapshot[]): number | null {
   let best: number | null = null
   let bestSlot = -Infinity
-  lanes.forEach((lane, index) => {
-    if (!isSlotHidden(lane.slot)) return
+  for (let index = 0; index < lanes.length; index++) {
+    const lane = lanes[index]
+    if (!isSlotHidden(lane.slot) || lane.reserved) continue
     if (lane.slot > bestSlot) {
       bestSlot = lane.slot
       best = index
     }
-  })
+  }
   return best
+}
+
+// ─── Coming back from a lift ──────────────────────────────────────────────────
+
+/** The slot a screen position falls on — the inverse of slotPitchX. */
+export function slotAtPitchX(pitchX: number): number {
+  return pitchX + BELT_HIDDEN_LANES + 0.5
+}
+
+/**
+ * Where a dish the child lifted lands when they let go without feeding it.
+ *
+ * The no-fail rule the whole lift-instead-of-freeze scheme rests on: a released
+ * dish ALWAYS gets a plate, so it can never hang in mid-air, never stack on top of
+ * another dish and never quietly disappear.
+ *
+ *  1. **Its own plate**, whenever that plate is still in view. It is reserved for
+ *     this dish, so it is always free, and coming back to the plate you took it
+ *     off is the only landing that needs no explaining to a three-year-old.
+ *  2. **The nearest free plate in view** when its own has ridden behind the hatch —
+ *     the shortest flight, so the dish reads as settling onto the plate right there.
+ *  3. **Its own plate anyway** when nothing on screen is free: the dish rides back
+ *     in through the hatch with it. Rare (it takes a long hold), and still no loss.
+ *
+ * `dropSlot` is where the child let go, in slot units (see slotAtPitchX).
+ * Returns an index into `lanes`, or null when there is nowhere at all.
+ */
+export function returnLane(
+  lanes: readonly BeltLaneSnapshot[],
+  origin: number | null,
+  dropSlot: number,
+  totalLanes: number,
+): number | null {
+  const own = origin === null ? null : (lanes[origin] ?? null)
+  const ownIsFree = own !== null && own.foodId === null
+  if (ownIsFree && own !== null && isSlotVisible(own.slot, totalLanes)) return origin
+
+  let best: number | null = null
+  let bestGap = Infinity
+  for (let index = 0; index < lanes.length; index++) {
+    if (index === origin) continue
+    const lane = lanes[index]
+    if (lane.foodId !== null || lane.reserved) continue
+    if (!isSlotVisible(lane.slot, totalLanes)) continue
+    const gap = Math.abs(lane.slot - dropSlot)
+    if (gap < bestGap) {
+      bestGap = gap
+      best = index
+    }
+  }
+  if (best !== null) return best
+  return ownIsFree ? origin : null
 }
 
 /** A food this round wants, or null when nothing in the pool is wanted. */

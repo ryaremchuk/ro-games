@@ -133,30 +133,41 @@ export interface KitchenState {
   snapCss: number
 }
 
-/** One dish riding the belt right now. */
-export interface ConveyorDishState {
-  foodId: string
+/**
+ * One PLATE on the belt — every lane, in lane order, whether it carries a dish or
+ * not. Empty plates are first-class: they keep riding after their dish is eaten or
+ * lifted, so a spec can assert the plate survived the feed.
+ */
+export interface ConveyorLaneState {
+  /** The dish on this plate, or null when the plate is riding empty. */
+  foodId: string | null
   /** Would feeding this dish be correct right now? (logic.wantsFood) */
   wanted: boolean
-  /** Is it past the hatch and on screen? */
+  /** Is the plate past the hatch and on screen? */
   visible: boolean
   /** ms until the child could actually take it (0 = right now). */
   msUntilReachable: number
-  /** Dish centre in css px, for real-pointer drags. */
+  /** Plate centre in css px, for real-pointer drags. */
   xCss: number
   yCss: number
 }
 
 export interface ConveyorState {
-  /** ms for one dish to cross the visible belt at this belt skill. */
+  /** How fast a dish travels, css px per second (the belt-skill speed dial). */
+  dishSpeedCss: number
+  /** ms for one dish to cross the visible belt — derived from the speed. */
   traverseMs: number
   /** The anti-drought budget: the longest wait the child may ever face. */
   maxWaitMs: number
-  /** Is the belt advancing? (false while a dish is held, or mid-celebration) */
+  /** Is the belt advancing? It never stops while a belt round is on stage. */
   moving: boolean
+  /** Position along the loop in pitches — grows forever while the belt runs. */
+  offset: number
+  /** The dish in the child's hand right now, lifted off its plate (else null). */
+  lifted: string | null
   /** Wanted dishes that rode the visible span un-taken this round. */
   misses: number
-  dishes: ConveyorDishState[]
+  lanes: ConveyorLaneState[]
 }
 
 /** One duo friend's live ask + where to drop its food (css px). */

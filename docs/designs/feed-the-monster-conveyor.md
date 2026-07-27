@@ -45,7 +45,12 @@ Both are designed out below rather than tuned down.
   [Benda et al.](https://www.cise.ufl.edu/~brett.benda/files/FFittsLawForChildren.pdf)).
   → A _moving_ drag source would stack the two hardest things for this age group
   on top of each other. The design must remove motion from the drag entirely
-  (see "Freeze rules"), keeping motion only in the _scan_.
+  (see "Lift rules"), keeping motion only in the _scan_ — by lifting the dish
+  off the belt, not by stopping the belt.
+
+  → And because nothing freezes on touch, the speed dial itself has to respect
+  the child's reach: see "Grab fairness".
+
 - **Belt games are a solved fantasy for kids.** Conveyor-belt sushi titles all
   share the same read: watch the belt, take the plate you want, ignore the rest
   ([Conveyor Belt Sushi Experience](https://apps.apple.com/fr/app/id1543250693),
@@ -81,21 +86,57 @@ Visible dish count is **derived from the viewport**, not fixed at 8: `floor(widt
 than the same eight squeezed. `dishPitch` stays a fixed CSS size so a dish is the
 same physical size on every device.
 
-### Freeze rules (the anti-frustration core)
+### Lift rules (the anti-frustration core)
 
-1. **Touching a dish lifts it off the belt.** From `pointerdown` it no longer
-   moves with the belt — it is in the child's hand, exactly like a tray food
-   today. All existing drag code applies unchanged.
-2. **The belt eases to a stop while a dish is held**, and resumes when the dish
-   is fed or returned. So the child can look up at the bubble, think, and aim
-   without the rest of the stream escaping. Physically it reads as "the waiter
-   pauses the belt for you".
-3. **A returned dish rejoins the belt** at the nearest free slot (arcs back, same
-   `Tray.arcTo` motion), never vanishes.
-4. **The belt never moves during a spit-back, a celebration, or a transition.**
+> **Revised after the first play session.** It shipped with the belt easing to a
+> stop while a dish was held. Ros played it and said the belt must move
+> _constantly_ — a belt that halts stops being a belt, and a plate that vanishes
+> with its dish reads as the machine losing pieces of itself. The freeze is gone;
+> these rules replace it and are what make a never-stopping belt safe.
 
-The moving part of the game is therefore only the _scan_. The grab, the drag and
-the drop are as static as they are today.
+1. **Touching a dish lifts it clean off its plate.** From `pointerdown` it is an
+   ordinary dragged object, exactly like a tray food. Because a lifted dish
+   cannot slide out from under the finger, **no stop is needed to protect the
+   drag** — which was the freeze's entire job.
+2. **Its plate keeps riding, empty**, and is _claimed_: nothing else may be put
+   on it. That is the better UI Ros asked for — the plate you took your food off
+   is visibly still yours, going round with everything else.
+3. **A dish let go without being fed always lands on a plate again**: its own
+   whenever that plate is still in view, else the nearest free plate in view, else
+   its own regardless (it rides back in through the hatch). Decided by the pure
+   `belt.returnLane`, and it flies to a target re-read every frame, so it settles
+   onto a plate that never stopped moving. A plain tap counts — that fires no
+   `dragend`, so `ConveyorMode` puts it back itself.
+4. **An eaten dish leaves its plate empty on the belt**; the plate refills only
+   when it next rides through the hatch. Gaps riding past are the intended look —
+   they are what tells the child the next one is coming.
+5. **Nothing stops the belt. Ever.** Not a held dish, not a spit-back, not the
+   celebration that ends the round. The only pause left in the code is the
+   anti-drought _rescue_, which sits out a round-transition — and that injects
+   dishes rather than stopping any.
+
+The moving part of the game is therefore still only the _scan_. The grab, the drag
+and the drop are as static as a still tray's.
+
+### Grab fairness (why the speed dial is css px/s)
+
+With nothing freezing on touch, the only thing protecting the grab is how long a
+passing dish keeps its hit circle (a 50 css px radius, `layout.FOOD_HIT_RADIUS_CSS`)
+over one point: `belt.grabWindowMs`. That number depends on **px/s and nothing
+else** — so the dial is a physical speed, not a time-to-cross. A time-to-cross
+dial made the belt 50% faster on a wide iPad than on a phone in landscape (same
+seconds, more dishes crossing them), i.e. a different grab difficulty per device,
+which a fixed-size dish must not have.
+
+| Belt skill | Dish speed  | Grab window | Traverse (6 dishes / 9 dishes) |
+| ---------- | ----------- | ----------- | ------------------------------ |
+| 0          | 48 css px/s | 2.08 s      | 16 s / 24 s                    |
+| 8          | 84 css px/s | 1.19 s      | 9.1 s / 13.7 s                 |
+
+`MIN_GRAB_WINDOW_MS` (1.1 s) is asserted for every step of the ladder in
+`belt.test.ts`. The old 18 s→9 s traverse ran the top of the ladder at 114–128
+css px/s on an iPad — a 0.78–0.88 s window, under the reach time of a
+four-year-old who has to aim at a target that will have moved.
 
 ### Anti-drought guarantee
 
@@ -123,12 +164,12 @@ The conveyor is a **round mode**, injected on its own data + chance axis exactly
 like the duo bonus — never by the cognitive meter, so belt practice and task
 difficulty scale independently.
 
-| Dial                | Easiest                  | Hardest | Driven by     |
-| ------------------- | ------------------------ | ------- | ------------- |
-| Belt speed          | one full traverse ≈ 18 s | ≈ 9 s   | belt skill    |
-| `MAX_WAIT_MS`       | 4 s                      | 9 s     | belt skill    |
-| Wanted-dish density | ~1 in 3 dishes           | ~1 in 6 | belt skill    |
-| Dish pitch          | roomy                    | tight   | fixed for now |
+| Dial                | Easiest        | Hardest | Driven by     |
+| ------------------- | -------------- | ------- | ------------- |
+| Dish speed          | 48 css px/s    | 84      | belt skill    |
+| `MAX_WAIT_MS`       | 4 s            | 9 s     | belt skill    |
+| Wanted-dish density | ~1 in 3 dishes | ~1 in 6 | belt skill    |
+| Dish pitch          | roomy          | tight   | fixed for now |
 
 Open question: does the belt get **its own persisted meter** (a third axis
 alongside `cognitive`, like whack's spatial track) or ride the existing one?
@@ -146,7 +187,7 @@ delegates to, leaving the polished solo flow untouched.
 | File                      | Change                                                                                                                                                                                                                           |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `belt.ts` _(new)_         | Pure: spawn scheduler, anti-drought guarantee, speed/wait curves, seedable. Unit-tested with no Phaser.                                                                                                                          |
-| `conveyorMode.ts` _(new)_ | Phaser widget: belt sprites, dish motion, the freeze rules. Owns its display objects, reads scene state through `this.scene`.                                                                                                    |
+| `conveyorMode.ts` _(new)_ | Phaser widget: belt sprites, dish motion, the lift rules. Owns its display objects, reads scene state through `this.scene`.                                                                                                      |
 | `logic.ts`                | `shouldInjectConveyor(ctx, rng)` beside `shouldInjectDuo`.                                                                                                                                                                       |
 | `layout.ts`               | Belt geometry: `beltY`, `dishPitch`, `visibleDishCount(m)`, grab-zone bounds. Pure + unit-tested, proportional.                                                                                                                  |
 | `tray.ts`                 | Gains a belt source mode, or `ConveyorMode` reuses `Tray`'s drag/arc/fade by handing it belt-derived slot positions. **Prefer reuse** — the drag mechanics, the snap assist and the feed handoff are already correct and shared. |
@@ -187,8 +228,9 @@ That is **3 required sprites** (plus 1 optional). Everything else is reuse.
 - **Unit (`layout.test.ts`)** — belt geometry proportional; visible dish count
   sane at 4:3 and at ~2.2:1; dishes never overlap the safe-area strip.
 - **E2E** — belt advances; a dish is grabbable with a real pointer; the belt
-  stops while held and resumes on release; feeding from the belt completes a
-  round; the wanted dish arrives inside the budget; a returned dish rejoins.
+  KEEPS advancing while a dish is held and its plate rides on empty; a dish let go
+  without being fed lands back on a plate; feeding leaves the plate riding empty
+  and the plate count unchanged; the wanted dish arrives inside the budget.
 - **Device** — iPad and iPhone-landscape: is the belt legible, is the grab
   comfortable, does the wait feel like anticipation or like dead air.
 
@@ -227,3 +269,30 @@ That is **3 required sprites** (plus 1 optional). Everything else is reuse.
   in `textures.ts`), neutral grey and tinted by `episode.palette.table`. Dropping
   `art/belt-strip.png` etc. in later takes over through the same `hasArt()`
   contract every other look uses — no code change.
+
+### What the first play session changed
+
+- **The freeze is gone.** The belt now runs from `serve` to `stop`, and grabbing
+  lifts the dish off its plate instead of stopping the world (see "Lift rules").
+  The freeze never protected the _grab_ anyway — touch-down was always on a moving
+  dish — only the drag, and lifting protects that for free.
+- **A plate outlives its dish.** `Lane.foodId` going null now means "empty plate,
+  still riding" rather than "nothing here": the plate is drawn, positioned and
+  refilled on its own schedule. Eating, lifting and the thief all leave one.
+- **A lifted dish CLAIMS its plate** (`Lane.claim`). Nothing may be put on a
+  claimed plate — not the hatch refill, not the dry-belt rescue — so "the dish in
+  your hand always has somewhere to go back to" is structural rather than a
+  fallback chain that can run out. The rescue may therefore have to skip a pitch;
+  that is the right trade, because the child holding a dish is not the one waiting.
+- **`Tray.arcTo` takes a live target** and registers its flight, because "home" is
+  now a moving plate. Two latent bugs fell out of that: an arc animated the food
+  from a tween on a helper object, so `tweens.isTweening(food)` was blind to it and
+  `removeFood` could not cancel it (it went on writing x/y to a destroyed sprite).
+- **The speed dial became css px/s** — see "Grab fairness". The old traverse dial
+  ran the top of the ladder past what a four-year-old can reach for, and did it
+  differently on every screen width.
+- **A wait may now run its full budget without being a defect.** Ros: "running out
+  of matching food on screen and having to wait a bit is a normal case." The
+  anti-drought guarantee stays as the ceiling; nothing was added to shorten waits,
+  and the `belt.test.ts` simulation counts a dry belt only while the child's hands
+  are empty (holding the wanted dish is not a drought).
