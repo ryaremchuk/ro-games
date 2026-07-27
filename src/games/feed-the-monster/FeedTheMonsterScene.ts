@@ -60,8 +60,8 @@ import type { FeedMouth } from './duoMode'
 import { ConveyorMode } from './conveyorMode'
 import { KitchenMode } from './kitchenMode'
 import { ThiefMode } from './thiefMode'
-import { THIEF_SKILL_MAX, pickVisitor, shouldVisit, updateThiefSkill } from './thief'
-import type { VisitOutcome, VisitorKind } from './thief'
+import { THIEF_SKILL_MAX, shouldVisit, updateThiefSkill } from './thief'
+import type { VisitOutcome } from './thief'
 import {
   BELT_SKILL_MAX,
   CONVEYOR_EXCLUDED_KINDS,
@@ -232,9 +232,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    */
   readonly kitchenMode = new KitchenMode(this)
   /**
-   * The THIEF — the game's first interruption, and later the go/no-go butterfly.
-   * Rides its own persisted meter (`thief`) on its own data+chance axis, gated so
-   * it never lands on a struggling child. See ./thiefMode and ./thief.
+   * The THIEF — the game's first interruption. Rides its own persisted meter
+   * (`thief`) on its own data+chance axis, gated so it never lands on a struggling
+   * child. See ./thiefMode and ./thief.
    */
   readonly thiefMode = new ThiefMode(this)
   /** The thief axis's own adaptive meter, 0..THIEF_SKILL_MAX (persisted). */
@@ -243,8 +243,8 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private roundsSinceLastVisit = 99
   /** A visit is scheduled for this round; cancelled on completion/transition. */
   private visitTimer?: Phaser.Time.TimerEvent
-  /** Dev overlay: force a specific visitor at the next round start. */
-  private forceVisitorNext: VisitorKind | null = null
+  /** Dev overlay: send the bird in at the next round start regardless of the axis. */
+  private forceVisitorNext = false
   /** The belt's own adaptive meter, 0..BELT_SKILL_MAX (persisted separately). */
   private beltSkill = 0
   /** Solo rounds since the last belt round (anti-drought ramp). */
@@ -515,7 +515,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         this.dealRound(true)
         return true
       },
-      forceVisitor: (kind) => {
+      forceVisitor: () => {
         if (this.thiefMode.active) return false
         if (!this.devTakeStage()) return false
         // A visitor never shares a round with the belt (scheduleVisit's `busy`
@@ -526,7 +526,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         this.visitTimer?.remove()
         this.visitTimer = undefined
         this.roundsSinceLastVisit = 0
-        return this.thiefMode.start(kind, this.thiefSkill)
+        return this.thiefMode.start(this.thiefSkill)
       },
       wipeDrawnFoods: () => {
         wipeDrawnFoods()
@@ -1037,9 +1037,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.visitTimer = undefined
     this.roundsSinceLastVisit++
     const forced = this.forceVisitorNext
-    this.forceVisitorNext = null
+    this.forceVisitorNext = false
     const wanted =
-      forced !== null ||
+      forced ||
       shouldVisit(
         {
           skill: this.skill,
@@ -1053,11 +1053,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       )
     if (!wanted) return
     this.roundsSinceLastVisit = 0
-    const kind = forced ?? pickVisitor(this.thiefSkill, Math.random)
     // Land it a beat after the request has been read, and only once per round.
     this.visitTimer = this.time.delayedCall(2200 + Math.random() * 2000, () => {
       if (this.transitioning || this.tray.dragged) return
-      this.thiefMode.start(kind, this.thiefSkill)
+      this.thiefMode.start(this.thiefSkill)
     })
   }
 
@@ -1667,6 +1666,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.monsterRig.update()
     if (this.duoMode.active) this.duoMode.update()
     if (this.conveyorMode.active) this.conveyorMode.update(delta)
+    // The bird's shadow and the food in its claws are pinned to the bird here, per
+    // frame: anything tweened on its own path drifts away from the bird it belongs
+    // to (which is exactly how the shadow ended up on the wrong side of the plate).
+    if (this.thiefMode.active) this.thiefMode.update()
   }
 
   /** Ambient growth sparkles for the walker (and the duo's right friend). */

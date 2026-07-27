@@ -18,6 +18,7 @@ import {
   plateWidth,
   slotPos,
   monsterPos,
+  duoMonsterPos,
   miniSlot,
   snapRadius,
   visitorTapRadius,
@@ -93,6 +94,38 @@ describe('feed-the-monster layout geometry', () => {
     expect(miniSlot(m, 2).x).toBeLessThan(miniSlot(m, 0).x) // 3rd mirrors left
     // Beyond the five slots, extras stack a tier up (never off the same level).
     expect(miniSlot(m, 5).y).toBeLessThan(miniSlot(m, 0).y)
+  })
+
+  it('stands a duo pair close enough to read as two friends together', () => {
+    // The pair sits at the halved fraction of the width (0.12 each side of
+    // centre) wherever there is room for it — the wide viewport this game is
+    // played on. bodyR 100 × scale 1 needs only 100 of clearance, so the
+    // proportional term decides.
+    const left = duoMonsterPos(m, -1, 1)
+    const right = duoMonsterPos(m, 1, 1)
+    expect(left.x).toBeCloseTo(500 - 120, 6)
+    expect(right.x).toBeCloseTo(500 + 120, 6)
+    // Symmetric about centre, both on the same line, and that line is the same
+    // rule the solo friend follows.
+    expect(left.y).toBe(right.y)
+    expect(left.x + right.x).toBeCloseTo(m.w, 6)
+    expect(left.y).toBe(heroBaseline(m) - m.bodyR * 0.55)
+  })
+
+  it('never lets the two bodies collapse into one another', () => {
+    // A big pair on a narrow screen: the halved fraction (0.12 × 600 = 72) is
+    // less than a body radius, so the floor takes over and keeps the two
+    // silhouettes apart to within a shoulder.
+    const narrow: LayoutMetrics = { ...m, w: 600, bodyR: 200 }
+    const scale = 1.2
+    const dx = duoMonsterPos(narrow, 1, scale).x - narrow.w / 2
+    expect(dx).toBeGreaterThan(narrow.w * 0.12)
+    expect(dx).toBeCloseTo(200 * scale * 0.92, 6)
+    // Overlap stays a shoulder, never half a friend.
+    const overlap = 2 * (narrow.bodyR * scale) - 2 * dx
+    expect(overlap / (2 * narrow.bodyR * scale)).toBeLessThan(0.1)
+    // And a bigger pair always stands wider apart, never the same or closer.
+    expect(duoMonsterPos(narrow, 1, 1.2).x).toBeGreaterThan(duoMonsterPos(narrow, 1, 0.9).x)
   })
 
   it('keeps a generous feed drop radius, floored for tiny friends', () => {
@@ -413,9 +446,9 @@ describe('the conveyor belt', () => {
 })
 
 describe('a visitor’s tap circle', () => {
-  // The thief and the butterfly are the only targets in the game that MOVE, and
-  // they are tappable from their first frame on screen — so the circle a finger
-  // has to land in is held to a physical minimum on every device.
+  // The thief is the only target in the game that MOVES, and it is tappable from
+  // its first frame on screen — so the circle a finger has to land in is held to
+  // a physical minimum on every device.
   for (const device of DEVICES) {
     it(`is at least ~2 cm across on ${device.name}`, () => {
       const css = visitorTapRadius(device.metrics) / device.metrics.dpr

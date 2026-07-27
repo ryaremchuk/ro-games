@@ -909,10 +909,9 @@ test('feed: tapping the thief shoos it and the tray stays whole', async ({ page 
   await waitForReady(page)
   await waitTraySettled(page)
 
-  const started = await page.evaluate(() => window.__feedTheMonster!.forceVisitor('thief'))
+  const started = await page.evaluate(() => window.__feedTheMonster!.forceVisitor())
   expect(started).toBe(true)
   const visit = await pollState(page, 'thief telegraphed', (s) => s.visitor !== null)
-  expect(visit.visitor!.kind).toBe('thief')
   // The telegraph is mandatory: nothing appears on a plate without warning.
   expect(['telegraph', 'approach']).toContain(visit.visitor!.phase)
   const before = await readState(page)
@@ -947,7 +946,7 @@ test('feed: an ignored thief steals the food, a replacement arrives, the round s
   await waitTraySettled(page)
   await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
 
-  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor('thief'))).toBe(true)
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor())).toBe(true)
   await pollState(page, 'thief on stage', (s) => s.visitor !== null)
   // Do nothing at all — let the peck window lapse.
   await pollState(page, 'thief left with the food', (s) => s.visitor === null, 30_000)
@@ -962,46 +961,116 @@ test('feed: an ignored thief steals the food, a replacement arrives, the round s
   await feedRound(page)
 })
 
-test('feed: the butterfly takes nothing, whether it is tapped or left alone', async ({ page }) => {
+/** One sampled frame of a visit: the bird, its shadow, and what it holds. */
+interface FlightFrame {
+  phase: string
+  xCss: number
+  yCss: number
+  shadowXCss: number | null
+  shadowYCss: number | null
+  carriedXCss: number | null
+  carriedYCss: number | null
+}
+
+/**
+ * Watch a whole visit frame by frame, from in-page.
+ *
+ * The three bugs this exists to catch are all about things that are supposed to be
+ * PART OF the bird drifting away from it, and every one of them was invisible to a
+ * poll: a shadow that slid in from the wrong side, a stolen food that flew the
+ * opposite way, and a bird destroyed mid-air with the food still in it. Only a
+ * per-frame sample can say "these three stayed together the whole way".
+ */
+const armFlightWatch = (page: Page): Promise<void> =>
+  page.evaluate(() => {
+    const seen = { started: false, ended: false, frames: [] as FlightFrame[] }
+    ;(window as unknown as { __flight: typeof seen }).__flight = seen
+    const tick = (): void => {
+      const v = window.__feedTheMonster?.state().visitor ?? null
+      if (v !== null) {
+        seen.started = true
+        seen.frames.push({
+          phase: v.phase,
+          xCss: v.xCss,
+          yCss: v.yCss,
+          shadowXCss: v.shadow?.xCss ?? null,
+          shadowYCss: v.shadow?.yCss ?? null,
+          carriedXCss: v.carried?.xCss ?? null,
+          carriedYCss: v.carried?.yCss ?? null,
+        })
+      }
+      if (seen.started && v === null) {
+        seen.ended = true
+        return
+      }
+      requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  })
+
+const readFlight = (page: Page): Promise<{ ended: boolean; frames: FlightFrame[] }> =>
+  page.evaluate(
+    () => (window as unknown as { __flight: { ended: boolean; frames: FlightFrame[] } }).__flight,
+  )
+
+test('feed: the shadow rides under the thief and the loot rides in its claws', async ({ page }) => {
   await page.goto('./#/feed-the-monster')
   await waitForReady(page)
   await waitTraySettled(page)
+  await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
 
-  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor('butterfly'))).toBe(true)
-  const visit = await pollState(page, 'butterfly on stage', (s) => s.visitor !== null)
-  expect(visit.visitor!.kind).toBe('butterfly')
-  const trayBefore = (await readState(page)).foods.length
-  await pollState(
-    page,
-    'butterfly fluttering on the plate',
-    (s) => s.visitor?.phase === 'peck',
-    25_000,
-  )
-  await page.screenshot({ path: 'e2e/__screenshots__/feed-butterfly.png' })
+  await armFlightWatch(page)
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor())).toBe(true)
+  await pollState(page, 'thief on stage', (s) => s.visitor !== null)
+  // Take nothing: let the window lapse so there IS loot to carry off.
+  await pollState(page, 'the bird is gone', (s) => s.visitor === null, 40_000)
 
-  // Leave it entirely alone: it must fly off having taken nothing.
-  await pollState(page, 'butterfly left on its own', (s) => s.visitor === null, 30_000)
-  const after = await pollState(
-    page,
-    'tray untouched',
-    (s) => s.foods.length === trayBefore,
-    20_000,
-  )
-  expect(after.foods.length).toBe(trayBefore)
+  const flight = await readFlight(page)
+  expect(flight.ended).toBe(true)
+  const frames = flight.frames
+  expect(frames.length, 'the visit was sampled per frame').toBeGreaterThan(10)
 
-  // And tapping it is not punished either — the tray is still whole afterwards.
-  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor('butterfly'))).toBe(true)
-  const second = await pollState(
-    page,
-    'second butterfly perched',
-    (s) => s.visitor?.phase === 'peck',
-    25_000,
-  )
-  await page.mouse.move(second.visitor!.xCss, second.visitor!.yCss)
-  await page.mouse.down()
-  await page.mouse.up()
-  await pollState(page, 'tapped butterfly left', (s) => s.visitor === null, 20_000)
-  expect((await readState(page)).foods.length).toBe(trayBefore)
+  // 1. The telegraph shadow comes from the SIDE THE BIRD COMES FROM. It used to
+  //    slide in from the left while the bird flew in from the right.
+  const telegraph = frames.filter((f) => f.phase === 'telegraph')
+  expect(telegraph.length).toBeGreaterThan(2)
+  expect(telegraph[telegraph.length - 1].shadowXCss!).toBeLessThan(telegraph[0].shadowXCss!)
+
+  // 2. From the bird's first frame on, the shadow is UNDER it: same x, and pinned to
+  //    the one table line rather than wandering with the bird's height.
+  const airborne = frames.filter((f) => f.phase !== 'telegraph')
+  expect(airborne.length).toBeGreaterThan(5)
+  const shadowYs = airborne.map((f) => f.shadowYCss!)
+  expect(Math.max(...shadowYs) - Math.min(...shadowYs)).toBeLessThanOrEqual(1)
+  for (const f of airborne) {
+    expect(
+      Math.abs(f.shadowXCss! - f.xCss),
+      `shadow off the bird at ${f.phase}`,
+    ).toBeLessThanOrEqual(1.5)
+    // …and below it, never beside it.
+    expect(f.shadowYCss!).toBeGreaterThan(f.yCss)
+  }
+
+  // 3. The stolen food is in the claws — a FIXED offset from the bird — on every
+  //    frame from the theft until the bird is gone. It used to be tweened left while
+  //    the bird flew right.
+  const leaving = frames.filter((f) => f.phase === 'leaving')
+  expect(leaving.length, 'the getaway was sampled').toBeGreaterThan(4)
+  const carrying = leaving.filter((f) => f.carriedXCss !== null)
+  expect(carrying.length, 'it left holding the food').toBe(leaving.length)
+  const dxs = carrying.map((f) => f.carriedXCss! - f.xCss)
+  const dys = carrying.map((f) => f.carriedYCss! - f.yCss)
+  expect(Math.max(...dxs) - Math.min(...dxs)).toBeLessThanOrEqual(1)
+  expect(Math.max(...dys) - Math.min(...dys)).toBeLessThanOrEqual(1)
+  expect(dys[0], 'held below the body, in the claws').toBeGreaterThan(0)
+
+  // 4. It carries ON the way it came (leftwards) and is OFF SCREEN before it is
+  //    dropped — a bird that blinks out mid-air takes the food with it in plain view.
+  expect(leaving[leaving.length - 1].xCss).toBeLessThan(leaving[0].xCss)
+  expect(leaving[leaving.length - 1].xCss).toBeLessThan(0)
+
+  // And the no-fail rule still holds: the plate is refilled.
+  await pollState(page, 'plate refilled', (s) => s.foods.length === 8, 30_000)
 })
 
 /** What an armed air-tap saw, and what it did. */
@@ -1108,7 +1177,7 @@ test('feed: the thief can be shooed in mid-air, before it ever reaches the plate
   const trayYCss = tray.foods[0].yCss
   const wCss = page.viewportSize()!.width
 
-  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor('thief'))).toBe(true)
+  expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor())).toBe(true)
   const visit = await pollState(page, 'thief telegraphed', (s) => s.visitor !== null)
   const targeted = visit.visitor!.foodId
 

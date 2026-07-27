@@ -3,15 +3,26 @@
  * ways a visit ends. Every decision it acts on comes from thief.ts (pure, tested);
  * this file only performs them.
  *
- * The beat:
+ * The beat, all of it right-to-left because that is the way the bird flies:
  *
- *   telegraph 1.0–1.5 s     glide 1.24 s    peck window        exit
- *   shadow slides in    →   bird flies   →  1.5–3.0 s      →   flies off
- *   + a distant caw         to a plate      (tap → shoo)        (with or without)
- *                           └── tappable ───────┘
+ *   telegraph 1.0–1.5 s    glide 1.24 s      peck window       exit
+ *   its shadow slides   →  the bird flies →  1.5–3.0 s      →  it KEEPS going
+ *   in from the RIGHT      in from the       (tap → shoo)      left and up, with
+ *   + a distant caw        RIGHT, facing     shadow tight      whatever it took
+ *                          left              and dark          in its claws
+ *                          └───────── tappable ────┘
+ *
+ * The shadow is the BIRD's OWN shadow for the whole visit: it hangs on the table
+ * line directly under the bird's x, wide and faint while the bird is high, small
+ * and dark once it has landed — synced per frame in `update()`, never tweened on a
+ * path of its own. (It shipped as an independent tween sliding in from the LEFT
+ * while the bird came from the right: a shadow on the wrong side of the plate,
+ * attached to nothing.)
  *
  * The telegraph is MANDATORY. Nothing may ever appear on a plate without warning:
- * at this age an unannounced grab reads as unfair, not exciting.
+ * at this age an unannounced grab reads as unfair, not exciting. There is no bird
+ * yet during it, so the shadow slides in from the side the bird will arrive from —
+ * the announcement is the shadow of the bird that is coming.
  *
  * The GLIDE is a catch opportunity, not a wait: the visitor carries its full tap
  * circle from its first frame on screen, and it flies slowly enough (thief.APPROACH_MS,
@@ -28,8 +39,9 @@
  *  4. Catching pays JOY, not growth or stars — confetti, a squawk, a delighted
  *     friend. Reward framing pulls children away from the thinking task, and the
  *     journey stays tied to care performed.
- *  5. Tapping the butterfly is not punished: it flies away and the friend simply
- *     does not giggle. The reward is withheld, nothing is deducted.
+ *  5. What the bird takes, the child can SEE it take: the stolen food rides in its
+ *     claws from the grab until it is off screen, so the theft is one legible
+ *     event and not a food vanishing sideways.
  *
  * Self-contained like duoMode.ts; the scene schedules a visit and delegates.
  */
@@ -37,7 +49,7 @@
 import Phaser from 'phaser'
 import { playTone } from '../../shared/audio'
 import { pickTarget, thiefDials } from './thief'
-import type { ThiefDials, VisitOutcome, VisitorKind } from './thief'
+import type { ThiefDials, VisitOutcome } from './thief'
 import { artKey } from './art'
 import * as layout from './layout'
 import type { VisitorState } from './testHook'
@@ -55,18 +67,76 @@ const ENTRY_X_CSS = 120
 const ENTRY_RISE_CSS = 200
 /** Where the visitor settles, above the plate it is after. */
 const PERCH_RISE_CSS = 26
+/**
+ * The exit: it carries ON the way it came (left) and climbs. Reversing into a
+ * right-hand exit was the old behaviour and it read as two different birds — and it
+ * pulled away from the stolen food, which was leaving to the left.
+ *
+ * The target is OFF SCREEN, a bird's width past the left edge, not a fixed nudge:
+ * the food has to stay in the claws until the bird is gone, and a fixed −340 css
+ * left a bird that stole from a right-hand plate hanging in mid-air, where it (and
+ * the food) simply blinked out. The rise is fixed — it only has to clear the table.
+ */
+const EXIT_CLEAR_CSS = 160
+const EXIT_RISE_CSS = 300
+/**
+ * Getaway speed in CSS px per second, so the flight is the same physical speed
+ * wherever the bird takes off from and on every device — a fixed duration would
+ * make an escape from the far plate a rocket and one from the near plate a crawl.
+ *
+ * Deliberately unhurried (~1 s to cross an iPad's half-width): the theft only
+ * teaches "watch for the bird" if the child SEES the food leave in its claws, and
+ * nothing is blocked while it flies — the round stays playable through the exit.
+ */
+const EXIT_SPEED_CSS = 600
+
+/** The shadow ellipse at ground level, in CSS px (scaled by altitude below). */
+const SHADOW_W_CSS = 64
+const SHADOW_H_CSS = 22
+/** The table line: a touch below the plate the bird is after, in CSS px. */
+const SHADOW_DROP_CSS = 18
+/** How far right of the plate the telegraph shadow slides in from, in CSS px. */
+const SHADOW_SLIDE_CSS = 190
+/**
+ * Altitude that reads as "as high as this bird ever gets", in CSS px — the exit
+ * top (PERCH_RISE + EXIT_RISE + the drop). The shadow's size and alpha ride the
+ * bird's height above the table between 0 and this.
+ */
+const SHADOW_MAX_RISE_CSS = 344
+/** Landed: a tight, dark shadow. High: a wide, faint one. */
+const SHADOW_SCALE_LOW = 0.9
+const SHADOW_SCALE_HIGH = 1.9
+const SHADOW_ALPHA_LOW = 0.34
+const SHADOW_ALPHA_HIGH = 0.05
+
+/**
+ * Where the claws are, as an offset from the bird's centre in CSS px — read off
+ * the art (textures.ts): the body centre sits at 0.54 h and the legs run from
+ * 0.7 to 1.5 bodyR below it, so ~34 CSS px down hangs the food under the belly,
+ * and ~6 back from centre puts it at the legs rather than out on the beak.
+ */
+const CLAW_DX_CSS = -6
+const CLAW_DY_CSS = 34
+/** A food held up in the air reads slightly smaller than one on a plate. */
+const CARRIED_SCALE = 0.8
+
+function lerp(from: number, to: number, t: number): number {
+  return from + (to - from) * t
+}
+
 export class ThiefMode {
-  /** True from the telegraph until the visitor is off screen. */
+  /** True from the telegraph until the bird is off screen. */
   active = false
 
   private readonly scene: FeedTheMonsterScene
-  private kind: VisitorKind = 'thief'
   private phase: Phase = 'telegraph'
   private slot = 0
   private foodId = ''
   private mustReplaceSame = false
   private bird?: Phaser.GameObjects.Image
   private shadow?: Phaser.GameObjects.Ellipse
+  /** The stolen food, riding in the claws until the bird is gone. */
+  private carried?: Phaser.GameObjects.Image
   private flap?: Phaser.Time.TimerEvent
   private timers: Phaser.Time.TimerEvent[] = []
   /**
@@ -92,7 +162,7 @@ export class ThiefMode {
    * Begin a visit, if the tray has anything to peck at. Returns false when it
    * cannot start — an empty tray, or one already in flight.
    */
-  start(kind: VisitorKind, thiefSkill: number): boolean {
+  start(thiefSkill: number): boolean {
     if (this.active) return false
     const round = this.scene.round
     if (!round) return false
@@ -109,7 +179,6 @@ export class ThiefMode {
 
     this.active = true
     this.resolved = false
-    this.kind = kind
     this.phase = 'telegraph'
     this.slot = target.slot
     this.foodId = target.foodId
@@ -118,28 +187,32 @@ export class ThiefMode {
     const dials = thiefDials(thiefSkill)
     const at = layout.slotPos(this.scene.metrics(), this.slot)
 
-    // Telegraph: a shadow slides across the table toward the plate, under a
-    // distant caw. This is the part that makes the visit fair.
+    // Telegraph: the coming bird's shadow slides across the table toward the plate
+    // FROM THE RIGHT — the side it will fly in from — under a distant caw. This is
+    // the part that makes the visit fair. It enters with the high-altitude look
+    // (wide, faint), because the bird casting it is still far away and high up;
+    // from `approach()` on, `update()` owns it.
     this.shadow = this.scene.add
-      .ellipse(at.x - this.px(180), at.y + this.px(18), this.px(64), this.px(22), 0x000000, 0.22)
+      .ellipse(
+        at.x + this.px(SHADOW_SLIDE_CSS),
+        at.y + this.px(SHADOW_DROP_CSS),
+        this.px(SHADOW_W_CSS),
+        this.px(SHADOW_H_CSS),
+        0x000000,
+      )
       .setDepth(4)
+      .setScale(SHADOW_SCALE_HIGH)
+      .setAlpha(SHADOW_ALPHA_HIGH)
     this.scene.tweens.add({
       targets: this.shadow,
       x: at.x,
-      scaleX: 1.35,
-      scaleY: 1.35,
+      scale: lerp(SHADOW_SCALE_HIGH, SHADOW_SCALE_LOW, 0.4),
+      alpha: lerp(SHADOW_ALPHA_HIGH, SHADOW_ALPHA_LOW, 0.4),
       duration: dials.telegraphMs,
       ease: 'Sine.easeIn',
     })
-    if (kind === 'thief') {
-      playTone(330, 180, 'sawtooth', 0.05)
-      this.after(190, () => playTone(262, 220, 'sawtooth', 0.045))
-    } else {
-      // The butterfly announces itself softly and high — a different creature
-      // before it is even on screen.
-      playTone(1047, 120, 'sine', 0.045)
-      this.after(150, () => playTone(1319, 140, 'sine', 0.04))
-    }
+    playTone(330, 180, 'sawtooth', 0.05)
+    this.after(190, () => playTone(262, 220, 'sawtooth', 0.045))
 
     this.after(dials.telegraphMs, () => this.approach(dials))
     return true
@@ -149,7 +222,7 @@ export class ThiefMode {
     this.timers.push(this.scene.time.delayedCall(ms, fn))
   }
 
-  /** Glide in from off screen and land on the plate. */
+  /** Glide in from off screen right and land on the plate. */
   private approach(dials: ThiefDials): void {
     if (!this.active) return
     this.phase = 'approach'
@@ -157,11 +230,18 @@ export class ThiefMode {
     const key = this.frameKey()
     this.bird = this.scene.add
       .image(this.scene.scale.width + this.px(ENTRY_X_CSS), at.y - this.px(ENTRY_RISE_CSS), key)
+      // The art faces RIGHT (the beak is at +bodyR, textures.ts), and the bird
+      // flies right → left, so it must be mirrored or it arrives tail-first.
+      .setFlipX(true)
       .setDepth(21)
     // Sized AND made tappable before the first frame is drawn: the tap counts from
     // the moment the bird exists, so it must never be on screen without its circle.
     this.fitVisitor()
     this.bird.on('pointerdown', () => this.onTap())
+    // The shadow belongs to the bird from here on; the telegraph tween would fight
+    // the per-frame sync.
+    if (this.shadow) this.scene.tweens.killTweensOf(this.shadow)
+    this.update()
 
     this.flap = this.scene.time.addEvent({
       delay: FLAP_MS,
@@ -201,10 +281,7 @@ export class ThiefMode {
   private fitVisitor(): void {
     const bird = this.bird
     if (!bird) return
-    bird.setDisplaySize(
-      this.px(this.kind === 'thief' ? VISITOR_W_CSS : VISITOR_H_CSS),
-      this.px(VISITOR_H_CSS),
-    )
+    bird.setDisplaySize(this.px(VISITOR_W_CSS), this.px(VISITOR_H_CSS))
     const shape = new Phaser.Geom.Circle(
       bird.frame.width / 2,
       bird.frame.height / 2,
@@ -227,6 +304,36 @@ export class ThiefMode {
     return layout.visitorTapRadius(this.scene.metrics())
   }
 
+  // ─── Per frame: what hangs off the bird ─────────────────────────────────────
+
+  /**
+   * Pin the bird's shadow and whatever it is carrying to the bird, every frame.
+   *
+   * Both used to be independent tweens, and both drifted away from the bird they
+   * belong to: the shadow slid in from the opposite side, and the stolen food flew
+   * off in the opposite direction. Anything that is *part of* the bird is derived
+   * from the bird's live position instead — there is nothing left to diverge.
+   *
+   * Called by FeedTheMonsterScene.update while `active`.
+   */
+  update(): void {
+    const groundY = layout.slotPos(this.scene.metrics(), this.slot).y + this.px(SHADOW_DROP_CSS)
+    const bird = this.bird
+    if (this.shadow && bird) {
+      // Altitude, not phase: the same rule reads for a bird gliding in, perched, or
+      // climbing away — higher is bigger and fainter, landed is tight and dark.
+      const t = Phaser.Math.Clamp((groundY - bird.y) / this.px(SHADOW_MAX_RISE_CSS), 0, 1)
+      this.shadow.setPosition(bird.x, groundY)
+      this.shadow.setScale(lerp(SHADOW_SCALE_LOW, SHADOW_SCALE_HIGH, t))
+      this.shadow.setAlpha(lerp(SHADOW_ALPHA_LOW, SHADOW_ALPHA_HIGH, t))
+    }
+    if (this.carried && bird) {
+      // Mirrored with the bird: the claw offset is measured on art that faces right.
+      const dx = this.px(CLAW_DX_CSS) * (bird.flipX ? -1 : 1)
+      this.carried.setPosition(bird.x + dx, bird.y + this.px(CLAW_DY_CSS))
+    }
+  }
+
   /** Landed: the peck loop runs for the window, then the visit resolves. */
   private land(peckWindowMs: number): void {
     if (!this.active || !this.bird) return
@@ -234,39 +341,22 @@ export class ThiefMode {
     this.peckEndsAt = this.scene.time.now + peckWindowMs
     this.bird.setTexture(this.frameKey())
     this.fitVisitor()
-    this.shadow?.setAlpha(0.3)
 
-    if (this.kind === 'thief') {
-      // Peck: a quick bob at the food, over and over.
-      this.scene.tweens.add({
-        targets: this.bird,
-        y: this.bird.y + this.px(14),
-        duration: 190,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Quad.easeInOut',
-      })
-      playTone(880, 50, 'square', 0.04)
-    } else {
-      // Flutter: wings open and close on the spot, going nowhere, taking nothing.
-      this.scene.tweens.add({
-        targets: this.bird,
-        y: this.bird.y - this.px(10),
-        duration: 620,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.easeInOut',
-      })
-    }
+    // Peck: a quick bob at the food, over and over.
+    this.scene.tweens.add({
+      targets: this.bird,
+      y: this.bird.y + this.px(14),
+      duration: 190,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Quad.easeInOut',
+    })
+    playTone(880, 50, 'square', 0.04)
 
     this.after(peckWindowMs, () => this.lapse())
   }
 
   private frameKey(): string {
-    if (this.kind === 'butterfly') {
-      const name = this.wingUp ? 'butterfly-open' : 'butterfly-closed'
-      return this.scene.hasArt(name) ? artKey(name) : `ftm-${name}`
-    }
     const name =
       this.phase === 'peck' ? 'thief-perch' : this.wingUp ? 'thief-fly-up' : 'thief-fly-down'
     return this.scene.hasArt(name) ? artKey(name) : `ftm-${name}`
@@ -275,10 +365,10 @@ export class ThiefMode {
   // ─── The two ways it ends ──────────────────────────────────────────────────
 
   /**
-   * The child tapped it. Every tap on a visible visitor counts, including one
-   * during the glide in — with the same consequences as a perched tap: punishing an
-   * eager child for being early is exactly the wrong lesson, and there is nothing to
-   * tap during the telegraph anyway, so spam-tapping the sky can never be what pays
+   * The child tapped it. Every tap on a visible bird counts, including one during
+   * the glide in — with the same consequences as a perched tap: punishing an eager
+   * child for being early is exactly the wrong lesson, and there is nothing to tap
+   * during the telegraph anyway, so spam-tapping the sky can never be what pays
    * off. The glide is deliberately slow enough (thief.APPROACH_MS) for that
    * mid-air catch to be a real option and not a fluke.
    */
@@ -286,37 +376,25 @@ export class ThiefMode {
     if (!this.active || this.resolved || this.phase === 'leaving') return
     this.resolved = true
 
-    if (this.kind === 'thief') {
-      // Shoo: squawk, a puff of feathers, and the friend giggles. Joy only — no
-      // growth, no stars.
-      playTone(988, 90, 'square', 0.09)
-      this.after(70, () => playTone(1319, 110, 'square', 0.07))
-      if (this.bird) this.scene.puffs.explode(14, this.bird.x, this.bird.y)
-      const mp = this.scene.monsterPos()
-      this.scene.confetti.explode(18, mp.x, mp.y - this.scene.bodyR * this.scene.growth)
-      if (!this.scene.transitioning) this.scene.monsterRig.beHappy(700)
-    } else {
-      // Tapping the butterfly is NOT punished. It flies off and the friend simply
-      // does not giggle — the reward is withheld, nothing is deducted.
-      playTone(523, 130, 'sine', 0.05)
-    }
-    this.finish({ kind: this.kind, tapped: true })
+    // Shoo: squawk, a puff of feathers, and the friend giggles. Joy only — no
+    // growth, no stars.
+    playTone(988, 90, 'square', 0.09)
+    this.after(70, () => playTone(1319, 110, 'square', 0.07))
+    if (this.bird) this.scene.puffs.explode(14, this.bird.x, this.bird.y)
+    const mp = this.scene.monsterPos()
+    this.scene.confetti.explode(18, mp.x, mp.y - this.scene.bodyR * this.scene.growth)
+    if (!this.scene.transitioning) this.scene.monsterRig.beHappy(700)
+    this.finish({ tapped: true })
   }
 
   /** The window lapsed with no tap. */
   private lapse(): void {
     if (!this.active || this.resolved) return
     this.resolved = true
-    if (this.kind === 'butterfly') {
-      // It leaves on its own having taken nothing — a correctly-withheld no-go.
-      playTone(784, 120, 'sine', 0.04)
-      this.finish({ kind: 'butterfly', tapped: false })
-      return
-    }
     this.steal()
   }
 
-  /** The thief lifts the food and flies off with it — then it is replaced. */
+  /** The thief lifts the food into its claws and flies off — then it is replaced. */
   private steal(): void {
     const stolen = this.scene.tray.foods.find(
       (food) => (food.getData('slot') as number) === this.slot && food.active,
@@ -326,21 +404,13 @@ export class ThiefMode {
     if (!this.scene.transitioning) this.scene.monsterRig.shakeHead()
 
     if (stolen && stolen !== this.scene.tray.dragged) {
-      // Carry it off in the beak: it rides with the bird and leaves the screen.
+      // Into the claws: from here it is part of the bird (see update()), so it
+      // leaves the screen with it instead of on a path of its own.
       this.scene.tray.foods = this.scene.tray.foods.filter((f) => f !== stolen)
       stolen.disableInteractive()
       this.scene.tweens.killTweensOf(stolen)
-      const carried = stolen
-      this.scene.tweens.add({
-        targets: carried,
-        x: -this.px(160),
-        y: carried.y - this.px(240),
-        scaleX: carried.scaleX * 0.7,
-        scaleY: carried.scaleY * 0.7,
-        duration: 900,
-        ease: 'Sine.easeIn',
-        onComplete: () => carried.destroy(),
-      })
+      stolen.setDepth(22).setScale(stolen.scaleX * CARRIED_SCALE, stolen.scaleY * CARRIED_SCALE)
+      this.carried = stolen
       // Rule 2: ALWAYS replaced. When the thief had no choice but a wanted food,
       // the replacement is the identical food, so the round stays clearable.
       //
@@ -357,45 +427,56 @@ export class ThiefMode {
         playTone(659, 90, 'sine', 0.06)
       })
     }
-    this.finish({ kind: 'thief', tapped: false })
+    this.finish({ tapped: false })
   }
 
-  /** Fly off screen, tell the scene how it went, and tear everything down. */
+  /**
+   * Fly off screen and tell the scene how it went. The bird CONTINUES the way it
+   * came — left and up — so the shadow under it and the food in its claws ride out
+   * with it (they are synced to it, not tweened). `active` stays true until it is
+   * gone, which is what makes that ride observable.
+   */
   private finish(outcome: VisitOutcome): void {
     this.phase = 'leaving'
     for (const timer of this.timers) timer.remove()
     this.timers = []
-    const bird = this.bird
-    if (bird) {
-      this.scene.tweens.killTweensOf(bird)
-      bird.disableInteractive()
-      this.scene.tweens.add({
-        targets: bird,
-        x: bird.x + this.px(260),
-        y: bird.y - this.px(300),
-        angle: 18,
-        alpha: 0,
-        duration: 640,
-        ease: 'Sine.easeIn',
-        onComplete: () => bird.destroy(),
-      })
-    }
-    if (this.shadow) {
-      const shadow = this.shadow
-      this.scene.tweens.killTweensOf(shadow)
-      this.scene.tweens.add({
-        targets: shadow,
-        alpha: 0,
-        duration: 400,
-        onComplete: () => shadow.destroy(),
-      })
-    }
     this.flap?.remove()
     this.flap = undefined
-    this.bird = undefined
-    this.shadow = undefined
-    this.active = false
     this.scene.noteVisitOutcome(outcome)
+
+    const bird = this.bird
+    if (!bird) {
+      this.teardown()
+      return
+    }
+    this.scene.tweens.killTweensOf(bird)
+    bird.disableInteractive()
+    this.update()
+    // Off the left edge, at a constant physical speed: it must be GONE before it is
+    // destroyed, or the food in its claws vanishes in plain sight.
+    const exitX = -this.px(EXIT_CLEAR_CSS)
+    const duration = Math.max(240, ((bird.x - exitX) / this.px(EXIT_SPEED_CSS)) * 1000)
+    this.scene.tweens.add({
+      targets: bird,
+      x: exitX,
+      y: bird.y - this.px(EXIT_RISE_CSS),
+      // Nose up while facing left (the sprite is mirrored) — a climbing getaway.
+      angle: 18,
+      duration,
+      ease: 'Sine.easeIn',
+      onComplete: () => this.teardown(),
+    })
+  }
+
+  /** The bird is gone: drop everything that hung off it. */
+  private teardown(): void {
+    this.bird?.destroy()
+    this.bird = undefined
+    this.shadow?.destroy()
+    this.shadow = undefined
+    this.carried?.destroy()
+    this.carried = undefined
+    this.active = false
   }
 
   /** Cancel a visit outright (a celebration or transition took the stage). */
@@ -410,31 +491,28 @@ export class ThiefMode {
     this.replacementTimer = undefined
     this.flap?.remove()
     this.flap = undefined
-    if (this.bird) {
-      this.scene.tweens.killTweensOf(this.bird)
-      this.bird.destroy()
-      this.bird = undefined
+    for (const object of [this.bird, this.shadow, this.carried]) {
+      if (object) this.scene.tweens.killTweensOf(object)
     }
-    if (this.shadow) {
-      this.scene.tweens.killTweensOf(this.shadow)
-      this.shadow.destroy()
-      this.shadow = undefined
-    }
-    this.active = false
+    // Including the food in the claws: a round that ends mid-flight must not leave
+    // a stolen food hanging in the air with no bird under it.
+    this.teardown()
   }
 
   /** Live visitor state for the dev/e2e hook. */
   snapshotState(): VisitorState | null {
     if (!this.active) return null
+    const dpr = this.scene.dpr
     return {
-      kind: this.kind,
       phase: this.phase,
       slot: this.slot,
       foodId: this.foodId,
       msLeft: this.phase === 'peck' ? Math.max(0, this.peckEndsAt - this.scene.time.now) : 0,
-      xCss: (this.bird?.x ?? 0) / this.scene.dpr,
-      yCss: (this.bird?.y ?? 0) / this.scene.dpr,
-      tapRadiusCss: this.tapRadius() / this.scene.dpr,
+      xCss: (this.bird?.x ?? 0) / dpr,
+      yCss: (this.bird?.y ?? 0) / dpr,
+      tapRadiusCss: this.tapRadius() / dpr,
+      shadow: this.shadow ? { xCss: this.shadow.x / dpr, yCss: this.shadow.y / dpr } : null,
+      carried: this.carried ? { xCss: this.carried.x / dpr, yCss: this.carried.y / dpr } : null,
     }
   }
 }

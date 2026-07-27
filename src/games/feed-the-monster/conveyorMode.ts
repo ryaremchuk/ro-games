@@ -5,11 +5,10 @@
  *
  * Follows the duoMode.ts template: a self-contained widget the scene delegates
  * to, so the polished still-tray flow is left completely untouched. It owns the
- * belt strip, the rollers, the kitchen hatch and one plate per dish, and it
- * REUSES the tray for the dishes themselves (`tray.makeFood`) — the drag
- * mechanics, the magnetic snap toward the mouth and the feed handoff are already
- * correct and shared, and a belt dish must behave exactly like a plate food the
- * moment it is picked up.
+ * belt strip, the two end rollers and one plate per dish, and it REUSES the tray
+ * for the dishes themselves (`tray.makeFood`) — the drag mechanics, the magnetic
+ * snap toward the mouth and the feed handoff are already correct and shared, and
+ * a belt dish must behave exactly like a plate food the moment it is picked up.
  *
  * **The belt never stops.** Not while a dish is held, not during a spit-back, not
  * through the celebration that ends the round. A belt that halts stops being a
@@ -28,7 +27,8 @@
  *     the nearest free one in view (belt.returnLane) — flying to a target that is
  *     re-read every frame, so it settles onto a plate that never stopped moving.
  *  4. An eaten dish leaves its plate EMPTY on the belt; the plate refills only
- *     when it next rides through the hatch. Gaps riding past are the intended
+ *     when it next wraps round through the off-screen lane past the entry edge
+ *     (belt.ts calls that lane the hatch). Gaps riding past are the intended
  *     look — they are what tells the child the next one is coming.
  */
 
@@ -75,7 +75,7 @@ interface LaneClaim {
    * Has the child let go, and is this plate the one it was COMMITTED to? The
    * landing plate is chosen once, at release, and then followed: re-deciding
    * every frame would jerk the dish sideways the moment a plate wrapped past
-   * the hatch mid-flight.
+   * the entry edge mid-flight.
    */
   landing: boolean
 }
@@ -86,7 +86,7 @@ interface Lane {
   food: Phaser.GameObjects.Image | null
   plate: Phaser.GameObjects.Image
   claim: LaneClaim | null
-  /** Slot the lane held on the previous frame, to detect the hatch wrap. */
+  /** Slot the lane held on the previous frame, to detect the entry-edge wrap. */
   lastSlot: number
   /** Was this lane's dish wanted while it rode the visible span un-taken? */
   passedWanted: boolean
@@ -103,7 +103,6 @@ export class ConveyorMode {
   private dials: BeltDials = { dishSpeedCss: 48, maxWaitMs: 4_000, wantedEvery: 3 }
   private belt?: Phaser.GameObjects.TileSprite
   private rollers: Phaser.GameObjects.Image[] = []
-  private hatch?: Phaser.GameObjects.Image
   /** The dish in the child's hand right now (lifted off its plate). */
   private held: Phaser.GameObjects.Image | null = null
   /**
@@ -217,8 +216,6 @@ export class ConveyorMode {
     this.belt = undefined
     for (const roller of this.rollers) roller.destroy()
     this.rollers = []
-    this.hatch?.destroy()
-    this.hatch = undefined
     this.scene.tray.homeProvider = null
     for (const plate of this.scene.tray.plates) plate.setVisible(true)
   }
@@ -251,18 +248,14 @@ export class ConveyorMode {
       this.rollers.push(roller)
     }
 
-    // The hatch dishes emerge from, at the belt's entry edge (the belt runs
-    // left → right), drawn ABOVE the dishes so a dish slides out from behind it.
-    // Anchored by its LEFT edge at x = 0: a centred hatch put half the doorway
-    // off screen, which read as a brown box rather than a kitchen.
-    const hatchKey = this.scene.hasArt('hatch') ? artKey('hatch') : 'ftm-hatch'
-    const hatchW = h * 1.5
-    this.hatch = this.scene.add
-      .image(0, y - h * 0.42, hatchKey)
-      .setOrigin(0, 1)
-      .setDisplaySize(hatchW, h * 2.1)
-      .setDepth(6)
-      .setTint(tint)
+    // Nothing is drawn at the entry edge: the belt runs left → right and a dish
+    // simply rides in from off screen past the left edge. A doorway image used to
+    // stand here to explain where the food came from, but at this size it read as
+    // a brown rectangle sitting on the first plate, so it was cut — the belt is
+    // the strip plus its two rollers, and nothing else.
+    // Depth stack left behind: belt strip and rollers 3, plates 4, dishes 5
+    // (tray.makeFood), a dragged dish 20 — so a dish is always above the plate it
+    // rides on, and nothing occludes it.
   }
 
   // ─── Lanes ─────────────────────────────────────────────────────────────────
@@ -282,7 +275,7 @@ export class ConveyorMode {
     return round ? wantsFood(round.request, this.scene.eaten, foodId) : false
   }
 
-  /** Ask belt.ts what the next dish out of the hatch carries. */
+  /** Ask belt.ts what the next dish riding in from off screen carries. */
   private scheduleFood(laneIndex: number): string {
     const round = this.scene.round
     const pool = round ? [...new Set(round.tray)] : []
@@ -466,7 +459,7 @@ export class ConveyorMode {
     for (let i = 0; i < total; i++) {
       const lane = this.lanes[i]
       const slot = laneSlot(i, this.offset, total)
-      // The wrap past the hatch is the spawn decision: a lane that has come all
+      // The wrap past the entry edge is the spawn decision: a lane that has come all
       // the way round gets a fresh dish (or fills the gap an eaten one left) —
       // unless a dish in the child's hand has claimed that plate, in which case it
       // rides through empty and stays theirs.
@@ -478,7 +471,7 @@ export class ConveyorMode {
       }
       lane.lastSlot = slot
       // A MISS is a wanted dish that rode the WHOLE visible span un-taken, so it
-      // only becomes one after being seen near the hatch end. Marking it anywhere
+      // only becomes one after being seen near the entry end. Marking it anywhere
       // on the belt counted the initial seeding — dishes dealt mid-span, some
       // already at the far edge — as misses the child never had a chance at, and
       // three of them landed before the first feed.
@@ -494,9 +487,9 @@ export class ConveyorMode {
 
   /**
    * The anti-drought guarantee, checked every frame: if the wait for a wanted dish
-   * has grown past the budget, re-dress the lane currently BEHIND THE HATCH, which
-   * is invisible by definition and always exists — so the rescue costs the child
-   * nothing and shows them nothing.
+   * has grown past the budget, re-dress the lane currently OFF SCREEN past the entry
+   * edge (belt.ts calls that lane the hatch), which is invisible by definition and
+   * always exists — so the rescue costs the child nothing and shows them nothing.
    *
    * Doing this per frame rather than only when a lane wraps is what removes a
    * whole pitch of latency from the promise (see belt.needsRescue). Running OUT of
@@ -571,7 +564,6 @@ export class ConveyorMode {
     this.belt?.destroy()
     for (const roller of this.rollers) roller.destroy()
     this.rollers = []
-    this.hatch?.destroy()
     this.buildBelt()
     this.update(0)
   }

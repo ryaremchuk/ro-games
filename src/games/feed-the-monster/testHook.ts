@@ -116,15 +116,14 @@ export interface FeedTestState {
   beltSkill: number
   /** Live kitchen state while a `dish` round is on stage (else null). */
   kitchen: KitchenState | null
-  /** The visitor on stage right now (else null). */
+  /** The thief bird on stage right now (else null). */
   visitor: VisitorState | null
   /** The thief axis's own adaptive meter, 0..THIEF_SKILL_MAX. */
   thiefSkill: number
 }
 
-/** The thief (or the no-go butterfly), mid-visit. */
+/** The thief bird, mid-visit. */
 export interface VisitorState {
-  kind: 'thief' | 'butterfly'
   /** telegraph → approach → peck → leaving. */
   phase: 'telegraph' | 'approach' | 'peck' | 'leaving'
   /** Tray slot it is after. */
@@ -141,6 +140,20 @@ export interface VisitorState {
    * visitor's first frame on screen: a tap lands whether it is flying or perched.
    */
   tapRadiusCss: number
+  /**
+   * The bird's own shadow on the table, in css px (null once it is gone). Exposed
+   * because it shipped BROKEN: it slid in from the left while the bird came from
+   * the right and was never attached to it. A spec can now prove it sits under the
+   * bird (same x) and on the table line, not beside it.
+   */
+  shadow: { xCss: number; yCss: number } | null
+  /**
+   * The stolen food riding in the bird's claws, in css px (null while nothing has
+   * been taken). Also exposed because it shipped BROKEN: the food was tweened off
+   * to the LEFT on its own path while the bird flew RIGHT. A spec can now prove it
+   * holds a fixed offset from the bird all the way off screen.
+   */
+  carried: { xCss: number; yCss: number } | null
 }
 
 /** One cell of the recipe equation on the pot's panel. */
@@ -330,12 +343,12 @@ export interface FeedTestApi {
 
   // ─── The thief ────────────────────────────────────────────────────────────
   /**
-   * Send a visitor in right now, bypassing the data+chance axis. A belt round is
+   * Send the bird in right now, bypassing the data+chance axis. A belt round is
    * re-dealt as a still one first (a bird pecks at a plate, not at a lane).
    * Returns false when one is already on stage, the tray is empty, or a
    * celebration is in flight.
    */
-  forceVisitor: (kind: 'thief' | 'butterfly') => boolean
+  forceVisitor: () => boolean
 }
 
 declare global {

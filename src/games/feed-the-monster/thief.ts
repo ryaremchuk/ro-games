@@ -1,7 +1,7 @@
 /**
  * The THIEF — pure visit logic. No Phaser: whether a visit happens, which plate
- * it lands on, whether it is a thief or the go/no-go butterfly, and every timing
- * curve live here and are unit-tested (thief.test.ts).
+ * it lands on, and every timing curve live here and are unit-tested
+ * (thief.test.ts).
  *
  * The mechanic: every now and then a cheeky magpie glides in, lands on a plate and
  * starts pecking. A tap sends it flapping off empty-clawed — and it counts from the
@@ -11,16 +11,15 @@
  *
  * This is the game's first INTERRUPTION: something that demands a response while
  * the real job (feed the friend) is still open. That is a different muscle from
- * anything in TASK_REGISTRY, and it is the precursor to the butterfly — a validated
- * go/no-go paradigm for exactly this age, dressed as a concrete fantasy ("tap the
- * thief, leave the butterfly alone") rather than an abstract rule.
+ * anything in TASK_REGISTRY, and the bird is the only visitor there is. A second
+ * "do NOT tap this one" creature (a go/no-go butterfly) shipped here and was cut
+ * on the device: watching it play, the rule read as an odd extra mechanic rather
+ * than part of the fantasy — one visitor, one response, is what a 3–4yo can hold.
  *
- * Two design constraints that are NOT negotiable and are enforced here:
- *  • Catching the thief pays JOY, never growth or stars. HCI work on children's
- *    games finds reward/penalty framing pulls children away from the intended
- *    thinking behaviour, and the journey stays tied to care performed.
- *  • Tapping the butterfly is not punished. It simply flies away and the friend
- *    does not giggle — the reward is withheld, nothing is deducted.
+ * One design constraint that is NOT negotiable and is enforced here: catching the
+ * thief pays JOY, never growth or stars. HCI work on children's games finds
+ * reward/penalty framing pulls children away from the intended thinking behaviour,
+ * and the journey stays tied to care performed.
  */
 
 import type { Rng } from './logic'
@@ -40,8 +39,6 @@ export interface ThiefDials {
   peckWindowMs: number
   /** Warning before the bird is on screen (shadow + a distant caw). */
   telegraphMs: number
-  /** Share of visits that are the no-go butterfly. */
-  noGoRate: number
 }
 
 /**
@@ -55,7 +52,7 @@ export interface ThiefDials {
  * to offer.
  *
  * It stays FLAT across the ladder on purpose: the glide is the fair-warning half
- * of a visit, and difficulty rides the peck window and the no-go rate instead. The
+ * of a visit, and difficulty rides the peck window and the telegraph instead. The
  * total tappable window still shrinks with skill (see MIN_TAPPABLE_MS).
  */
 export const APPROACH_MS = 1_240
@@ -72,55 +69,33 @@ function lerp(from: number, to: number, t: number): number {
 }
 
 /**
- * The meter value at which the butterfly starts appearing. It only unlocks once
- * the child reliably catches thieves — a no-go trial the child cannot yet pass the
- * GO half of teaches nothing.
- */
-export const BUTTERFLY_MIN_SKILL = 3
-
-/**
  * Dials for a thief-meter value. The peck window shrinks 3.0 s → 1.5 s and the
- * telegraph 1.5 s → 1.0 s, while the butterfly ramps in from nothing to ~30 % of
- * visits — the standard no-go ratio that makes withholding genuinely hard. The
- * glide is the same generous length at every skill (see APPROACH_MS).
+ * telegraph 1.5 s → 1.0 s. The glide is the same generous length at every skill
+ * (see APPROACH_MS), so the whole ladder is "how long you have once it is there".
  */
 export function thiefDials(thiefSkill: number): ThiefDials {
   const clamped = Math.min(Math.max(thiefSkill, 0), THIEF_SKILL_MAX)
   const t = clamped / THIEF_SKILL_MAX
-  const unlocked = clamped >= BUTTERFLY_MIN_SKILL
-  const noGoT = unlocked
-    ? (clamped - BUTTERFLY_MIN_SKILL) / Math.max(1, THIEF_SKILL_MAX - BUTTERFLY_MIN_SKILL)
-    : 0
   return {
     approachMs: APPROACH_MS,
     peckWindowMs: Math.round(lerp(3_000, 1_500, t)),
     telegraphMs: Math.round(lerp(1_500, 1_000, t)),
-    noGoRate: unlocked ? lerp(0.12, 0.3, noGoT) : 0,
   }
 }
 
-export type VisitorKind = 'thief' | 'butterfly'
-
-/** What a finished visit taught us about the child's inhibitory control. */
+/** What a finished visit taught us about the child's alertness. */
 export interface VisitOutcome {
-  kind: VisitorKind
-  /** Did the child tap it inside the window? */
+  /** Did the child tap the bird inside the window? */
   tapped: boolean
 }
 
 /**
- * One adaptive step on the thief axis. A caught thief and a correctly-ignored
- * butterfly both advance it (both are the right response); a missed thief eases
- * it. Tapping a butterfly is a false alarm — it holds the meter rather than
- * dropping it, because the reward was already withheld and this game never
- * punishes twice for one slip.
+ * One adaptive step on the thief axis: a caught thief advances it, a missed one
+ * eases it, both by one and both clamped to the ladder.
  */
 export function updateThiefSkill(thiefSkill: number, outcome: VisitOutcome): number {
   const clamped = Math.min(Math.max(Math.round(thiefSkill), 0), THIEF_SKILL_MAX)
-  if (outcome.kind === 'thief') {
-    return outcome.tapped ? Math.min(clamped + 1, THIEF_SKILL_MAX) : Math.max(clamped - 1, 0)
-  }
-  return outcome.tapped ? clamped : Math.min(clamped + 1, THIEF_SKILL_MAX)
+  return outcome.tapped ? Math.min(clamped + 1, THIEF_SKILL_MAX) : Math.max(clamped - 1, 0)
 }
 
 // ─── Should a visit happen? ───────────────────────────────────────────────────
@@ -148,7 +123,7 @@ export interface ThiefContext {
 }
 
 /**
- * Should a visitor drop in during the next round? Gated so it never lands on a
+ * Should the bird drop in during the next round? Gated so it never lands on a
  * struggling child and never two rounds in a row, then a chance that ramps. It is
  * rare and telegraphed on purpose: the risk of this feature is hijacking attention
  * from the actual learning task and turning a thinking game into a reflex game.
@@ -163,11 +138,6 @@ export function shouldVisit(ctx: ThiefContext, rng: Rng): boolean {
     THIEF_BASE_CHANCE + THIEF_RAMP * (ctx.roundsSinceLastVisit - THIEF_MIN_GAP),
   )
   return rng() < chance
-}
-
-/** Thief or butterfly, at this meter value. */
-export function pickVisitor(thiefSkill: number, rng: Rng): VisitorKind {
-  return rng() < thiefDials(thiefSkill).noGoRate ? 'butterfly' : 'thief'
 }
 
 // ─── Which plate? ─────────────────────────────────────────────────────────────

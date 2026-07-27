@@ -125,10 +125,25 @@ export function monsterPos(m: LayoutMetrics): XY {
   return { x: m.w / 2, y: Math.max(y, headroom) }
 }
 
-// The two duo friends stand this fraction of the width to each side of centre —
-// far enough apart that even at their (slightly smaller) full size the pair
-// never overlaps on a narrow 4:3 iPad.
-const DUO_X_FRAC = 0.24
+// The two duo friends stand this fraction of the width to each side of centre.
+// Halved from the 0.24 it shipped at: a pair standing a quarter of the screen
+// apart read as two separate rounds happening side by side rather than as two
+// friends eating together, and the child's eyes (and drags) had to cross the
+// whole screen between them.
+const DUO_X_FRAC = 0.12
+/**
+ * …floored so the pair can never collapse into each other. A friend's silhouette
+ * is a blob of radius bodyR × scale (the same half-width the recipe panel dodges),
+ * so a centre-to-centre gap of 2× that radius is exactly touching; this multiplier
+ * is applied per side, leaving the two bodies overlapping by at most a shoulder
+ * (8 % of the pair's width) — snug, never one friend swallowing the other.
+ *
+ * Which term wins is a matter of screen SHAPE, not of taste: on a tall 4:3 iPad
+ * the bodies are large against the width and the floor decides, while on a
+ * landscape/wide viewport the halved fraction is roomier than the floor and the
+ * pair lands at the full halved distance.
+ */
+const DUO_MIN_GAP_MUL = 0.92
 
 /**
  * Home position for one of a duo's two side-by-side friends (`side` −1 = left,
@@ -138,7 +153,8 @@ const DUO_X_FRAC = 0.24
 export function duoMonsterPos(m: LayoutMetrics, side: -1 | 1, scale: number): XY {
   const y = heroBaseline(m) - m.bodyR * scale * 0.55
   const headroom = panelBottom(m) + m.bodyR * scale * 1.35
-  return { x: m.w / 2 + side * m.w * DUO_X_FRAC, y: Math.max(y, headroom) }
+  const dx = Math.max(m.w * DUO_X_FRAC, m.bodyR * scale * DUO_MIN_GAP_MUL)
+  return { x: m.w / 2 + side * dx, y: Math.max(y, headroom) }
 }
 
 export function miniSlot(m: LayoutMetrics, index: number): XY {
@@ -184,7 +200,7 @@ export function snapRadius(m: LayoutMetrics): number {
   return Math.max(m.bodyR * 0.9 * m.growth, px(m, 100))
 }
 
-// ─── Visitors (the thief, the butterfly) ─────────────────────────────────────
+// ─── The visiting thief ──────────────────────────────────────────────────────
 
 /** A visitor's tap circle: this share of a tray slot… */
 const VISITOR_TAP_SLOT_FRAC = 0.6

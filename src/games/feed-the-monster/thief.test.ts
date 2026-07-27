@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   APPROACH_MS,
-  BUTTERFLY_MIN_SKILL,
   MIN_TAPPABLE_MS,
   THIEF_BASE_CHANCE,
   THIEF_MAX_CHANCE,
@@ -9,7 +8,6 @@ import {
   THIEF_MIN_SKILL,
   THIEF_SKILL_MAX,
   pickTarget,
-  pickVisitor,
   shouldVisit,
   thiefDials,
   updateThiefSkill,
@@ -80,20 +78,17 @@ describe('difficulty curves', () => {
       const harder = thiefDials(skill)
       expect(harder.peckWindowMs).toBeLessThan(easier.peckWindowMs)
       expect(harder.telegraphMs).toBeLessThan(easier.telegraphMs)
-      expect(harder.noGoRate).toBeGreaterThanOrEqual(easier.noGoRate)
     }
   })
 
   it('runs the design numbers at each end', () => {
-    expect(thiefDials(0)).toMatchObject({
+    expect(thiefDials(0)).toEqual({
       approachMs: 1_240,
       peckWindowMs: 3_000,
       telegraphMs: 1_500,
-      noGoRate: 0,
     })
     expect(thiefDials(THIEF_SKILL_MAX).peckWindowMs).toBe(1_500)
     expect(thiefDials(THIEF_SKILL_MAX).telegraphMs).toBe(1_000)
-    expect(thiefDials(THIEF_SKILL_MAX).noGoRate).toBeCloseTo(0.3)
   })
 
   it('flies in at half the speed it shipped at, and never faster', () => {
@@ -149,71 +144,25 @@ describe('difficulty curves', () => {
     expect(thiefDials(-9)).toEqual(thiefDials(0))
     expect(thiefDials(99)).toEqual(thiefDials(THIEF_SKILL_MAX))
   })
-
-  it('holds the butterfly back until the child reliably catches thieves', () => {
-    for (let skill = 0; skill < BUTTERFLY_MIN_SKILL; skill++) {
-      expect(thiefDials(skill).noGoRate, `butterfly leaked at skill ${skill}`).toBe(0)
-    }
-    expect(thiefDials(BUTTERFLY_MIN_SKILL).noGoRate).toBeGreaterThan(0)
-  })
-})
-
-describe('picking the visitor', () => {
-  it('is always a thief before the butterfly unlocks', () => {
-    for (let skill = 0; skill < BUTTERFLY_MIN_SKILL; skill++) {
-      for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
-        expect(pickVisitor(skill, mulberry32(seed))).toBe('thief')
-      }
-    }
-  })
-
-  it('lands near the target no-go rate over many visits', () => {
-    const rate = (skill: number): number => {
-      const rng = mulberry32(skill + 1)
-      let butterflies = 0
-      const trials = 6000
-      for (let i = 0; i < trials; i++) {
-        if (pickVisitor(skill, rng) === 'butterfly') butterflies++
-      }
-      return butterflies / trials
-    }
-    for (const skill of [BUTTERFLY_MIN_SKILL, THIEF_SKILL_MAX]) {
-      expect(rate(skill)).toBeCloseTo(thiefDials(skill).noGoRate, 1)
-    }
-    // ~30% at the top: the standard ratio that makes withholding genuinely hard,
-    // and still leaves the majority of visits worth acting on.
-    expect(rate(THIEF_SKILL_MAX)).toBeLessThan(0.4)
-    expect(rate(THIEF_SKILL_MAX)).toBeGreaterThan(0.2)
-  })
 })
 
 describe('the thief meter', () => {
-  it('advances on the right response and eases only on a missed thief', () => {
-    expect(updateThiefSkill(3, { kind: 'thief', tapped: true })).toBe(4)
-    expect(updateThiefSkill(3, { kind: 'thief', tapped: false })).toBe(2)
-    expect(updateThiefSkill(3, { kind: 'butterfly', tapped: false })).toBe(4)
-  })
-
-  it('never punishes a false alarm twice — tapping the butterfly only holds', () => {
-    // The reward was already withheld (no giggle); deducting on top of that would
-    // be punishing the same slip a second time.
-    expect(updateThiefSkill(3, { kind: 'butterfly', tapped: true })).toBe(3)
+  it('advances on a caught thief and eases on a missed one', () => {
+    expect(updateThiefSkill(3, { tapped: true })).toBe(4)
+    expect(updateThiefSkill(3, { tapped: false })).toBe(2)
   })
 
   it('stays inside the meter range', () => {
-    expect(updateThiefSkill(0, { kind: 'thief', tapped: false })).toBe(0)
-    expect(updateThiefSkill(THIEF_SKILL_MAX, { kind: 'thief', tapped: true })).toBe(THIEF_SKILL_MAX)
-    expect(updateThiefSkill(THIEF_SKILL_MAX, { kind: 'butterfly', tapped: false })).toBe(
-      THIEF_SKILL_MAX,
-    )
+    expect(updateThiefSkill(0, { tapped: false })).toBe(0)
+    expect(updateThiefSkill(THIEF_SKILL_MAX, { tapped: true })).toBe(THIEF_SKILL_MAX)
   })
 
-  it('a child who always responds correctly reaches the top; one who never does bottoms out', () => {
+  it('a child who always catches it reaches the top; one who never does bottoms out', () => {
     let good = 0
     let bad = THIEF_SKILL_MAX
     for (let i = 0; i < 20; i++) {
-      good = updateThiefSkill(good, { kind: 'thief', tapped: true })
-      bad = updateThiefSkill(bad, { kind: 'thief', tapped: false })
+      good = updateThiefSkill(good, { tapped: true })
+      bad = updateThiefSkill(bad, { tapped: false })
     }
     expect(good).toBe(THIEF_SKILL_MAX)
     expect(bad).toBe(0)
