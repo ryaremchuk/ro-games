@@ -13,6 +13,7 @@ import {
   generateTray,
   isRoundComplete,
   poolWithFood,
+  potRemaining,
   requestTotal,
   shouldInjectDuo,
   updateSkill,
@@ -1088,8 +1089,15 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
           roundsSinceLastVisit: this.roundsSinceLastVisit,
           struggling: this.lastRoundEased,
           // A bird landing on a MOVING belt dish stacks two new mechanics on one
-          // round; a kitchen round already asks the child to hold a composed goal.
-          busy: onBelt || this.duoMode.active || this.commission !== null,
+          // round; a kitchen round already asks the child to hold a composed goal
+          // (cook THIS, then feed what comes out) and an interruption on top of it
+          // is the one combination that reads as unfair. The kitchen clause was
+          // written in this comment from the start but never in the expression.
+          busy:
+            onBelt ||
+            this.round?.request.kind === 'dish' ||
+            this.duoMode.active ||
+            this.commission !== null,
         },
         Math.random,
       )
@@ -1114,13 +1122,28 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   }
 
   /**
-   * Would feeding this food be correct right now? Used by the thief to prefer a
-   * DISTRACTOR: stealing something the child still needs would be the game taking
-   * their work away.
+   * Does the round still NEED this food? Used by the thief to prefer a DISTRACTOR:
+   * stealing something the child still needs would be the game taking their work
+   * away — and taking the last copy of it would make the round unclearable.
+   *
+   * "Needed" is not the same as "the friend would eat it right now". On a kitchen
+   * round the need lives in the POT: `wantsFood` accepts nothing but the finished
+   * dish, so asking it alone made every raw ingredient look like a distractor. The
+   * bird then took the honey a recipe called for, `replacementFood` (which filters
+   * on this same predicate) dropped in something else, and the recipe could never
+   * be cooked — a hard lock, reported from the iPad. Both halves are asked here so
+   * every caller inherits the fix.
    * @internal Exposed for ThiefMode.
    */
   wantsNow(foodId: string): boolean {
-    return this.round ? wantsFood(this.round.request, this.eaten, foodId) : false
+    const round = this.round
+    if (!round) return false
+    if (round.request.kind === 'dish' && this.kitchenMode.active) {
+      // potRemaining, not potWants: in an ordered round the parts that are not the
+      // next one are still required, just not yet acceptable.
+      if (potRemaining(round.request, this.kitchenMode.potContents).includes(foodId)) return true
+    }
+    return wantsFood(round.request, this.eaten, foodId)
   }
 
   /**

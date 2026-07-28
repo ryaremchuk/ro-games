@@ -6,23 +6,28 @@
  * The beat, all of it right-to-left because that is the way the bird flies:
  *
  *   telegraph 1.0–1.5 s    glide 1.24 s      peck window       exit
- *   its shadow slides   →  the bird flies →  1.5–3.0 s      →  it KEEPS going
- *   in from the RIGHT      in from the       (tap → shoo)      left and up, with
- *   + a distant caw        RIGHT, facing     shadow tight      whatever it took
- *                          left              and dark          in its claws
+ *   a distant caw, the  →  the bird flies →  1.5–3.0 s      →  it KEEPS going
+ *   stage untouched        in from the       (tap → shoo)      left and up, with
+ *                          RIGHT, facing     shadow tight      whatever it took
+ *                          left, its own     and dark          in its claws
+ *                          shadow under it
  *                          └───────── tappable ────┘
  *
- * The shadow is the BIRD's OWN shadow for the whole visit: it hangs on the table
- * line directly under the bird's x, wide and faint while the bird is high, small
- * and dark once it has landed — synced per frame in `update()`, never tweened on a
- * path of its own. (It shipped as an independent tween sliding in from the LEFT
- * while the bird came from the right: a shadow on the wrong side of the plate,
- * attached to nothing.)
+ * The shadow is the BIRD's OWN shadow and it exists only while the bird does: born
+ * with it in `approach()`, it hangs on the table line directly under the bird's x,
+ * wide and faint while the bird is high, small and dark once it has landed — synced
+ * per frame in `update()`, never tweened on a path of its own. (It shipped as an
+ * independent tween sliding in from the LEFT while the bird came from the right: a
+ * shadow on the wrong side of the plate, attached to nothing.)
  *
  * The telegraph is MANDATORY. Nothing may ever appear on a plate without warning:
- * at this age an unannounced grab reads as unfair, not exciting. There is no bird
- * yet during it, so the shadow slides in from the side the bird will arrive from —
- * the announcement is the shadow of the bird that is coming.
+ * at this age an unannounced grab reads as unfair, not exciting. It is a SOUND —
+ * two descending caws, off stage. It used to also slide a shadow across the table
+ * to the plate, and that was a lie the eye caught: a shadow with no bird over it
+ * parked next to the food, and then teleported back out to the right edge the
+ * instant the real bird entered and `update()` took the shadow over. A bird still
+ * off screen and high up casts nothing the child can see; the warning that it is
+ * coming is what they hear, and then the 1.24 s glide they watch.
  *
  * The GLIDE is a catch opportunity, not a wait: the visitor carries its full tap
  * circle from its first frame on screen, and it flies slowly enough (thief.APPROACH_MS,
@@ -31,11 +36,16 @@
  *
  * No-fail rules, all of them load-bearing:
  *  1. The thief prefers a distractor, and when it has no choice the replacement
- *     dropped in is guaranteed to be the same food (thief.pickTarget).
- *  2. Stolen food is ALWAYS replaced. The child can never reach a state where the
- *     request cannot be cleared.
+ *     dropped in is guaranteed to be the same food (thief.pickTarget). "Distractor"
+ *     means nothing the round still NEEDS — including the parts a kitchen round's
+ *     pot is still missing (scene.wantsNow), which is not the same question as
+ *     "would the friend eat it".
+ *  2. Stolen food is ALWAYS replaced, onto the plate it came from. The child can
+ *     never reach a state where the request cannot be cleared.
  *  3. No visit during a spit-back, a growth pop, a celebration, a transition, a
- *     duo, or while a food is being dragged.
+ *     duo, a belt or a KITCHEN round, or while a food is being dragged. (The gate
+ *     lives in FeedTheMonsterScene.scheduleVisit; the dev force bypasses it, so
+ *     rules 1 and 2 still have to hold on a kitchen round.)
  *  4. Catching pays JOY, not growth or stars — confetti, a squawk, a delighted
  *     friend. Reward framing pulls children away from the thinking task, and the
  *     journey stays tied to care performed.
@@ -91,8 +101,6 @@ const SHADOW_W_CSS = 64
 const SHADOW_H_CSS = 22
 /** The table line: a touch below the plate the bird is after, in CSS px. */
 const SHADOW_DROP_CSS = 18
-/** How far right of the plate the telegraph shadow slides in from, in CSS px. */
-const SHADOW_SLIDE_CSS = 190
 /**
  * Altitude that reads as "as high as this bird ever gets", in CSS px — the exit
  * top (PERCH_RISE + EXIT_RISE + the drop). The shadow's size and alpha ride the
@@ -169,7 +177,15 @@ export class ThiefMode {
     if (!round) return false
 
     const candidates = this.scene.tray.foods
-      .filter((food) => food !== this.scene.tray.dragged && food.active)
+      // Only food that lives ON A PLATE. `tray.foods` also carries food that has no
+      // plate to go back to — the cooked dish sitting on the pot reports slot −1 —
+      // and stealing one of those would ask `layout.slotPos` for a plate that does
+      // not exist and then drop the replacement onto it. Rule 2 (always replaced)
+      // can only be honoured for a real slot.
+      .filter(
+        (food) =>
+          food !== this.scene.tray.dragged && food.active && (food.getData('slot') as number) >= 0,
+      )
       .map((food) => ({
         slot: food.getData('slot') as number,
         foodId: food.getData('foodId') as string,
@@ -186,32 +202,10 @@ export class ThiefMode {
     this.mustReplaceSame = target.mustReplaceSame
 
     const dials = thiefDials(thiefSkill)
-    const at = layout.slotPos(this.scene.metrics(), this.slot)
 
-    // Telegraph: the coming bird's shadow slides across the table toward the plate
-    // FROM THE RIGHT — the side it will fly in from — under a distant caw. This is
-    // the part that makes the visit fair. It enters with the high-altitude look
-    // (wide, faint), because the bird casting it is still far away and high up;
-    // from `approach()` on, `update()` owns it.
-    this.shadow = this.scene.add
-      .ellipse(
-        at.x + this.px(SHADOW_SLIDE_CSS),
-        at.y + this.px(SHADOW_DROP_CSS),
-        this.px(SHADOW_W_CSS),
-        this.px(SHADOW_H_CSS),
-        0x000000,
-      )
-      .setDepth(4)
-      .setScale(SHADOW_SCALE_HIGH)
-      .setAlpha(SHADOW_ALPHA_HIGH)
-    this.scene.tweens.add({
-      targets: this.shadow,
-      x: at.x,
-      scale: lerp(SHADOW_SCALE_HIGH, SHADOW_SCALE_LOW, 0.4),
-      alpha: lerp(SHADOW_ALPHA_HIGH, SHADOW_ALPHA_LOW, 0.4),
-      duration: dials.telegraphMs,
-      ease: 'Sine.easeIn',
-    })
+    // Telegraph: two descending caws from off stage, and nothing drawn — the bird
+    // is still off screen and high, so it casts no shadow the child could see. The
+    // sound is the whole warning, and it is what makes the visit fair.
     playTone(330, 180, 'sawtooth', 0.05)
     this.after(190, () => playTone(262, 220, 'sawtooth', 0.045))
 
@@ -239,9 +233,21 @@ export class ThiefMode {
     // the moment the bird exists, so it must never be on screen without its circle.
     this.fitVisitor()
     this.bird.on('pointerdown', () => this.onTap())
-    // The shadow belongs to the bird from here on; the telegraph tween would fight
-    // the per-frame sync.
-    if (this.shadow) this.scene.tweens.killTweensOf(this.shadow)
+    // The bird's shadow, created WITH the bird and owned by `update()` from its
+    // first frame: it enters with the high-altitude look (wide, faint) and is
+    // immediately re-derived from the bird's real height, so it can never be seen
+    // anywhere the bird is not.
+    this.shadow = this.scene.add
+      .ellipse(
+        this.bird.x,
+        at.y + this.px(SHADOW_DROP_CSS),
+        this.px(SHADOW_W_CSS),
+        this.px(SHADOW_H_CSS),
+        0x000000,
+      )
+      .setDepth(4)
+      .setScale(SHADOW_SCALE_HIGH)
+      .setAlpha(SHADOW_ALPHA_HIGH)
     this.update()
 
     this.flap = this.scene.time.addEvent({

@@ -538,7 +538,21 @@ export function potWants(request: DishRequest, pot: readonly string[]): string[]
     const next = ingredients[pot.length]
     return next === undefined ? [] : [next]
   }
-  const remaining = [...ingredients]
+  return potRemaining(request, pot)
+}
+
+/**
+ * Every part the pot is still missing, whatever the order — the multiset of the
+ * recipe minus what is already in.
+ *
+ * Distinct from `potWants`, which answers "what may go in NEXT" and in an ordered
+ * round names exactly one part. Anything that must not remove a part the round
+ * still needs has to ask THIS: an ordered recipe's third ingredient is not
+ * acceptable yet, but it is every bit as required. (The thief stole one and left
+ * the round uncookable — see FeedTheMonsterScene.wantsNow.)
+ */
+export function potRemaining(request: DishRequest, pot: readonly string[]): string[] {
+  const remaining = [...recipeById(request.recipeId).ingredients]
   for (const inside of pot) {
     const at = remaining.indexOf(inside)
     if (at >= 0) remaining.splice(at, 1)

@@ -65,14 +65,18 @@ telegraphed, it never blocks the round, and its frequency is capped by the same
 
 ```
  telegraph 1.0–1.5 s     glide 1.24 s    peck window        exit
- shadow slides in    →   bird flies   →  1.5–3.0 s      →   flies off
- + a distant caw         to a plate      (tap → shoo)        (with or without)
+ a distant caw       →   bird flies   →  1.5–3.0 s      →   flies off
+ (nothing drawn)         to a plate      (tap → shoo)        (with or without)
                          └──────── tappable ─────┘
 ```
 
-- **Telegraph is mandatory.** A moving shadow on the table plus a distant caw,
-  well before the bird is on screen. Nothing may ever appear on a plate without
-  warning — at this age an unannounced grab reads as unfair, not exciting.
+- **Telegraph is mandatory.** Two descending caws off stage, well before the bird
+  is on screen. Nothing may ever appear on a plate without warning — at this age an
+  unannounced grab reads as unfair, not exciting. It is a SOUND and nothing else:
+  the telegraph shipped as a shadow sliding across the table to the plate, and a
+  shadow with no bird over it is a lie the eye catches (it also teleported back out
+  to the right edge the instant the real bird entered and took the shadow over). A
+  bird still off screen and high casts nothing the child can see.
 - **The glide is half the catch window.** The visitor is tappable from its first
   frame on screen, and it flies slowly enough (`thief.APPROACH_MS`) for a
   four-year-old to land a finger on it in mid-air. Shortening it would buy
@@ -92,9 +96,20 @@ telegraphed, it never blocks the round, and its frequency is capped by the same
 
 1. The thief prefers a **distractor**. It only ever targets a wanted food if the
    tray holds nothing else — and in that case the replacement dropped in is
-   guaranteed to be the same food.
+   guaranteed to be the same food. "Wanted" means anything the round still NEEDS,
+   which is not the same question as "would the friend eat it now": on a kitchen
+   round the need lives in the pot, and asking `wantsFood` alone made every raw
+   ingredient look like a distractor. The bird carried off the honey a recipe
+   called for and the round could never be finished — a hard lock, reported from
+   the iPad. `FeedTheMonsterScene.wantsNow` now asks the pot too
+   (`logic.potRemaining` — every outstanding part, not just the next acceptable
+   one), and it only ever targets food that sits on a real plate (the cooked dish
+   on the pot reports slot −1 and has nowhere to be replaced to).
 2. Never during a spit-back reaction, a growth pop, a celebration, a transition,
-   or a duo. Never while a food is being dragged.
+   or a duo. Never while a food is being dragged. Never on a **kitchen round**
+   either: cook-this-then-feed-that is already a compound goal, and an
+   interruption on top of it is the one combination that reads as unfair. (That
+   clause was in the code's comment from the start but never in its expression.)
 3. Never twice in the same round.
 4. Stolen food is replaced, always. The child cannot reach a state where the
    request cannot be cleared.
@@ -132,7 +147,7 @@ were caught in time. Gates, mirroring `shouldInjectDuo`:
 
 - cognitive skill ≥ 3 (the child is fluent with the basic loop),
 - not currently struggling (`lastRoundEased === false`),
-- never in a duo round, never mid-transition,
+- never in a duo, belt, kitchen or commission round, never mid-transition,
 - never two rounds in a row.
 
 ## Integration
@@ -156,8 +171,8 @@ were caught in time. Gates, mirroring `shouldInjectDuo`:
   the catch celebration.
 - **The friend's existing reactions** — `beHappy`, `squintEyes`, `shakeHead`
   cover the friend's whole emotional response to the thief. No new rig work.
-- **Shadow** — the game already draws elliptical shadows procedurally; the
-  telegraph shadow is one more.
+- **Shadow** — the game already draws elliptical shadows procedurally; the bird's
+  own is one more. It exists only while the bird does (see the telegraph, above).
 
 ### New art needed
 
@@ -232,8 +247,9 @@ glance.
   on it, and `finish()` cleared that list on the very next line — so the bird flew
   off with the food and nothing ever came back. Only a cancelled round (the round
   is over, there is no plate to refill) calls the replacement off now.
-- Visitors are gated off belt rounds and commissions as well as duos: a bird on a
-  moving belt is two new mechanics in one round.
+- Visitors are gated off belt rounds, kitchen rounds and commissions as well as
+  duos: a bird on a moving belt is two new mechanics in one round, and a bird over
+  a pot interrupts a goal the child is still holding in their head.
 - Both visitors are drawn **procedurally for now** — three magpie frames sharing
   one body anchor plus two butterfly frames, following the whack-critter
   separate-full-body-frames pattern rather than anything face-anchored.
@@ -250,3 +266,14 @@ glance.
   proportional to a tray slot, floored at ~1.3 cm of radius, and re-derived on every
   frame swap. Phaser's `setInteractive` silently ignores a new shape once an object
   is interactive, so the shape is assigned in place — a lesson worth keeping.
+- **The telegraph shadow was cut.** Two shadow behaviours could not both be right:
+  a telegraph tween sliding one to the plate, and `update()` pinning one under the
+  bird. What played was a shadow arriving next to the food with nothing above it,
+  then jumping back to the right edge when the bird appeared. Only the bird's own
+  shadow survives; the warning is the caw.
+- **The bird was allowed to steal a recipe ingredient**, because "wanted" was
+  asked of the mouth (`wantsFood`) and a kitchen round's need is in the pot. The
+  round became uncookable. Fixed at the predicate (`wantsNow` asks
+  `potRemaining` too, so the replacement rule inherits it) _and_ at the gate
+  (kitchen rounds are `busy`). Two e2e tests take a dozen draws each, because one
+  random target proves nothing about a "never".

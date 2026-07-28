@@ -1030,11 +1030,14 @@ test('feed: the shadow rides under the thief and the loot rides in its claws', a
   const frames = flight.frames
   expect(frames.length, 'the visit was sampled per frame').toBeGreaterThan(10)
 
-  // 1. The telegraph shadow comes from the SIDE THE BIRD COMES FROM. It used to
-  //    slide in from the left while the bird flew in from the right.
+  // 1. The telegraph draws NOTHING: no bird, and so no shadow either. It used to
+  //    slide a bird-less shadow up to the plate and then teleport it back out to the
+  //    right edge the moment the real bird entered and took the shadow over.
   const telegraph = frames.filter((f) => f.phase === 'telegraph')
   expect(telegraph.length).toBeGreaterThan(2)
-  expect(telegraph[telegraph.length - 1].shadowXCss!).toBeLessThan(telegraph[0].shadowXCss!)
+  for (const f of telegraph) {
+    expect(f.shadowXCss, 'a shadow with no bird over it').toBeNull()
+  }
 
   // 2. From the bird's first frame on, the shadow is UNDER it: same x, and pinned to
   //    the one table line rather than wandering with the bird's height.
@@ -1072,6 +1075,55 @@ test('feed: the shadow rides under the thief and the loot rides in its claws', a
   // And the no-fail rule still holds: the plate is refilled.
   await pollState(page, 'plate refilled', (s) => s.foods.length === 8, 30_000)
 })
+
+for (const kind of ['dish', 'dish-ordered'] as const) {
+  test(`feed: the thief never takes a part a ${kind} recipe still needs`, async ({ page }) => {
+    await page.goto('./#/feed-the-monster')
+    await waitForReady(page)
+    await waitTraySettled(page)
+    await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
+
+    // Which plate the bird picks is random, so ONE visit proves nothing: with 2–3
+    // parts on an 8-plate tray, the broken build aimed at an ingredient about a
+    // quarter of the time. A dozen draws is what makes the "never" real. The visit
+    // is abandoned as soon as its target has been read — re-dealing the round stands
+    // the bird down — so a draw costs a round, not a whole flight.
+    let parts: string[] = []
+    for (let draw = 0; draw < 12; draw++) {
+      await forceKindSettled(page, kind)
+      const s = await pollState(
+        page,
+        'pot on the table',
+        (now) => now.kitchen !== null && now.foods.length === 8 && now.visitor === null,
+        20_000,
+      )
+      parts = s.kitchen!.ingredients
+      expect(parts.length).toBeGreaterThanOrEqual(2)
+      // The bird is forced: the round gate keeps it away from kitchen rounds, but the
+      // dev force bypasses that, and the no-fail rule has to hold on this path too —
+      // it is the one an adult uses to see the beat.
+      expect(await page.evaluate(() => window.__feedTheMonster!.forceVisitor())).toBe(true)
+      const visit = await pollState(page, 'thief on stage', (now) => now.visitor !== null)
+      // The pot's outstanding parts are NEEDED, ordered or not — a later part is not
+      // acceptable yet but the dish cannot be cooked without it. The bird took one and
+      // the round became impossible: the honey never came back.
+      expect(parts, `draw ${draw}: the bird aimed at an ingredient`).not.toContain(
+        visit.visitor!.foodId,
+      )
+    }
+
+    // Let the last one steal, and prove the recipe is still cookable afterwards.
+    await pollState(page, 'the bird is gone', (s) => s.visitor === null, 40_000)
+    const after = await pollState(page, 'plate refilled', (s) => s.foods.length === 8, 30_000)
+    expect(after.kitchen!.contents).toEqual([])
+    for (const part of parts) {
+      expect(
+        after.foods.map((f) => f.foodId),
+        `${part} is still on the tray`,
+      ).toContain(part)
+    }
+  })
+}
 
 /** What an armed air-tap saw, and what it did. */
 interface AirTap {

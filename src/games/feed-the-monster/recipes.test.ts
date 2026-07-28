@@ -20,6 +20,7 @@ import {
   isDishCooked,
   isRoundComplete,
   potAccepts,
+  potRemaining,
   potWants,
   requestTotal,
   wantsFood,
@@ -175,6 +176,24 @@ describe('the pot', () => {
   it('produces the recipe’s result', () => {
     expect(dishResult(dish('waffle-honey'))).toBe('waffle')
     expect(dishResult(dish('burger-deluxe'))).toBe('burger')
+  })
+
+  it('still counts a later part as NEEDED in an ordered round', () => {
+    // The thief asks "may this go?", not "may this go in NEXT?". potWants answers
+    // the second question and named one part, so the bird carried off an ingredient
+    // the recipe could not be finished without.
+    const request = dish('burger', true)
+    expect(potWants(request, [])).toEqual(['bread'])
+    expect(potRemaining(request, [])).toEqual(['bread', 'cheese', 'tomato'])
+    expect(potRemaining(request, ['bread'])).toEqual(['cheese', 'tomato'])
+    expect(potRemaining(request, ['bread', 'cheese', 'tomato'])).toEqual([])
+  })
+
+  it('counts a repeated ingredient once per copy still missing', () => {
+    const twice: DishRequest = { kind: 'dish', recipeId: 'burger', ordered: false }
+    // A pot fed a part it does not contain twice must not clear both.
+    expect(potRemaining(twice, ['bread'])).toEqual(['cheese', 'tomato'])
+    expect(potRemaining(twice, ['apple'])).toEqual(['bread', 'cheese', 'tomato'])
   })
 })
 
