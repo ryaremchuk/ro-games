@@ -3,24 +3,25 @@ import { playTone } from '../../shared/audio'
 import { addStars, loadProgress, saveData, saveSkill, sessionStart } from '../../shared/progress'
 import { onViewportResize, safeAreaInset, viewportSize } from '../../shared/viewport'
 import {
+  ALL_TASK_KINDS,
+  DUO_SLOTS_NEEDED,
   FOOD_COLORS,
   SKILL_MAX,
   SKILL_START,
   SPIT_BACKS_BEFORE_EASE,
-  TASK_REGISTRY,
   activePoolForRound,
   generateRound,
   generateTray,
   isRoundComplete,
+  kitchenKind,
   poolWithFood,
   potRemaining,
   requestTotal,
-  shouldInjectDuo,
   updateSkill,
   wantsFood,
   withDrawnFoods,
 } from './logic'
-import type { DuoContext, Food, FoodColor, FoodRequest, Round, TaskKind } from './logic'
+import type { Food, FoodColor, FoodRequest, Round, TaskKind } from './logic'
 import {
   BIG_BITE,
   COMMISSION_ANNOUNCE_MS,
@@ -63,13 +64,9 @@ import { KitchenMode } from './kitchenMode'
 import { ThiefMode } from './thiefMode'
 import { THIEF_SKILL_MAX, shouldVisit, updateThiefSkill } from './thief'
 import type { VisitOutcome } from './thief'
-import {
-  BELT_SKILL_MAX,
-  CONVEYOR_EXCLUDED_KINDS,
-  beltDials,
-  shouldInjectConveyor,
-  updateBeltSkill,
-} from './belt'
+import { BELT_SKILL_MAX, beltDials, updateBeltSkill } from './belt'
+import { THIEF_UNLOCK_EPISODE, initialSetlist, nextRound, unlockedSpecials } from './session'
+import type { RoundMode, SetlistState } from './session'
 
 /** Registry id — also the key the shared progress store files this under. */
 const GAME_ID = 'feed-the-monster'
@@ -174,19 +171,29 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   /**
    * The duo BONUS round controller — two friends fed at once from one tray, on
-   * its own data+chance injection axis (never the difficulty meter). Inactive
+   * the variety axis (session.ts's setlist deck, never the difficulty meter). Inactive
    * unless a duo is on stage; the solo round flow above is left untouched.
    * See ./duoMode.
    */
   readonly duoMode = new DuoMode(this)
-  /** Solo rounds since the last duo (anti-drought ramp); large so the first is
-   * eligible once the child is competent. Reset when a duo starts. */
-  private roundsSinceLastDuo = 99
-  /** Did the last completed round ease the meter (≥2 spit-backs)? Gates duos —
-   * we never pile two friends on a struggling child. */
+  /** Did the last completed round ease the meter (≥2 spit-backs)? Suppresses the
+   * bird — we never pile an interruption on a child who has just had a rough round. */
   private lastRoundEased = false
-  /** Dev overlay: force the next friend-boundary round to be a duo. */
-  private forceDuoNext = false
+
+  // ─── The session setlist (the variety axis) ────────────────────────────────
+  /**
+   * Which KIND of round comes next — classic / belt / pot / duo — in composed
+   * BLOCKS rather than per-round dice (see ./session for the whole rationale).
+   *
+   * Deliberately NOT persisted: a session is one sitting, and every sitting should
+   * open on the classic warm-up with a freshly shuffled deck. A 3–4-year-old plays
+   * for a few minutes at a time, so the composition of those few minutes is the
+   * thing worth getting right — resuming a half-spent deck from yesterday would
+   * hand a child a session that starts mid-belt-block.
+   */
+  private setlist: SetlistState = initialSetlist()
+  /** The mode the round on stage is playing (the setlist's answer for it). */
+  private roundMode: RoundMode = 'classic'
 
   // ─── Commissions: the food the child drew ──────────────────────────────────
   /**
@@ -219,17 +226,17 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
 
   /**
    * The CONVEYOR round mode — the plate row replaced, for that round, by a slow
-   * kaiten-sushi loop. Injected on its own data+chance axis and driven by its OWN
+   * kaiten-sushi loop. Dealt in blocks by the setlist and driven by its OWN
    * persisted meter (`belt`), so belt practice and task difficulty scale
    * independently: a child can be great at colours and bad at timing.
    * See ./conveyorMode and ./belt.
    */
   readonly conveyorMode = new ConveyorMode(this)
   /**
-   * The KITCHEN — the pot a `dish` / `dish-ordered` round is cooked in. Unlike the
-   * belt and the duo, cooking is a TASK KIND in the registry, not a separate axis:
-   * it is a cognitive task (part–whole composition), so the cognitive meter owns
-   * it. See ./kitchenMode and ./recipes.
+   * The KITCHEN — the pot a `dish` / `dish-ordered` round is cooked in. A round MODE
+   * like the belt and the duo: the setlist decides how OFTEN the pot comes out, the
+   * cognitive meter decides how hard the recipe is (logic.kitchenKind /
+   * dishMaxIngredients). See ./kitchenMode and ./recipes.
    */
   readonly kitchenMode = new KitchenMode(this)
   /**
@@ -248,8 +255,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   private forceVisitorNext = false
   /** The belt's own adaptive meter, 0..BELT_SKILL_MAX (persisted separately). */
   private beltSkill = 0
-  /** Solo rounds since the last belt round (anti-drought ramp). */
-  private roundsSinceLastConveyor = 99
   /** Dev overlay: make the next round a belt round. */
   private forceConveyorNext = false
 
@@ -476,6 +481,13 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         kitchen: this.kitchenMode.active ? this.kitchenMode.snapshotState() : null,
         visitor: this.thiefMode.snapshotState(),
         thiefSkill: this.thiefSkill,
+        setlist: {
+          mode: this.roundMode,
+          left: this.setlist.left,
+          blocks: this.setlist.blocks,
+          deck: [...this.setlist.deck],
+          unlocked: unlockedSpecials(this.journey.episode),
+        },
       }),
       forceKind: (kind) => {
         if (!this.devTakeStage()) return false
@@ -489,11 +501,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         // Needs a live solo round (never during the pre-first-round delay — the
         // scheduled startRound(1) would clobber the duo) and ≥2 free slots.
         if (!this.devTakeStage()) return false
-        if (FRIENDS_PER_EPISODE - this.journey.friendsFed < 2) return false
-        this.roundsSinceLastDuo = 0
+        if (FRIENDS_PER_EPISODE - this.journey.friendsFed < DUO_SLOTS_NEEDED) return false
         // A duo bypasses startRound, so it must put the previous round's modes
         // away itself — a belt left riding under a duo destroys its food.
         this.standDownModes()
+        this.roundMode = 'duo'
         this.duoMode.start()
         return true
       },
@@ -549,9 +561,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         // belt down itself — serving a second belt over a live one would leak its
         // plates and strip.
         this.conveyorMode.stop()
-        this.roundsSinceLastConveyor = 0
         this.setBigBite(false)
-        this.dealRound(true)
+        this.roundMode = 'conveyor'
+        this.dealRound('conveyor')
         return true
       },
       forceVisitor: () => {
@@ -580,9 +592,9 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
         if (!this.devTakeStage()) return false
         // Dev: re-deal a TRULY RANDOM task across EVERY kind, not gated by the
         // current meter — so tapping ↻ cycles through all types an adult wants
-        // to eyeball (the child never sees this overlay).
-        const kinds = TASK_REGISTRY.map((def) => def.kind)
-        const kind = kinds[Math.floor(Math.random() * kinds.length)]
+        // to eyeball (the child never sees this overlay). Includes the cooking
+        // kinds, which the meter no longer rotates (they are a MODE now).
+        const kind = ALL_TASK_KINDS[Math.floor(Math.random() * ALL_TASK_KINDS.length)]
         this.buildFreshRound({ forceKind: kind, previous: this.previousRequest })
         return true
       },
@@ -696,6 +708,10 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     // A re-deal is a round boundary too: the previous round's belt/pot/visitor
     // must not outlive the round that invited them (see standDownModes).
     this.standDownModes()
+    // Keep the mode readout honest about what is actually on stage: a forced `dish`
+    // IS a kitchen round however it was reached, and everything else here is served
+    // from the still tray. Setlist state is untouched — a dev re-deal spends no slot.
+    this.roundMode = round.request.kind === 'dish' ? 'kitchen' : 'classic'
     this.presentRound(round)
   }
 
@@ -930,35 +946,62 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
     this.spitBacks = 0
     this.transitioning = false
     this.drawnBiteRound = false
-    this.roundsSinceLastDuo++
-    this.roundsSinceLastConveyor++
     this.standDownModes()
     // A duo grows on its own synchronized curve (journey.duoFeedStep), so a big
     // bite never applies to one — clear the dressing before handing the round over.
     this.setBigBite(false)
-    // A commission is a once-per-episode journey beat and takes precedence over
-    // the duo axis (which gets its chance the very next round). Both only ever
-    // land on a fresh friend, so they would otherwise compete for the same slot.
+    // A commission is a once-per-episode journey beat and outranks the setlist
+    // entirely: it takes the round without spending a setlist slot, so the block
+    // it interrupted simply resumes afterwards.
     if (this.tryCommission()) return
-    // A duo bonus only ever begins at a friend boundary (a fresh friend about to
-    // start), on its own data+chance axis — never mid-growth of a solo friend.
-    if (this.journey.growthStep === 0 && this.tryInjectDuo()) return
 
-    // The belt is a whole-round mode: decided here, before the round is dealt, so
-    // the generator can be told which task kinds it cannot host.
-    const conveyor = this.tryInjectConveyor()
+    // The variety axis: ask the setlist which KIND of round this is. One call per
+    // round, and the answer is the whole decision — no per-mode dice left.
+    const mode = this.takeSetlistMode()
+    if (mode === 'duo') {
+      this.duoMode.start()
+      return
+    }
     // Roll the big bite BEFORE the tray is built, so a big-bite round's food
     // drops in already boosted and the whole round reads as special from its
     // first frame. (It used to be rolled on completion, where nothing could
     // show it.) The stuck half is re-checked live in spitBack. A belt round is
     // never a big bite: the belt IS the treat, and eight glowing plates behind a
     // moving belt would just be noise.
-    if (!conveyor) {
+    if (mode !== 'conveyor') {
       this.setBigBite(
         growAmount({ friendSpitBacks: this.friendSpitBacks, rng: this.growthRng }) === BIG_BITE,
       )
     }
-    this.dealRound(conveyor)
+    this.dealRound(mode)
+  }
+
+  /**
+   * Advance the setlist one round and return the mode to play, honouring the dev
+   * overlay's one-shot belt force.
+   *
+   * The duo's journey constraint is passed in rather than checked here: a duo
+   * graduates TWO friends on a shared growth curve, so it can only begin at a
+   * friend boundary with two episode slots free (journey.duoComplete). The setlist
+   * keeps a duo it cannot play yet and deals it at the next boundary that can.
+   *
+   * A forced belt round deliberately does NOT spend a setlist slot: the dev overlay
+   * is for eyeballing a mode on the device, and it should not shift the rhythm the
+   * child would otherwise have got.
+   */
+  private takeSetlistMode(): RoundMode {
+    if (this.forceConveyorNext) {
+      this.forceConveyorNext = false
+      this.roundMode = 'conveyor'
+      return 'conveyor'
+    }
+    const duoAllowed =
+      this.journey.growthStep === 0 &&
+      FRIENDS_PER_EPISODE - this.journey.friendsFed >= DUO_SLOTS_NEEDED
+    const step = nextRound(this.setlist, { episode: this.journey.episode, duoAllowed }, Math.random)
+    this.setlist = step.state
+    this.roundMode = step.mode
+    return step.mode
   }
 
   /**
@@ -987,43 +1030,26 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
   }
 
   /**
-   * The belt's own axis: weigh live game DATA (cognitive fluency, recent
-   * struggle, rounds since the last belt) + chance. Returns true when this round
-   * rides the belt. Never stacks with a duo (that returned already) and never
-   * with a commission.
+   * Generate + present the round for the current `roundNumber` in the mode the
+   * setlist chose. Also spends the drawn-food callback when its countdown is up:
+   * the friend asks for the thing the child drew, by name, as an ordinary count
+   * round — which is why the callback overrides the mode's own kind.
    */
-  private tryInjectConveyor(): boolean {
-    const wanted =
-      this.forceConveyorNext ||
-      shouldInjectConveyor(
-        {
-          skill: this.skill,
-          roundsSinceLastConveyor: this.roundsSinceLastConveyor,
-          struggling: this.lastRoundEased,
-        },
-        Math.random,
-      )
-    this.forceConveyorNext = false
-    if (!wanted) return false
-    this.roundsSinceLastConveyor = 0
-    return true
-  }
-
-  /**
-   * Generate + present the round for the current `roundNumber`, once every round
-   * MODE gate (commission, duo) has declined it. Also spends the drawn-food
-   * callback when its countdown is up: the friend asks for the thing the child
-   * drew, by name, as an ordinary count round.
-   */
-  private dealRound(onBelt = false): void {
+  private dealRound(mode: RoundMode = 'classic'): void {
     let preferFoodId: string | undefined
     let forceKind: TaskKind | undefined
+    // A KITCHEN round's task is not drawn from the meter's rotation — the mode IS
+    // the task. The meter still sets how hard it runs (parts, and whether order
+    // matters); see logic.kitchenKind.
+    if (mode === 'kitchen') forceKind = kitchenKind(this.skill, Math.random)
     if (this.callbackFoodId !== null) {
       if (this.callbackInRounds > 0) this.callbackInRounds--
       else {
         preferFoodId = this.callbackFoodId
         // Force a kind that means "I want THIS one" — the nudge is ignored by
-        // kinds where a named food is context (see logic.generateRequest).
+        // kinds where a named food is context (see logic.generateRequest). It
+        // outranks a kitchen round: the payoff of the whole drawing feature is the
+        // friend asking for the child's own food, and a pot in the way would bury it.
         forceKind = this.skill >= 1 ? 'count' : 'single'
         this.callbackFoodId = null
       }
@@ -1037,14 +1063,11 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       foods: this.episodeFoods(),
       forceKind,
       preferFoodId,
-      // A kitchen round fills a pot FROM the tray, and the belt is what replaced
-      // the tray — the two modes cannot share a round.
-      avoidKinds: onBelt ? CONVEYOR_EXCLUDED_KINDS : undefined,
     })
     this.recentKinds.push(round.taskKind)
     if (this.recentKinds.length > 6) this.recentKinds.shift()
-    this.presentRound(round, onBelt)
-    this.scheduleVisit(onBelt)
+    this.presentRound(round, mode === 'conveyor')
+    this.scheduleVisit()
   }
 
   /**
@@ -1075,7 +1098,7 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
    * immediate: an interruption that arrives with the request is not an
    * interruption, it is part of the task.
    */
-  private scheduleVisit(onBelt: boolean): void {
+  private scheduleVisit(): void {
     this.visitTimer?.remove()
     this.visitTimer = undefined
     this.roundsSinceLastVisit++
@@ -1085,18 +1108,24 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       forced ||
       shouldVisit(
         {
-          skill: this.skill,
+          // Gated on the EPISODE, not on the cognitive meter — the bird is variety
+          // and joy, not a prize for counting well (see thief.shouldVisit).
+          unlocked: this.journey.episode >= THIEF_UNLOCK_EPISODE,
           roundsSinceLastVisit: this.roundsSinceLastVisit,
           struggling: this.lastRoundEased,
-          // A bird landing on a MOVING belt dish stacks two new mechanics on one
-          // round; a kitchen round already asks the child to hold a composed goal
-          // (cook THIS, then feed what comes out) and an interruption on top of it
-          // is the one combination that reads as unfair. The kitchen clause was
-          // written in this comment from the start but never in the expression.
+          // Two modes the bird cannot join, for different reasons. A BELT round has
+          // no still plates to land on — the bird aims at a tray slot and a lane is
+          // not one. A KITCHEN round already asks the child to hold a composed goal
+          // (cook THIS, then feed what comes out), and an interruption on top of
+          // that is the one combination that reads as unfair.
+          //
+          // A duo needs no clause here and gets none: a duo round returns from
+          // startRound before this is reached, so the bird simply never joins one.
+          // (Letting it would mean teaching `wantsNow` about two mouths, so that the
+          // no-fail replacement rule still holds — worth doing, not worth doing here.)
           busy:
-            onBelt ||
-            this.round?.request.kind === 'dish' ||
-            this.duoMode.active ||
+            this.roundMode === 'conveyor' ||
+            this.roundMode === 'kitchen' ||
             this.commission !== null,
         },
         Math.random,
@@ -1342,30 +1371,6 @@ export default class FeedTheMonsterScene extends Phaser.Scene {
       request,
       tray: generateTray(request, pool, Math.random),
     })
-  }
-
-  /**
-   * The second axis: weigh live game DATA (skill, recent struggle, episode slots
-   * left) + chance and, if it fires, hand the "next friend" to the duo bonus
-   * controller instead. Returns true when a duo took over the round.
-   */
-  private tryInjectDuo(): boolean {
-    const slotsLeft = FRIENDS_PER_EPISODE - this.journey.friendsFed
-    if (slotsLeft < 2) {
-      this.forceDuoNext = false
-      return false
-    }
-    const ctx: DuoContext = {
-      skill: this.skill,
-      roundsSinceLastDuo: this.roundsSinceLastDuo,
-      struggling: this.lastRoundEased,
-      slotsLeft,
-    }
-    if (!this.forceDuoNext && !shouldInjectDuo(ctx, Math.random)) return false
-    this.forceDuoNext = false
-    this.roundsSinceLastDuo = 0
-    this.duoMode.start()
-    return true
   }
 
   // ─── Big bite ──────────────────────────────────────────────────────────────

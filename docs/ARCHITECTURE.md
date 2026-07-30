@@ -138,8 +138,9 @@ currencies:
   the saved value via `sessionStart()` (warm-up + break decay), then climb back
   faster while below the saved peak. Feed the Monster runs three: `cognitive`
   (which task kinds are in rotation and how hard they run), `belt` (conveyor speed
-  and how long the child may wait, moved by missed passes), and `thief` (reaction
-  window and how often the no-go butterfly appears). Separate axes are the point —
+  and how long the child may wait, moved by missed passes), and `thief` (how fast
+  the bird flies in, and how long it pecks before it takes off with the food —
+  moved by whether the child caught it). Separate axes are the point —
   a child can be great at colours and bad at timing, and one meter would average
   the two into a difficulty that fits neither.
 - **Levels** — the visible reward rhythm, derived (not stored): `shared/level.ts`
@@ -170,23 +171,41 @@ reposition a food the tray is already flying). `arcTo` accepts a live target, so
 "arc home" works when home is moving.
 
 Every decision a mode acts on lives in a **pure, unit-tested sibling**:
-`belt.ts`, `recipes.ts`, `thief.ts`, `journey.ts`, `logic.ts`. The widget draws;
-the sibling decides. That split is what lets a mode's adaptive curves and no-fail
-guarantees be proven over hundreds of seeds without a browser.
+`session.ts`, `belt.ts`, `recipes.ts`, `thief.ts`, `journey.ts`, `logic.ts`. The
+widget draws; the sibling decides. That split is what lets a mode's adaptive curves
+and no-fail guarantees be proven over hundreds of seeds without a browser.
+
+### Three axes, kept apart
+
+1. **Variety — which MODE** (`session.ts`). Classic / conveyor / kitchen / duo,
+   dealt as a session **setlist**: a classic warm-up, then alternating
+   `special block → classic breather`, with specials drawn from a weighted deck
+   **without replacement** and never repeating back to back. Reads the episode (an
+   unlock ladder) and nothing else — deliberately not the difficulty meter.
+2. **Difficulty — which ASK** (`logic.ts`). `TASK_REGISTRY` over the 0..12
+   cognitive meter, plus the belt's and the thief's own short meters.
+3. **Sprinkles** — the big bite (`journey.growAmount`) and the thief
+   (`thief.shouldVisit`), layered onto any mode on their own variable schedule.
+
+Blocked modes, interleaved tasks, on purpose: blocked practice gets a child to
+competence on a new _interaction_ faster, interleaved practice is what makes the
+_learning_ stick. A mode is an interaction; the ask under it is the learning.
 
 How a round reaches the stage:
 
-1. `startRound` runs the mode gates in order — commission (a once-per-episode
-   journey beat), duo (its own data+chance axis), conveyor (likewise).
-2. `dealRound` generates through `logic.generateRound`, telling it which task kinds
-   the chosen mode cannot host (`avoidKinds`).
+1. `startRound` lets the commission (a once-per-episode journey beat) pre-empt
+   everything, then asks the setlist for this round's mode — one call, one answer.
+2. `dealRound` generates through `logic.generateRound`. A kitchen round forces its
+   task kind (`logic.kitchenKind`); every other mode takes the meter's rotation.
 3. `presentRound` puts it on stage. **Every** path that deals a round goes through
    this one function — the normal loop, the dev/e2e `forceKind`, the commission's
    own round — so a mode can never be left half-dressed.
 
-Cooking is deliberately NOT a mode: `dish` / `dish-ordered` are task kinds in
-`logic.TASK_REGISTRY`, because composition is a cognitive skill and the cognitive
-meter should own it. The pot is just furniture that appears for those kinds.
+Cooking IS a mode. `dish` / `dish-ordered` used to be rows in
+`logic.TASK_REGISTRY`, which made the two axes fight: the pot could only get more
+frequent by taking rounds away from counting and colours, and it could not appear at
+all until the meter reached 5. It is a deck card now; its _difficulty_ still rides
+the meter, through `dishMaxIngredients` and `DISH_ORDERED_MIN_SKILL`.
 
 **Two panels, one per ask.** A kitchen round is the only round that carries two
 instructions, so it draws two task panels and each hangs over the thing it is

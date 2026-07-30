@@ -177,7 +177,7 @@ export function shrinkStep(journey: JourneyState): JourneyState {
  * the round grows BOTH one synchronized step; after DUO_GROW_STEPS they are full
  * and walk to the lineup together as a pair. Two friends grown in three rounds
  * (vs 2×GROW_STEPS solo) — a deliberate pace + variety burst, injected on its
- * own data+chance axis (logic.shouldInjectDuo), NOT the difficulty meter.
+ * own variety axis (session.ts's setlist deck), NOT the difficulty meter.
  */
 export const DUO_GROW_STEPS = 3
 
@@ -207,7 +207,7 @@ export function duoFeedStep(growthStep: number): { next: number; done: boolean }
  * A completed duo graduates BOTH friends: friendsFed advances by two. If that
  * fills the episode's quota the episode completes (grand dance + next theme);
  * otherwise the next (solo or duo) friend arrives. A duo is only ever injected
- * with ≥2 slots left (logic.shouldInjectDuo), so friendsFed never overshoots.
+ * with ≥2 slots left (session.SetlistContext.duoAllowed), so friendsFed never overshoots.
  */
 export function duoComplete(journey: JourneyState): { next: JourneyState; outcome: FeedOutcome } {
   const friendsFed = journey.friendsFed + DUO_FRIENDS
