@@ -42,20 +42,20 @@ export interface ThiefDials {
 }
 
 /**
- * Duration of the glide in, at every skill.
+ * Duration of the glide in — how long the bird is in the air before it lands, and
+ * therefore how fast it FLIES. It is tappable for every one of those ms, so this is
+ * the mechanic's most legible difficulty dial: a slow drifting bird is an easy
+ * catch, a fast one is a real one.
  *
- * DOUBLED from the 620 ms it shipped at, after watching the game played on the
- * iPad: the bird was on the plate before the child had finished turning their head,
- * so the only real chance to act came *after* it had landed. The glide is the
- * "here it comes — catch it" beat, and the visitor is tappable throughout it, so
- * halving its speed hands back the in-flight catch the mechanic was always meant
- * to offer.
- *
- * It stays FLAT across the ladder on purpose: the glide is the fair-warning half
- * of a visit, and difficulty rides the peck window and the telegraph instead. The
- * total tappable window still shrinks with skill (see MIN_TAPPABLE_MS).
+ * The easy end is double the 620 ms the feature shipped at, after watching it on
+ * the iPad: the bird was on the plate before the child had finished turning their
+ * head, so the only real chance to act came *after* it had landed. The hard end is
+ * still slower than that original, because the tappable window as a whole is
+ * floored (see MIN_TAPPABLE_MS) — the ladder makes the catch sharper, never a
+ * coin flip.
  */
-export const APPROACH_MS = 1_240
+export const APPROACH_MS_EASY = 1_800
+export const APPROACH_MS_HARD = 900
 
 /**
  * Floor on the WHOLE tappable window (glide + peck) at any skill. A four-year-old
@@ -69,15 +69,16 @@ function lerp(from: number, to: number, t: number): number {
 }
 
 /**
- * Dials for a thief-meter value. The peck window shrinks 3.0 s → 1.5 s and the
- * telegraph 1.5 s → 1.0 s. The glide is the same generous length at every skill
- * (see APPROACH_MS), so the whole ladder is "how long you have once it is there".
+ * Dials for a thief-meter value: the bird flies in faster (1.8 s → 0.9 s), pecks
+ * for less time (3.0 s → 1.5 s) and warns for less time (1.5 s → 1.0 s). All three
+ * monotone, all three easiest at 0, and the whole tappable window stays above
+ * MIN_TAPPABLE_MS at every rung (asserted in thief.test.ts).
  */
 export function thiefDials(thiefSkill: number): ThiefDials {
   const clamped = Math.min(Math.max(thiefSkill, 0), THIEF_SKILL_MAX)
   const t = clamped / THIEF_SKILL_MAX
   return {
-    approachMs: APPROACH_MS,
+    approachMs: Math.round(lerp(APPROACH_MS_EASY, APPROACH_MS_HARD, t)),
     peckWindowMs: Math.round(lerp(3_000, 1_500, t)),
     telegraphMs: Math.round(lerp(1_500, 1_000, t)),
   }
@@ -100,37 +101,55 @@ export function updateThiefSkill(thiefSkill: number, outcome: VisitOutcome): num
 
 // ─── Should a visit happen? ───────────────────────────────────────────────────
 
-/** Below this COGNITIVE meter value the child is not fluent with the basic loop. */
-export const THIEF_MIN_SKILL = 3
-/** Never two visits within this many rounds. */
+/**
+ * The smallest `roundsSinceLastVisit` that may host a visit. TWO, which is one
+ * clear round in between — the bird is punctuation, and two visits running would
+ * make it the game. (The counter is 0 on the round a bird visited and 1 on the next
+ * one, so this is the value that bars back-to-back rather than 1.)
+ *
+ * Frequency is raised on the CHANCE, not by shortening this: birds that arrive in
+ * consecutive rounds are the exact failure mode this feature was gated against.
+ */
 export const THIEF_MIN_GAP = 2
-/** Base chance once eligible… */
-export const THIEF_BASE_CHANCE = 0.3
+/**
+ * Base chance once eligible…
+ *
+ * Raised from 0.30 on the strength of watching it played: the bird is the funniest
+ * thing in the game, it costs the child nothing (the food is always replaced) and it
+ * pays joy rather than progress, so it is the cheapest variety the game has. It is
+ * also no longer gated on the cognitive meter at all — that made the funniest thing
+ * in the game a reward for being good at counting. The gate is the EPISODE now
+ * (session.THIEF_UNLOCK_EPISODE), like the belt and the pot.
+ */
+export const THIEF_BASE_CHANCE = 0.45
 /** …rising each further round since the last visit… */
-export const THIEF_RAMP = 0.12
-/** …capped here (≈ 1 visit in 2 rounds at the top). */
-export const THIEF_MAX_CHANCE = 0.5
+export const THIEF_RAMP = 0.14
+/** …capped here (≈ 3 visits in 4 eligible rounds at the top of the ramp). */
+export const THIEF_MAX_CHANCE = 0.72
 
 export interface ThiefContext {
-  /** Cognitive meter — the competence gate. */
-  skill: number
+  /** Has the journey reached the episode where the bird exists? */
+  unlocked: boolean
   /** Rounds since the last visit (large if never) — the anti-drought ramp. */
   roundsSinceLastVisit: number
   /** Did the last round ease the meter? Then don't pile on. */
   struggling: boolean
-  /** A duo, a commission or a belt round owns the stage — no visitors. */
+  /** A kitchen round or a commission owns the stage — no visitors. */
   busy: boolean
 }
 
 /**
- * Should the bird drop in during the next round? Gated so it never lands on a
- * struggling child and never two rounds in a row, then a chance that ramps. It is
- * rare and telegraphed on purpose: the risk of this feature is hijacking attention
- * from the actual learning task and turning a thinking game into a reflex game.
+ * Should the bird drop in during the next round? Gated on the episode, on not
+ * landing two rounds running, and on not piling onto a child who has just had a
+ * rough round; then a chance that ramps with the wait.
+ *
+ * It stays telegraphed and never back-to-back on purpose: the risk of this feature
+ * was always hijacking attention from the actual learning task and turning a
+ * thinking game into a reflex game. What changed is the FREQUENCY, not the fairness.
  */
 export function shouldVisit(ctx: ThiefContext, rng: Rng): boolean {
   if (ctx.busy) return false
-  if (Math.round(ctx.skill) < THIEF_MIN_SKILL) return false
+  if (!ctx.unlocked) return false
   if (ctx.struggling) return false
   if (ctx.roundsSinceLastVisit < THIEF_MIN_GAP) return false
   const chance = Math.min(

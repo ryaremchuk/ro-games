@@ -120,6 +120,28 @@ export interface FeedTestState {
   visitor: VisitorState | null
   /** The thief axis's own adaptive meter, 0..THIEF_SKILL_MAX. */
   thiefSkill: number
+  /**
+   * The variety axis: which KIND of round is on stage and where the session's
+   * setlist stands (see ./session). Exposed because the whole point of the axis is
+   * a RHYTHM across rounds, which no single round can show — a spec plays a dozen
+   * rounds and asserts the blocks, and the `?dev` panel shows an adult on the iPad
+   * why the belt is not out yet.
+   */
+  setlist: SetlistSnapshot
+}
+
+/** Where the session's setlist stands right now. */
+export interface SetlistSnapshot {
+  /** The mode the round on stage plays. */
+  mode: 'classic' | 'conveyor' | 'kitchen' | 'duo'
+  /** Rounds of this block still to come after the one on stage. */
+  left: number
+  /** Blocks started this session (the first is the classic warm-up). */
+  blocks: number
+  /** Specials still in the deck, in draw order — the next few blocks, visible. */
+  deck: string[]
+  /** Specials unlocked by the current episode (what the deck is built from). */
+  unlocked: string[]
 }
 
 /** The thief bird, mid-visit. */
@@ -311,7 +333,7 @@ export interface FeedTestApi {
   devBigBite: (on: boolean) => boolean
   /**
    * Start a two-friend duo bonus round now (dev/e2e), if ≥2 episode slots are
-   * free. Bypasses the data+chance axis so a spec (or a curious adult) can see a
+   * free. Bypasses the setlist so a spec (or a curious adult) can see a
    * duo on demand. Returns false when a duo is already on stage, no slots are
    * left, or a celebration is in flight.
    */
@@ -336,14 +358,14 @@ export interface FeedTestApi {
 
   // ─── Conveyor ─────────────────────────────────────────────────────────────
   /**
-   * Re-deal the current round on the belt, bypassing the data+chance axis.
+   * Re-deal the current round on the belt, bypassing the setlist.
    * Returns false while a celebration is in flight.
    */
   forceConveyor: () => boolean
 
   // ─── The thief ────────────────────────────────────────────────────────────
   /**
-   * Send the bird in right now, bypassing the data+chance axis. A belt round is
+   * Send the bird in right now, bypassing its chance gate. A belt round is
    * re-dealt as a still one first (a bird pecks at a plate, not at a lane).
    * Returns false when one is already on stage, the tray is empty, or a
    * celebration is in flight.

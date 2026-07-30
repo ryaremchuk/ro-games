@@ -6,6 +6,7 @@ import type { ConveyorLaneState, FeedTestState } from '../src/games/feed-the-mon
 import type { TaskKind } from '../src/games/feed-the-monster/logic'
 import type { JourneyState } from '../src/games/feed-the-monster/journey'
 import { EPISODES, FRIENDS_PER_EPISODE, GROW_STEPS } from '../src/games/feed-the-monster/journey'
+import { THIEF_UNLOCK_EPISODE, WARMUP_ROUNDS } from '../src/games/feed-the-monster/session'
 import { VISITOR_TAP_MIN_CSS } from '../src/games/feed-the-monster/layout'
 
 // The liveness polls below carry generous internal deadlines (a throttled
@@ -1481,4 +1482,104 @@ test('feed: a duo bonus stands up two friends fed from one tray by mouth', async
     )
     if (index === 0) await waitTraySettled(page).catch(() => undefined)
   }
+})
+
+// ─── The session setlist (the variety axis) ───────────────────────────────────
+//
+// The setlist is a RHYTHM across rounds, so it is the one thing no single-round
+// assertion can reach: `session.test.ts` proves the sequence over thousands of
+// seeded sessions, and these two prove the SCENE is actually driven by it.
+
+/**
+ * Play the current round out and wait only for the ROUND NUMBER to advance.
+ *
+ * Deliberately not `feedRound`: that one ends by waiting for the tray to settle,
+ * and the round it lands on may be a belt round — whose plates never stop moving,
+ * so "settled" never arrives. Anything that steps ACROSS a block boundary has to
+ * use this instead.
+ */
+async function playOutRound(page: Page): Promise<void> {
+  const startRound = (await waitTraySettled(page)).round
+  for (let guard = 0; guard < 12; guard++) {
+    const s = await readState(page)
+    if (s.round !== startRound || s.transitioning) break
+    await feedCorrectOnce(page, s)
+  }
+  await pollState(page, 'next round started', (s) => s.round > startRound, 45_000)
+}
+
+test('feed: a session opens on the classic warm-up, then deals a special', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+  // Deterministic growth: a big bite (+2) could graduate the friend inside the
+  // warm-up, and a fresh friend is exactly when the drawing ask fires — which
+  // would take a round without spending a setlist slot and shift the boundary.
+  await page.evaluate(() => window.__feedTheMonster!.setRandomBigBite(false))
+
+  // Episode 1 is where the deck first has cards in it (episode 0 is the plain
+  // loop — the next test covers that). friendsFed 1 keeps the drawing ask blocked
+  // on `friend-in-progress`, so the setlist is the only thing choosing modes.
+  await forceJourneySettled(page, { episode: 1, friendsFed: 1, growthStep: 0 })
+  const opening = await readState(page)
+  expect(opening.setlist.unlocked.sort()).toEqual(['conveyor', 'kitchen'])
+
+  // Every round of the warm-up must be classic, and the first block boundary must
+  // then hand over to a special — that is the promise that a four-minute session
+  // sees more than the still tray. Read BEFORE each feed, so each entry is the
+  // mode of the round actually being played.
+  const modes: string[] = []
+  for (let round = 0; round < WARMUP_ROUNDS; round++) {
+    modes.push((await readState(page)).setlist.mode)
+    await playOutRound(page)
+  }
+  expect(modes).toEqual(Array(WARMUP_ROUNDS).fill('classic'))
+
+  const after = await readState(page)
+  expect(after.setlist.mode, 'the block after the warm-up is a special').not.toBe('classic')
+  expect(['conveyor', 'kitchen']).toContain(after.setlist.mode)
+  expect(after.setlist.blocks).toBe(2)
+})
+
+test('feed: episode 0 stays the plain loop — no deck, no bird', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await forceJourneySettled(page, { episode: 0, friendsFed: 0, growthStep: 0 })
+
+  const s = await readState(page)
+  // Nothing unlocked means the deck is empty and every block falls back to
+  // classic, however long the child plays.
+  expect(s.setlist.unlocked).toEqual([])
+  expect(s.setlist.deck).toEqual([])
+  expect(s.setlist.mode).toBe('classic')
+  expect(s.journey.episode).toBeLessThan(THIEF_UNLOCK_EPISODE)
+
+  // A few real rounds later it is still the still tray, and the bird has not come.
+  for (let round = 0; round < 2; round++) {
+    await feedRound(page)
+    const now = await readState(page)
+    expect(now.setlist.mode).toBe('classic')
+    expect(now.conveyorActive).toBe(false)
+    expect(now.kitchen).toBeNull()
+    expect(now.visitor).toBeNull()
+  }
+})
+
+test('feed: the mode readout follows what is actually on stage', async ({ page }) => {
+  await page.goto('./#/feed-the-monster')
+  await waitForReady(page)
+  await waitTraySettled(page)
+
+  // A forced belt round reports BELT…
+  await startConveyor(page)
+  expect((await readState(page)).setlist.mode).toBe('conveyor')
+
+  // …and a forced cooking round reports KITCHEN with its pot standing. The mode
+  // and the furniture must never disagree: the readout is what an adult on the
+  // iPad uses to tell "not unlocked yet" from "broken".
+  await forceKindSettled(page, 'dish')
+  const cooking = await readState(page)
+  expect(cooking.setlist.mode).toBe('kitchen')
+  expect(cooking.kitchen).not.toBeNull()
+  expect(cooking.conveyorActive).toBe(false)
 })

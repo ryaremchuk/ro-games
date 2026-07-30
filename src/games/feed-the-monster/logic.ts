@@ -300,6 +300,14 @@ export interface TaskKindDef {
  * Unlock ladder over the 0..12 meter — medium progression speed: one new
  * kind roughly every 1-2 clean rounds at first, slowing toward the top.
  * `single` retires once real counting starts so it never bores.
+ *
+ * Cooking (`dish` / `dish-ordered`) is deliberately NOT here. It is a whole round
+ * MODE — its own furniture, its own two-step goal — so it is scheduled on the
+ * variety axis (session.ts's deck) and not by the difficulty meter. Leaving it in
+ * the registry made the two axes fight: the pot could only get more frequent by
+ * taking rounds away from counting and colours, and it could only appear at all
+ * once the child had earned meter 5. Its difficulty still rides the meter, through
+ * `dishMaxIngredients` and `kitchenKind` below.
  */
 export const TASK_REGISTRY: readonly TaskKindDef[] = [
   { kind: 'single', minSkill: 0, maxSkill: 2, weight: 3 },
@@ -308,14 +316,18 @@ export const TASK_REGISTRY: readonly TaskKindDef[] = [
   { kind: 'dots', minSkill: 3, maxSkill: 12, weight: 3 },
   { kind: 'combo', minSkill: 4, maxSkill: 12, weight: 3 },
   { kind: 'not', minSkill: 5, maxSkill: 12, weight: 2 },
-  // Composition lands just after `combo` (two things at once) and around `not`:
-  // the child is comfortable with multi-item requests before being asked to
-  // assemble one. Ordered cooking is the actual sequencing trainer and only
-  // appears high up.
-  { kind: 'dish', minSkill: 5, maxSkill: 12, weight: 3 },
   { kind: 'pattern', minSkill: 6, maxSkill: 12, weight: 2 },
   { kind: 'mix', minSkill: 7, maxSkill: 12, weight: 3 },
-  { kind: 'dish-ordered', minSkill: 10, maxSkill: 12, weight: 2 },
+]
+
+/**
+ * Every kind the generator can build, registry or not — the `?dev` overlay's ↻
+ * cycles through all of them so an adult can eyeball each one on the device.
+ */
+export const ALL_TASK_KINDS: readonly TaskKind[] = [
+  ...TASK_REGISTRY.map((def) => def.kind),
+  'dish',
+  'dish-ordered',
 ]
 
 /** Kinds currently in rotation for a meter value. */
@@ -333,21 +345,15 @@ export const KIND_HISTORY = 2
  * Weighted pick of the next task kind, skipping recently played kinds so
  * tasks rotate visibly. Falls back to shorter memory (then to everything
  * unlocked) when few kinds are available yet.
+ *
+ * Every kind in the registry can run in every mode — the belt and the still tray
+ * both just serve food — so there is nothing to exclude here. Cooking, the one
+ * task that needed its own furniture, is a MODE now (see TASK_REGISTRY).
  */
-export function pickTaskKind(
-  skill: number,
-  recent: readonly TaskKind[],
-  rng: Rng,
-  avoid: readonly TaskKind[] = [],
-): TaskKind {
-  const banned = new Set(avoid)
-  const eligible = TASK_REGISTRY.filter(
+export function pickTaskKind(skill: number, recent: readonly TaskKind[], rng: Rng): TaskKind {
+  const unlocked = TASK_REGISTRY.filter(
     (def) => clampSkill(skill) >= def.minSkill && clampSkill(skill) <= def.maxSkill,
   )
-  // A mode that can't host some kinds still has to get a playable round: fall
-  // back to the full unlocked set only if excluding leaves nothing at all.
-  const allowed = eligible.filter((def) => !banned.has(def.kind))
-  const unlocked = allowed.length > 0 ? allowed : eligible
   for (let memory = Math.min(KIND_HISTORY, recent.length); memory >= 0; memory--) {
     const avoid = new Set(recent.slice(recent.length - memory))
     const candidates = unlocked.filter((def) => !avoid.has(def.kind))
@@ -522,6 +528,26 @@ export function dishMaxIngredients(skill: number): number {
   if (skill < 8) return 2
   if (skill < 11) return 3
   return 4
+}
+
+/**
+ * The meter at which ORDERED cooking — the parts must go in left-to-right — joins
+ * the pot. This is the kitchen's real sequencing trainer, so it stays high on the
+ * ladder even though the pot itself now arrives on the variety axis.
+ */
+export const DISH_ORDERED_MIN_SKILL = 10
+
+/** How often a kitchen round is the ordered variant, once it is unlocked. */
+export const DISH_ORDERED_CHANCE = 0.4
+
+/**
+ * Which cooking task a kitchen round plays. The pot's FREQUENCY is the setlist's
+ * business (session.ts); its DIFFICULTY is the meter's, and this is that split in
+ * one function — number of parts via dishMaxIngredients, order-matters via here.
+ */
+export function kitchenKind(skill: number, rng: Rng): TaskKind {
+  const ordered = clampSkill(skill) >= DISH_ORDERED_MIN_SKILL && rng() < DISH_ORDERED_CHANCE
+  return ordered ? 'dish-ordered' : 'dish'
 }
 
 // ─── Kitchen: the pot ─────────────────────────────────────────────────────────
@@ -896,14 +922,11 @@ export interface RoundContext {
    * Must be full 6-color cycles — see journey.EPISODES.
    */
   foods?: readonly Food[]
-  /** Test/e2e override: force a specific kind regardless of the meter. */
-  forceKind?: TaskKind
   /**
-   * Kinds the round must NOT be, whatever the meter says. Used by round MODES
-   * that can't host every task — a conveyor round can't also be a kitchen round,
-   * because the belt replaces the very tray the pot is filled from.
+   * The kind this round must play, whatever the meter says. Set by the KITCHEN
+   * mode (which forces a cooking task — see kitchenKind) and by the dev/e2e hook.
    */
-  avoidKinds?: readonly TaskKind[]
+  forceKind?: TaskKind
   /**
    * Nudge the round to be ABOUT this food when the picked kind is one that names
    * a single food. This is the drawn-food callback — "a few rounds later the
@@ -917,9 +940,7 @@ export interface RoundContext {
 /** Generate one full round: formula-picked kind + always-satisfiable tray. */
 export function generateRound(context: RoundContext, rng: Rng = Math.random): Round {
   const skill = clampSkill(context.skill)
-  const taskKind =
-    context.forceKind ??
-    pickTaskKind(skill, context.recentKinds ?? [], rng, context.avoidKinds ?? [])
+  const taskKind = context.forceKind ?? pickTaskKind(skill, context.recentKinds ?? [], rng)
   const catalog = context.foods ?? FOODS
   // The nudge is a total no-op — request AND pool — for a kind that would not
   // treat the named food as the ask.
@@ -941,12 +962,12 @@ export function generateRound(context: RoundContext, rng: Rng = Math.random): Ro
   }
 }
 
-// ─── Duo bonus round (the second axis: data + chance) ─────────────────────────
+// ─── Duo bonus round ──────────────────────────────────────────────────────────
 //
 // A duo round stands TWO little friends side by side, each wanting its own food,
-// fed from ONE shared tray (see journey.DUO_GROW_STEPS). It is picked by its own
-// axis — data (skill / struggle / episode slots left) + chance — layered on top
-// of the meter-driven single-monster rounds, never by the meter itself.
+// fed from ONE shared tray (see journey.DUO_GROW_STEPS). WHEN one happens is the
+// setlist's call (session.ts draws `duo` from the variety deck); this section only
+// builds the round once it has been chosen.
 
 /** One duo friend's request: a count of a single, distinct food (feed THIS to
  * the bunny, THAT to the frog). Kept simple on purpose — the challenge of a duo
@@ -1000,49 +1021,12 @@ export function generateDuoRound(
   return { round: context.round, kind: 'duo', left, right, tray: shuffle(rng, tray) }
 }
 
-// Injection axis dials — tuned so a duo lands roughly once an episode, sooner
-// and more often for a child who is cruising, never for one who is struggling.
-/** Below this meter value the child is still learning the basics — no duos yet. */
-export const DUO_MIN_SKILL = 2
-/** Never two duos within this many rounds (no back-to-back bonus). */
-export const DUO_MIN_GAP = 3
-/** Base injection chance once eligible… */
-export const DUO_BASE_CHANCE = 0.18
-/** …rising each further round since the last duo (anti-drought)… */
-export const DUO_RAMP = 0.09
-/** …capped here. */
-export const DUO_MAX_CHANCE = 0.7
-
-/** Everything the duo axis weighs — the game's DATA, not the round number. */
-export interface DuoContext {
-  /** Adaptive meter (competence gate). */
-  skill: number
-  /** Rounds since the last duo (large if never) — drives the anti-drought ramp. */
-  roundsSinceLastDuo: number
-  /** Did the last round ease the meter (≥2 spit-backs)? Then don't pile on. */
-  struggling: boolean
-  /** Episode slots left (FRIENDS_PER_EPISODE − friendsFed); a duo fills two. */
-  slotsLeft: number
-}
-
 /**
- * The new axis: should the NEXT round be a two-friend duo bonus? Gated on
- * competence (skill up, not currently struggling) and pacing (≥2 slots left,
- * never back-to-back), then a chance that ramps the longer it's been — so a duo
- * reads as an earned, well-spaced treat, not a random difficulty spike. Pure +
- * seedable; the scene feeds it live data and Math.random.
+ * Episode slots a duo needs free before it may start (it graduates two friends).
+ * The one journey constraint the setlist has to respect — see
+ * session.SetlistContext.duoAllowed and journey.duoComplete.
  */
-export function shouldInjectDuo(ctx: DuoContext, rng: Rng): boolean {
-  if (ctx.slotsLeft < 2) return false
-  if (clampSkill(ctx.skill) < DUO_MIN_SKILL) return false
-  if (ctx.struggling) return false
-  if (ctx.roundsSinceLastDuo < DUO_MIN_GAP) return false
-  const chance = Math.min(
-    DUO_MAX_CHANCE,
-    DUO_BASE_CHANCE + DUO_RAMP * (ctx.roundsSinceLastDuo - DUO_MIN_GAP),
-  )
-  return rng() < chance
-}
+export const DUO_SLOTS_NEEDED = 2
 
 // ─── Feeding rules ───────────────────────────────────────────────────────────
 

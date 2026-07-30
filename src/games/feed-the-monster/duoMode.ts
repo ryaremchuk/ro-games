@@ -4,7 +4,7 @@
  * step; after journey.DUO_GROW_STEPS the pair is full and walks to the lineup
  * together as two friends at once. It is a deliberate pace + variety burst
  * (two friends grown in three rounds vs 2×GROW_STEPS solo), injected on its own
- * data+chance axis (logic.shouldInjectDuo), never by the difficulty meter.
+ * variety axis (the setlist deck in session.ts), never by the difficulty meter.
  *
  * Factored into its own widget so the polished SOLO round flow in the scene is
  * left untouched — the scene just delegates to `new DuoMode(this)` when a duo is

@@ -10,11 +10,14 @@ import {
 import {
   ACTIVE_POOL_SIZE,
   ALL_FOODS,
+  ALL_TASK_KINDS,
+  DISH_ORDERED_MIN_SKILL,
   SKILL_MAX,
   TASK_REGISTRY,
   TRAY_SIZE,
   activePoolForRound,
   dishMaxIngredients,
+  kitchenKind,
   dishResult,
   generateRound,
   isDishCooked,
@@ -216,12 +219,30 @@ describe('feeding a kitchen round', () => {
 })
 
 describe('kitchen round generation', () => {
-  it('is in the registry after combo and around not; ordered lands much higher', () => {
-    const free = TASK_REGISTRY.find((def) => def.kind === 'dish')!
-    const ordered = TASK_REGISTRY.find((def) => def.kind === 'dish-ordered')!
-    const combo = TASK_REGISTRY.find((def) => def.kind === 'combo')!
-    expect(free.minSkill).toBeGreaterThan(combo.minSkill)
-    expect(ordered.minSkill).toBeGreaterThan(free.minSkill + 3)
+  it('is a MODE, not a registry row — the meter never rotates cooking in', () => {
+    // The pot has its own furniture and a two-step goal, so how OFTEN it comes out
+    // is the variety axis's call (session.ts's deck). Leaving it in the registry
+    // made the two axes fight: more cooking could only mean less counting.
+    for (const kind of ['dish', 'dish-ordered'] as const) {
+      expect(TASK_REGISTRY.some((def) => def.kind === kind)).toBe(false)
+      expect(ALL_TASK_KINDS).toContain(kind)
+    }
+  })
+
+  it('keeps its DIFFICULTY on the meter: free cooking first, ordered much later', () => {
+    const always = () => 0
+    // Below the unlock the pot never demands an order, however the dice fall.
+    for (let skill = 0; skill < DISH_ORDERED_MIN_SKILL; skill++) {
+      expect(kitchenKind(skill, always)).toBe('dish')
+    }
+    // At and above it, ordered rounds appear — but only some of the time, so the
+    // pot keeps both variants in rotation instead of switching over for good.
+    expect(kitchenKind(DISH_ORDERED_MIN_SKILL, always)).toBe('dish-ordered')
+    expect(kitchenKind(SKILL_MAX, () => 0.99)).toBe('dish')
+    // Ordered lands well above the last cognitive kind to unlock (`mix`, 7): it is
+    // the sequencing trainer, and sequencing is the hardest thing the pot asks.
+    const lastKind = Math.max(...TASK_REGISTRY.map((def) => def.minSkill))
+    expect(DISH_ORDERED_MIN_SKILL).toBeGreaterThan(lastKind)
   })
 
   it('always deals a tray holding every part, and never the result', () => {

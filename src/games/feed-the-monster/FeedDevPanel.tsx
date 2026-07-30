@@ -60,6 +60,8 @@ interface DevSnapshot {
   commission: string | null
   /** One line answering "why did the drawing ask (not) just fire?". */
   drawGate: string
+  /** One line answering "what kind of round is next, and why?". */
+  setlist: string
 }
 
 function readSnapshot(): DevSnapshot | null {
@@ -83,7 +85,22 @@ function readSnapshot(): DevSnapshot | null {
     drawnFoods: s.drawnFoodIds.length,
     commission: s.commission ? `${s.commission.color}:${s.commission.phase}` : null,
     drawGate: describeGate(s),
+    setlist: describeSetlist(s),
   }
+}
+
+/**
+ * The variety axis in one line: the mode on stage, how much of its block is left,
+ * and the deck behind it. Printed because the axis is a RHYTHM — an adult watching
+ * one round cannot tell whether the belt is coming, is two rounds away, or is not
+ * unlocked in this episode at all, and that is exactly the question the setlist
+ * raises. `deck` is the literal draw order, so the next few blocks are readable.
+ */
+function describeSetlist(s: FeedTestState): string {
+  const { mode, left, blocks, deck, unlocked } = s.setlist
+  const upcoming = deck.length > 0 ? deck.slice(0, 4).join('>') : '—'
+  const gate = unlocked.length === 0 ? ' · nothing unlocked yet' : ''
+  return `${mode.toUpperCase()} ${left > 0 ? `+${left}` : 'last'} · block ${blocks} · next ${upcoming}${gate}`
 }
 
 /**
@@ -334,6 +351,8 @@ export default function FeedDevPanel() {
           gate gets its own line — otherwise "why has this never happened?" has no
           answer on the device. */}
       {ready && <div style={styles.readout}>✏️ {snap.drawGate}</div>}
+      {/* The mode axis: blocks and the deck behind them (see session.ts). */}
+      {ready && <div style={styles.readout}>🎬 {snap.setlist}</div>}
       {/* A refused tap says so, out loud. Silence here was the whole bug report. */}
       {refusal !== null && <div style={styles.refused}>⛔ {refusal}</div>}
     </div>

@@ -5,11 +5,6 @@ import {
   BELT_MISSES_BEFORE_EASE,
   BELT_SKILL_MAX,
   FIRST_VISIBLE_SLOT,
-  CONVEYOR_BASE_CHANCE,
-  CONVEYOR_EXCLUDED_KINDS,
-  CONVEYOR_MAX_CHANCE,
-  CONVEYOR_MIN_GAP,
-  CONVEYOR_MIN_SKILL,
   MIN_GRAB_WINDOW_MS,
   beltDials,
   beltIsDry,
@@ -30,12 +25,10 @@ import {
   slotPitchX,
   soonestWantedMs,
   traverseMs,
-  shouldInjectConveyor,
   updateBeltSkill,
 } from './belt'
 import type { BeltDials, BeltLaneSnapshot } from './belt'
 import { FOOD_HIT_RADIUS_CSS } from './layout'
-import { SKILL_MAX, TASK_REGISTRY } from './logic'
 import type { Rng } from './logic'
 
 function mulberry32(seed: number): Rng {
@@ -977,53 +970,6 @@ describe('a belt that never stops, played', () => {
           Math.max(dials.maxWaitMs, hatchDelayMs(step)) + step + 1,
         )
       }
-    }
-  })
-})
-
-describe('the injection axis', () => {
-  const base = { skill: SKILL_MAX, roundsSinceLastConveyor: 99, struggling: false }
-
-  it('needs a cognitively fluent child', () => {
-    expect(shouldInjectConveyor({ ...base, skill: CONVEYOR_MIN_SKILL - 1 }, () => 0)).toBe(false)
-    expect(shouldInjectConveyor({ ...base, skill: CONVEYOR_MIN_SKILL }, () => 0)).toBe(true)
-  })
-
-  it('never piles a new mechanic on a struggling child', () => {
-    expect(shouldInjectConveyor({ ...base, struggling: true }, () => 0)).toBe(false)
-  })
-
-  it('never lands two belt rounds back to back', () => {
-    for (let gap = 0; gap < CONVEYOR_MIN_GAP; gap++) {
-      expect(shouldInjectConveyor({ ...base, roundsSinceLastConveyor: gap }, () => 0)).toBe(false)
-    }
-    expect(
-      shouldInjectConveyor({ ...base, roundsSinceLastConveyor: CONVEYOR_MIN_GAP }, () => 0),
-    ).toBe(true)
-  })
-
-  it('ramps the chance the longer it has been, and caps it', () => {
-    const chanceAt = (gap: number): number => {
-      let hits = 0
-      const trials = 4000
-      const rng = mulberry32(gap + 1)
-      for (let i = 0; i < trials; i++) {
-        if (shouldInjectConveyor({ ...base, roundsSinceLastConveyor: gap }, rng)) hits++
-      }
-      return hits / trials
-    }
-    const near = chanceAt(CONVEYOR_MIN_GAP)
-    const far = chanceAt(CONVEYOR_MIN_GAP + 4)
-    expect(near).toBeGreaterThan(CONVEYOR_BASE_CHANCE * 0.7)
-    expect(far).toBeGreaterThan(near)
-    expect(chanceAt(CONVEYOR_MIN_GAP + 50)).toBeLessThanOrEqual(CONVEYOR_MAX_CHANCE + 0.03)
-  })
-
-  it('excludes exactly the kinds that need the still tray', () => {
-    // A kitchen round fills a pot FROM the tray, and the belt replaced the tray.
-    expect([...CONVEYOR_EXCLUDED_KINDS].sort()).toEqual(['dish', 'dish-ordered'])
-    for (const kind of CONVEYOR_EXCLUDED_KINDS) {
-      expect(TASK_REGISTRY.some((def) => def.kind === kind)).toBe(true)
     }
   })
 })

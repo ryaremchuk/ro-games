@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   ACTIVE_POOL_SIZE,
   COLOR_HEX,
-  DUO_MIN_GAP,
-  DUO_MIN_SKILL,
   FAST_ROUND_MS,
   FOODS,
   KIND_HISTORY,
@@ -28,7 +26,6 @@ import {
   pickTaskKind,
   potAccepts,
   requestTotal,
-  shouldInjectDuo,
   unlockedKinds,
   updateSkill,
   wantsFood,
@@ -568,34 +565,5 @@ describe('duo bonus round', () => {
         }
       }
     }
-  })
-
-  describe('injection axis (data + chance)', () => {
-    const base = { skill: SKILL_MAX, roundsSinceLastDuo: 99, struggling: false, slotsLeft: 5 }
-    const never = () => 0.99
-    const always = () => 0
-
-    it('gates on episode slots, competence, struggle and spacing', () => {
-      // Eligible + a winning roll → yes.
-      expect(shouldInjectDuo(base, always)).toBe(true)
-      // A duo needs two free slots.
-      expect(shouldInjectDuo({ ...base, slotsLeft: 1 }, always)).toBe(false)
-      // Too early on the meter — let the basics land first.
-      expect(shouldInjectDuo({ ...base, skill: DUO_MIN_SKILL - 1 }, always)).toBe(false)
-      // Don't pile two goals on a struggling child.
-      expect(shouldInjectDuo({ ...base, struggling: true }, always)).toBe(false)
-      // Never back-to-back.
-      expect(shouldInjectDuo({ ...base, roundsSinceLastDuo: DUO_MIN_GAP - 1 }, always)).toBe(false)
-    })
-
-    it('is chance-gated even when fully eligible (anti-drought ramp)', () => {
-      expect(shouldInjectDuo(base, never)).toBe(false) // eligible, but the roll loses
-      // Just past the gap the chance is low; far past it, high — so a losing
-      // roll at the gap can still be a winning roll much later.
-      const nearGap = { ...base, roundsSinceLastDuo: DUO_MIN_GAP }
-      const roll = () => 0.5
-      expect(shouldInjectDuo(nearGap, roll)).toBe(false)
-      expect(shouldInjectDuo({ ...base, roundsSinceLastDuo: 99 }, roll)).toBe(true)
-    })
   })
 })

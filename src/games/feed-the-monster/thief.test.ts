@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  APPROACH_MS,
+  APPROACH_MS_EASY,
+  APPROACH_MS_HARD,
   MIN_TAPPABLE_MS,
   THIEF_BASE_CHANCE,
   THIEF_MAX_CHANCE,
   THIEF_MIN_GAP,
-  THIEF_MIN_SKILL,
   THIEF_SKILL_MAX,
   pickTarget,
   shouldVisit,
@@ -14,7 +14,6 @@ import {
 } from './thief'
 import type { PlateCandidate } from './thief'
 import { VISITOR_H_CSS, VISITOR_W_CSS } from './layout'
-import { SKILL_MAX } from './logic'
 import type { Rng } from './logic'
 
 function mulberry32(seed: number): Rng {
@@ -30,11 +29,13 @@ function mulberry32(seed: number): Rng {
 const SKILLS = Array.from({ length: THIEF_SKILL_MAX + 1 }, (_, i) => i)
 
 describe('the gates', () => {
-  const base = { skill: SKILL_MAX, roundsSinceLastVisit: 99, struggling: false, busy: false }
+  const base = { unlocked: true, roundsSinceLastVisit: 99, struggling: false, busy: false }
 
-  it('needs a child fluent with the basic loop', () => {
-    expect(shouldVisit({ ...base, skill: THIEF_MIN_SKILL - 1 }, () => 0)).toBe(false)
-    expect(shouldVisit({ ...base, skill: THIEF_MIN_SKILL }, () => 0)).toBe(true)
+  it('waits for the episode that unlocks it — never for a meter value', () => {
+    // The bird is variety and joy, not a prize for counting well: its gate is the
+    // journey (session.THIEF_UNLOCK_EPISODE), and nothing about skill reaches here.
+    expect(shouldVisit({ ...base, unlocked: false }, () => 0)).toBe(false)
+    expect(shouldVisit({ ...base, unlocked: true }, () => 0)).toBe(true)
   })
 
   it('never lands on a struggling child', () => {
@@ -46,10 +47,22 @@ describe('the gates', () => {
       expect(shouldVisit({ ...base, roundsSinceLastVisit: gap }, () => 0)).toBe(false)
     }
     expect(shouldVisit({ ...base, roundsSinceLastVisit: THIEF_MIN_GAP }, () => 0)).toBe(true)
+    // The scene's counter reads 0 on the round a bird visited and 1 on the next
+    // one, so barring back-to-back visits takes a gap of 2 — pinned here because
+    // the raised chance below makes an off-by-one visible as bird spam.
+    expect(THIEF_MIN_GAP).toBeGreaterThanOrEqual(2)
+  })
+
+  it('is now MUCH more likely than it shipped — the cheapest variety in the game', () => {
+    // A bird costs the child nothing (the food is always replaced) and pays joy
+    // rather than progress, so frequency is the one dial worth being generous with.
+    // The original numbers were 0.30 base / 0.50 cap.
+    expect(THIEF_BASE_CHANCE).toBeGreaterThan(0.4)
+    expect(THIEF_MAX_CHANCE).toBeGreaterThan(0.7)
   })
 
   it('stays away while another mode owns the stage', () => {
-    // A duo, a commission or a moving belt already asks something new of the
+    // A commission, a moving belt or a pot already asks something new of the
     // child; a bird on top of it would be two new mechanics in one round.
     expect(shouldVisit({ ...base, busy: true }, () => 0)).toBe(false)
   })
@@ -84,36 +97,34 @@ describe('difficulty curves', () => {
 
   it('runs the design numbers at each end', () => {
     expect(thiefDials(0)).toEqual({
-      approachMs: 1_240,
+      approachMs: APPROACH_MS_EASY,
       peckWindowMs: 3_000,
       telegraphMs: 1_500,
     })
-    expect(thiefDials(THIEF_SKILL_MAX).peckWindowMs).toBe(1_500)
-    expect(thiefDials(THIEF_SKILL_MAX).telegraphMs).toBe(1_000)
+    expect(thiefDials(THIEF_SKILL_MAX)).toEqual({
+      approachMs: APPROACH_MS_HARD,
+      peckWindowMs: 1_500,
+      telegraphMs: 1_000,
+    })
   })
 
-  it('flies in at half the speed it shipped at, and never faster', () => {
+  it('makes the bird FLY faster up the ladder — the third dial', () => {
+    // How fast it flies is the most legible difficulty the mechanic has: the bird
+    // is tappable for the whole glide, so a shorter glide is a sharper catch.
+    for (let skill = 1; skill <= THIEF_SKILL_MAX; skill++) {
+      expect(thiefDials(skill).approachMs).toBeLessThan(thiefDials(skill - 1).approachMs)
+    }
+    expect(APPROACH_MS_HARD).toBeLessThan(APPROACH_MS_EASY)
+  })
+
+  it('never flies faster than the glide it shipped at, even at the top', () => {
     // 620 ms was the shipped glide, and on the iPad the bird was simply already
     // there: the child never got the mid-air catch the mechanic is built around.
+    // Every rung of the ladder now stays well clear of that.
     const SHIPPED_MS = 620
-    expect(APPROACH_MS).toBe(2 * SHIPPED_MS)
     for (const skill of SKILLS) {
-      expect(thiefDials(skill).approachMs).toBe(APPROACH_MS)
+      expect(thiefDials(skill).approachMs).toBeGreaterThan(SHIPPED_MS)
     }
-  })
-
-  it('keeps the glide the same length at every skill — difficulty rides the peck', () => {
-    // The glide is the fair-warning half of a visit: shrinking it would buy
-    // difficulty by making the visit less catchable rather than more demanding.
-    for (let skill = 1; skill <= THIEF_SKILL_MAX; skill++) {
-      expect(thiefDials(skill).approachMs).toBe(thiefDials(skill - 1).approachMs)
-    }
-    // …and the whole window still tightens with skill, which is where the ladder is.
-    const easiest = thiefDials(0)
-    const hardest = thiefDials(THIEF_SKILL_MAX)
-    expect(hardest.approachMs + hardest.peckWindowMs).toBeLessThan(
-      easiest.approachMs + easiest.peckWindowMs,
-    )
   })
 
   it('leaves a tappable window at every skill, the top of the ladder included', () => {
@@ -126,11 +137,11 @@ describe('difficulty curves', () => {
       ).toBeGreaterThanOrEqual(MIN_TAPPABLE_MS)
     }
     const hardest = thiefDials(THIEF_SKILL_MAX)
-    // The hardest visit in the game: 1.24 s in the air + 1.5 s on the plate. Even
-    // if the child only reacts once it lands, the glide is the warning that got
-    // their eyes there — which is exactly what a 620 ms glide could not do.
-    expect(hardest.approachMs).toBeGreaterThanOrEqual(1_200)
-    expect(hardest.approachMs + hardest.peckWindowMs).toBeGreaterThanOrEqual(2_700)
+    // The hardest visit in the game: 0.9 s in the air + 1.5 s on the plate. Even if
+    // the child only reacts once it lands, the glide is the warning that got their
+    // eyes there — which is exactly what a 620 ms glide could not do.
+    expect(hardest.approachMs).toBeGreaterThanOrEqual(900)
+    expect(hardest.approachMs + hardest.peckWindowMs).toBeGreaterThanOrEqual(2_400)
   })
 
   it('always leaves the telegraph shorter than the window it warns about', () => {

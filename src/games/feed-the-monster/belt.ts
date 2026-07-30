@@ -17,7 +17,7 @@
  *     pitch is the granularity a belt HAS). Every spawn decision checks how long
  *     until a wanted dish next reaches the grab zone and, if that exceeds the
  *     budget, forces the next dish to be a wanted one. Same shape as
- *     logic.shouldInjectDuo's anti-drought ramp: live data in, deterministic
+ *     session.ts's deck anti-drought guarantee: live data in, deterministic
  *     decision out, seedable, tested.
  *  2. **Motion is only in the SCAN — and the BELT NEVER STOPS.** Touching a dish
  *     lifts it clean off its plate: from pointerdown it is an ordinary dragged
@@ -35,7 +35,7 @@
  * separately is the whole point of the axis.
  */
 
-import type { Rng, TaskKind } from './logic'
+import type { Rng } from './logic'
 
 // ─── Geometry of the loop ─────────────────────────────────────────────────────
 
@@ -424,47 +424,8 @@ function pick<T>(items: readonly T[], rng: Rng): T {
   return items[Math.min(items.length - 1, Math.floor(rng() * items.length))]
 }
 
-// ─── Injection axis (data + chance, exactly like the duo) ─────────────────────
-
-/** Below this COGNITIVE meter value the child is still learning the basics. */
-export const CONVEYOR_MIN_SKILL = 4
-/** Never two belt rounds within this many rounds. */
-export const CONVEYOR_MIN_GAP = 3
-/** Base injection chance once eligible… */
-export const CONVEYOR_BASE_CHANCE = 0.16
-/** …rising each further round since the last belt (anti-drought)… */
-export const CONVEYOR_RAMP = 0.08
-/** …capped here. */
-export const CONVEYOR_MAX_CHANCE = 0.6
-
-/**
- * Task kinds a belt round cannot host. A kitchen round fills a pot FROM the
- * tray, and the belt is what replaced the tray — mixing the two would muddy both.
- */
-export const CONVEYOR_EXCLUDED_KINDS: readonly TaskKind[] = ['dish', 'dish-ordered']
-
-export interface ConveyorContext {
-  /** Cognitive meter — the competence gate (belt practice needs a fluent child). */
-  skill: number
-  /** Rounds since the last belt round (large if never) — the anti-drought ramp. */
-  roundsSinceLastConveyor: number
-  /** Did the last round ease the meter? Then don't pile a new mechanic on. */
-  struggling: boolean
-}
-
-/**
- * Should the next round ride the belt? Gated on competence and pacing, then a
- * chance that ramps the longer it has been — so the belt reads as a change of
- * scene, not a random difficulty spike. Pure + seedable; the scene feeds it live
- * data and Math.random.
- */
-export function shouldInjectConveyor(ctx: ConveyorContext, rng: Rng): boolean {
-  if (Math.round(ctx.skill) < CONVEYOR_MIN_SKILL) return false
-  if (ctx.struggling) return false
-  if (ctx.roundsSinceLastConveyor < CONVEYOR_MIN_GAP) return false
-  const chance = Math.min(
-    CONVEYOR_MAX_CHANCE,
-    CONVEYOR_BASE_CHANCE + CONVEYOR_RAMP * (ctx.roundsSinceLastConveyor - CONVEYOR_MIN_GAP),
-  )
-  return rng() < chance
-}
+// WHEN a belt round happens is not decided here any more: the belt is one card in
+// the session's variety deck (session.ts), drawn in blocks of two or three so the
+// child has time to learn the loop, and gated on the EPISODE rather than on the
+// cognitive meter — riding a belt is not a reward for being good at counting. The
+// belt's own meter above still owns how hard the belt itself runs.
