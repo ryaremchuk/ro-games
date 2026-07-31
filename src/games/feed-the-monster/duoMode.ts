@@ -4,7 +4,7 @@
  * step; after journey.DUO_GROW_STEPS the pair is full and walks to the lineup
  * together as two friends at once. It is a deliberate pace + variety burst
  * (two friends grown in three rounds vs 2×GROW_STEPS solo), injected on its own
- * data+chance axis (logic.shouldInjectDuo), never by the difficulty meter.
+ * variety axis (the setlist deck in session.ts), never by the difficulty meter.
  *
  * Factored into its own widget so the polished SOLO round flow in the scene is
  * left untouched — the scene just delegates to `new DuoMode(this)` when a duo is
@@ -28,6 +28,9 @@ const GAME_ID = 'feed-the-monster'
 // Pentatonic-ish happy tones, mirrored from the scene (the duo shares the count
 // beep + grow chime — see monsterRig.ts for the same duplicate-const pattern).
 const PENTA = [523, 587, 659, 784, 880]
+/** The ✓ badge's width as a share of the duo tile it is stamped on — a touch
+ * bolder than the solo panel's, since a duo bubble's tiles are smaller. */
+const CHECK_OF_TILE = 0.5
 
 /** A tiny thought bubble above one duo friend: the food it wants, `count` tiles
  * that ghost until fed then stamp a ✓. Simpler than the full RequestBubble — a
@@ -94,9 +97,8 @@ class DuoBubble {
         duration: 220,
         ease: 'Back.easeOut',
       })
-      const badge = this.scene.add
-        .image(tile.x, tile.y, 'ftm-check')
-        .setDisplaySize(tile.displayWidth * 0.5, tile.displayWidth * 0.5)
+      const badge = this.scene
+        .addMark(tile.x, tile.y, 'check', tile.displayWidth * CHECK_OF_TILE)
         .setAlpha(0.85)
       this.container.add(badge)
       this.scene.tweens.add({
@@ -128,13 +130,23 @@ interface DuoFriend {
   bubble: DuoBubble
 }
 
-/** A tray drop target (mirror of the scene's FeedMouth), one per open mouth. */
+/**
+ * A tray drop target — one per open mouth in a normal or duo round, plus the
+ * kitchen's pot when one is on the table. The tray routes a released food to the
+ * NEAREST target inside its snap radius and hands it over; nothing about the drag
+ * has to know whether it is feeding a friend or filling a pot.
+ */
 export interface FeedMouth {
   x: number
   y: number
   isOpen: () => number
   setOpen: (target: number, ms: number) => void
   accept: (img: Phaser.GameObjects.Image) => void
+  /**
+   * Drop radius for THIS target, when it differs from the mouth's default
+   * (layout.snapRadius) — the pot's zone is its own size, not the friend's.
+   */
+  snap?: number
 }
 
 export class DuoMode {
@@ -203,8 +215,36 @@ export class DuoMode {
     this.scene.time.delayedCall(110, () => playTone(880, 110, 'sine', 0.08))
   }
 
+  /**
+   * Dev-only: take a live duo off stage without graduating anyone. The caller
+   * hands the world back to solo play (see the scene's devTakeStage, which
+   * rebuilds the walker at the live journey point and deals it a round).
+   *
+   * The `?dev` overlay needs this because a duo nulls the scene's round for as
+   * long as it runs, and every force is gated on a live round — so an adult who
+   * taps a mode button during a duo got nothing at all, from every button, for
+   * the whole duo. Only reachable when nothing is mid-celebration, so no duo
+   * timer chain is in flight here (dealRound guards anyway).
+   */
+  abort(): void {
+    if (!this.active) return
+    this.active = false
+    for (const friend of this.friends) {
+      friend.bubble?.destroy()
+      // The LEFT rig is the scene's own walker — it is reused, never destroyed.
+      if (friend.rig === this.scene.monsterRig) continue
+      this.scene.tweens.killTweensOf(friend.rig.container)
+      friend.rig.container.destroy()
+    }
+    this.friends = []
+    this.scene.monsterRig.duo = null
+  }
+
   /** Deal one of the three duo rounds: fresh foods, fresh tray, fresh bubbles. */
   private dealRound(): void {
+    // An aborted duo may still have this queued behind a celebration; dealing
+    // here would build a duo tray over whatever is on stage now.
+    if (!this.active) return
     // A fresh round is feedable again — clear the celebration guard so drops
     // (and friend taps) are live once more, exactly like the solo startRound.
     this.scene.transitioning = false
@@ -333,12 +373,16 @@ export class DuoMode {
     friend.rig.squintEyes()
     friend.rig.shakeHead()
 
-    const slot = layout.slotPos(this.scene.metrics(), img.getData('slot') as number)
     const base = this.scene.tray.foodBaseScale(img)
-    this.scene.tray.arcTo(img, slot.x, slot.y, 520, () => {
-      img.setInteractive()
-      if (!this.active) this.scene.tray.fadeOutFood(img)
-    })
+    this.scene.tray.arcTo(
+      img,
+      () => this.scene.tray.homePos(img),
+      520,
+      () => {
+        img.setInteractive()
+        if (!this.active) this.scene.tray.fadeOutFood(img)
+      },
+    )
     this.scene.tweens.add({
       targets: img,
       scaleX: base,

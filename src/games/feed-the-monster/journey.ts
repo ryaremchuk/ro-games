@@ -14,8 +14,8 @@
  * meter owns difficulty, the journey owns visible progress.
  */
 
-import { foodById } from './logic'
-import type { Food, Rng } from './logic'
+import { FOOD_COLORS, foodById } from './logic'
+import type { Food, FoodColor, Rng } from './logic'
 
 // ─── Growth ──────────────────────────────────────────────────────────────────
 
@@ -109,14 +109,36 @@ export const BIG_BITE_STUCK_SPITS = 2
 export const BIG_BITE_CHANCE = 0.12
 
 /**
- * How many steps this fed round grows the friend. A big bite (+2) fires as an
- * INVISIBLE catch-up once the child has spat back enough on this friend that it
- * has fallen behind — so a struggling toddler can never get stuck on the
- * +1/−1 treadmill a pure size threshold would allow — plus a rare random
- * sprinkle for joy even when they're cruising. Pure + seedable (see rng).
+ * How much bigger every tray food sits during a big-bite round. One of the three
+ * layers that ANNOUNCE the round (see the scene's announceBigBite): the glowing
+ * plates carry the state, the friend's lip-smack the moment, and this the
+ * instant read. Doubles as a small kindness — bigger food is easier to grab.
+ */
+export const BIG_BITE_FOOD_BOOST = 1.15
+
+/**
+ * Has the child fallen behind on THIS friend (enough wrong feeds that the
+ * +1/−1 treadmill would trap them)? The catch-up half of growAmount, without
+ * the dice — the scene also polls it mid-round, so a round that turns rough
+ * can upgrade to a big bite while it is still being played.
+ */
+export function isStuck(friendSpitBacks: number): boolean {
+  return friendSpitBacks >= BIG_BITE_STUCK_SPITS
+}
+
+/**
+ * How many steps a fed round grows the friend. A big bite (+2) fires as a
+ * catch-up once the child has spat back enough on this friend that it has
+ * fallen behind — so a struggling toddler can never get stuck on the +1/−1
+ * treadmill a pure size threshold would allow — plus a rare random sprinkle for
+ * joy even when they're cruising. Pure + seedable (see rng).
+ *
+ * The scene rolls this at round START (not on completion) so the round can be
+ * announced to the child; the catch-up half is re-checked live on every spit
+ * back via isStuck.
  */
 export function growAmount(opts: { friendSpitBacks: number; rng: Rng }): 1 | 2 {
-  if (opts.friendSpitBacks >= BIG_BITE_STUCK_SPITS) return BIG_BITE
+  if (isStuck(opts.friendSpitBacks)) return BIG_BITE
   return opts.rng() < BIG_BITE_CHANCE ? BIG_BITE : NORMAL_BITE
 }
 
@@ -155,7 +177,7 @@ export function shrinkStep(journey: JourneyState): JourneyState {
  * the round grows BOTH one synchronized step; after DUO_GROW_STEPS they are full
  * and walk to the lineup together as a pair. Two friends grown in three rounds
  * (vs 2×GROW_STEPS solo) — a deliberate pace + variety burst, injected on its
- * own data+chance axis (logic.shouldInjectDuo), NOT the difficulty meter.
+ * own variety axis (session.ts's setlist deck), NOT the difficulty meter.
  */
 export const DUO_GROW_STEPS = 3
 
@@ -185,7 +207,7 @@ export function duoFeedStep(growthStep: number): { next: number; done: boolean }
  * A completed duo graduates BOTH friends: friendsFed advances by two. If that
  * fills the episode's quota the episode completes (grand dance + next theme);
  * otherwise the next (solo or duo) friend arrives. A duo is only ever injected
- * with ≥2 slots left (logic.shouldInjectDuo), so friendsFed never overshoots.
+ * with ≥2 slots left (session.SetlistContext.duoAllowed), so friendsFed never overshoots.
  */
 export function duoComplete(journey: JourneyState): { next: JourneyState; outcome: FeedOutcome } {
   const friendsFed = journey.friendsFed + DUO_FRIENDS
@@ -200,6 +222,112 @@ export function duoComplete(journey: JourneyState): { next: JourneyState; outcom
     outcome: 'episode-complete',
   }
 }
+
+// ─── Commissions: the food the child draws ────────────────────────────────────
+//
+// A commission is a JOURNEY beat, not a task-registry row: it arrives with the
+// first friend of an episode, at most once per episode, so it never competes with
+// the round generator and always lands on an existing seam (the child has just
+// watched a dance party — the pad is not interrupting a round).
+
+/**
+ * 0-based episode index a commission can first arrive in — i.e. episode TWO. By
+ * then the child has fed five friends and seen one full transition before the
+ * game ever asks them to MAKE something.
+ */
+export const COMMISSION_MIN_EPISODE = 1
+
+/** The colour meter at which the ask upgrades from "draw anything" to "draw
+ * something <colour>" — mirrors the `color` task kind's own unlock. */
+export const COMMISSION_COLOR_MIN_SKILL = 2
+
+export interface CommissionContext {
+  journey: JourneyState
+  /** Episode index of the last commission OFFERED (−1 if never). */
+  lastCommissionEpisode: number
+  /**
+   * Colours the child already owns a drawn food for, NEWEST FIRST (that is the
+   * order shared/pixel/artStore.newestPerTag returns).
+   */
+  ownedColors: readonly FoodColor[]
+}
+
+/** Which gate turned the ask down, or null when one is due. */
+export type CommissionBlock =
+  /** Too early in the journey — episode < COMMISSION_MIN_EPISODE. */
+  | 'episode'
+  /** This episode has already had its one ask. */
+  | 'already-this-episode'
+  /** Mid-friend: the ask only lands on a fresh friend, before its first feed. */
+  | 'friend-in-progress'
+
+export interface CommissionGate {
+  /** The colour to ask for, or null for "not now". */
+  color: FoodColor | null
+  /** Why not, when color is null. */
+  blockedBy: CommissionBlock | null
+}
+
+/**
+ * Whether a drawing is asked for right now, which colour, and — when it is not —
+ * WHICH RULE said no.
+ *
+ * The reason is part of the return value rather than something a caller re-derives
+ * because the cadence of this beat is the least settled thing in the game: Ros's
+ * own words on 2026-07-27 were that he cannot tell when it triggers. The dev panel
+ * reads this, so the answer an adult sees on the device is the rule itself and not
+ * a second copy of it that can drift.
+ *
+ * The colour asked is the one the child does NOT own yet, in FOOD_COLORS order, so
+ * the ask has a reason the child can feel ("there is nothing brown here") and over
+ * a few sessions they end up owning one food of every colour — a collection that
+ * fills itself. Once all six are owned the OLDEST slot is refreshed.
+ *
+ * Checks run most-informative first (all of them must pass either way, so the order
+ * changes only which reason is reported).
+ */
+export function commissionGate(ctx: CommissionContext): CommissionGate {
+  const { journey } = ctx
+  if (journey.episode < COMMISSION_MIN_EPISODE) return { color: null, blockedBy: 'episode' }
+  if (ctx.lastCommissionEpisode >= journey.episode) {
+    return { color: null, blockedBy: 'already-this-episode' }
+  }
+  // The first friend of the episode, before it has been fed anything.
+  if (journey.friendsFed !== 0 || journey.growthStep !== 0) {
+    return { color: null, blockedBy: 'friend-in-progress' }
+  }
+
+  const owned = new Set(ctx.ownedColors)
+  const missing = FOOD_COLORS.find((color) => !owned.has(color))
+  // All six owned — refresh the one whose drawing is oldest (last, newest-first).
+  const color = missing ?? ctx.ownedColors[ctx.ownedColors.length - 1] ?? FOOD_COLORS[0]
+  return { color, blockedBy: null }
+}
+
+/** Which colour to commission right now, or null for "not now". */
+export function commissionColor(ctx: CommissionContext): FoodColor | null {
+  return commissionGate(ctx).color
+}
+
+/**
+ * Rounds after a drawing is made before the friend asks for it BY NAME. This is
+ * the emotional payoff of the whole feature and it costs nothing mechanically —
+ * an ordinary count request whose foodId is the drawn food (logic's
+ * RoundContext.preferFoodId).
+ */
+export const DRAWN_CALLBACK_ROUNDS = 3
+
+/**
+ * How long the friend has the stage to itself to ASK for a drawing before the
+ * easel rises over it.
+ *
+ * The easel fills the screen, so whatever is not understood in this window is not
+ * understood at all: without it the pad appeared on the same frame as the ask and
+ * the child never saw anyone ask. Long enough for a 3-year-old to look at the
+ * bubble and the friend (the two-note cue plus a lip smack land inside it), short
+ * enough that an adult does not think the game has stalled.
+ */
+export const COMMISSION_ANNOUNCE_MS = 1500
 
 // ─── Friend looks: colors + growth details ───────────────────────────────────
 

@@ -13,6 +13,8 @@
 import Phaser from 'phaser'
 import { darken } from './journey'
 import type { Episode } from './journey'
+import { foodById } from './logic'
+import { allRecipeFoods } from './recipes'
 import { artKey } from './art'
 import type { XY } from './layout'
 
@@ -23,6 +25,13 @@ import type { XY } from './layout'
 const FOOD_ART_SCALE: Record<string, number> = {
   lemon: 0.8, // big round citrus — dwarfed the thinner foods at full size
 }
+
+/**
+ * Height the belt pieces are AUTHORED at, in CSS px. The scene stretches them to
+ * layout.beltHeight, so this only fixes their internal proportions (tread rib
+ * size, front-edge lip, roller diameter) — not how tall the belt looks.
+ */
+const BELT_TEX_H_CSS = 74
 
 /** Per-food visual-scale correction (evens out oddly-cropped art slices). */
 export function foodScale(foodId: string): number {
@@ -66,6 +75,14 @@ export function blobPoints(cx: number, cy: number, r: number, seed: number): Pha
   return samples
 }
 
+/** Margin around an emoji glyph, × its font size (emoji overflow the em box,
+ * and measureText lies about them — pad rather than measure). */
+const EMOJI_PAD_FRAC = 0.25
+/** Margin around an outlined text glyph, × its font size. */
+const GLYPH_PAD_FRAC = 0.32
+/** Outline width on a text glyph, × its font size. */
+const GLYPH_STROKE_FRAC = 0.16
+
 /** Pre-render an emoji to a CanvasTexture at physical pixels (crisp on retina). */
 export function emojiTexture(
   scene: Phaser.Scene,
@@ -76,7 +93,7 @@ export function emojiTexture(
 ): void {
   if (scene.textures.exists(key)) return
   const fontPx = Math.round(cssSize * dpr)
-  const pad = Math.ceil(fontPx * 0.25) // emoji overflow the em box; don't trust measureText
+  const pad = Math.ceil(fontPx * EMOJI_PAD_FRAC)
   const side = fontPx + pad * 2
   const tex = scene.textures.createCanvas(key, side, side)
   if (!tex) return
@@ -99,7 +116,7 @@ export function glyphTexture(
 ): void {
   if (scene.textures.exists(key)) return
   const fontPx = Math.round(cssSize * dpr)
-  const pad = Math.ceil(fontPx * 0.32)
+  const pad = Math.ceil(fontPx * GLYPH_PAD_FRAC)
   const side = fontPx + pad * 2
   const tex = scene.textures.createCanvas(key, side, side)
   if (!tex) return
@@ -109,12 +126,24 @@ export function glyphTexture(
   ctx.textBaseline = 'middle'
   ctx.lineJoin = 'round'
   ctx.strokeStyle = 'rgba(61,58,75,0.85)'
-  ctx.lineWidth = Math.max(2, fontPx * 0.16)
+  ctx.lineWidth = Math.max(2, fontPx * GLYPH_STROKE_FRAC)
   ctx.strokeText(char, side / 2, side / 2)
   ctx.fillStyle = '#ffffff'
   ctx.fillText(char, side / 2, side / 2)
   tex.refresh() // required for the WebGL upload
 }
+
+/**
+ * How much of a `makeBlobTexture` square the blob's ink actually covers.
+ *
+ * The blob is padded into a 2.4r box and the bezier smoothing pulls its outline
+ * back inside r, so it paints ~0.71 of the box and the rest is transparent
+ * margin. Every consumer's tile size is tuned against the PADDED box, so
+ * shipped art that replaces a blob — trimmed tight to its own ink — must be
+ * scaled by this to keep the same footprint, or it renders ~40% bigger. Pinned
+ * against blobPoints in textures.test.ts so the two cannot drift apart.
+ */
+export const BLOB_PAINT_FRAC = 0.719
 
 export function makeBlobTexture(
   scene: Phaser.Scene,
@@ -152,6 +181,266 @@ export function monsterTexture(scene: Phaser.Scene, color: number, bodyR: number
   return key
 }
 
+// A magpie: black head and back, white belly, a long dark tail, one big friendly
+// eye, an orange beak. Mischievous, never menacing — the thief is shooed, it
+// squawks, it comes back another day. A magpie because it flies, reads
+// universally as a thief, and looks at home in all four episode themes.
+const MAGPIE_DARK = 0x2b2b38
+const MAGPIE_SHEEN = 0x3f4a6b
+const MAGPIE_LIGHT = 0xf4f4f8
+const BEAK = 0xf7a03c
+
+/** Canvas the bird frames are authored on, in CSS px (all three share it). */
+const THIEF_W_CSS = 132
+const THIEF_H_CSS = 108
+
+/**
+ * The three thief frames on one shared canvas and one shared anchor:
+ * `ftm-thief-fly-up` / `-fly-down` (alternate for flight) and `-perch` (standing,
+ * head down, beak forward mid-peck).
+ *
+ * FALLBACK ONLY now: `art/thief-*.png` ship, so thiefMode.frameKey picks the
+ * sprites through the usual hasArt() contract and these shapes are what a player
+ * sees before the art loads. Keep the three poses and the shared anchor in step
+ * with the sprites — the same display box is force-fit onto whichever wins.
+ */
+function buildThiefFrames(scene: Phaser.Scene, px: (css: number) => number): void {
+  const w = px(THIEF_W_CSS)
+  const h = px(THIEF_H_CSS)
+  // Body centre, identical in every frame — this is the shared anchor.
+  const cx = w * 0.46
+  const cy = h * 0.54
+  const bodyR = h * 0.26
+
+  const frames: Array<{ key: string; wing: 'up' | 'down' | 'folded'; perch: boolean }> = [
+    { key: 'ftm-thief-fly-up', wing: 'up', perch: false },
+    { key: 'ftm-thief-fly-down', wing: 'down', perch: false },
+    { key: 'ftm-thief-perch', wing: 'folded', perch: true },
+  ]
+
+  for (const frame of frames) {
+    if (scene.textures.exists(frame.key)) continue
+    const g = scene.add.graphics()
+
+    // Tail: a long dark wedge sweeping back and up.
+    g.fillStyle(MAGPIE_DARK, 1)
+    g.fillTriangle(
+      cx - bodyR * 0.4,
+      cy,
+      cx - bodyR * 3.1,
+      frame.perch ? cy + bodyR * 0.9 : cy - bodyR * 0.5,
+      cx - bodyR * 2.9,
+      frame.perch ? cy + bodyR * 1.5 : cy + bodyR * 0.2,
+    )
+
+    // Legs (perched only) — two little sticks onto the plate.
+    if (frame.perch) {
+      g.lineStyle(px(5), BEAK, 1)
+      for (const dx of [-bodyR * 0.3, bodyR * 0.25]) {
+        g.lineBetween(cx + dx, cy + bodyR * 0.7, cx + dx, cy + bodyR * 1.5)
+      }
+    }
+
+    // Body: white belly under a dark back.
+    g.fillStyle(MAGPIE_LIGHT, 1)
+    g.fillEllipse(cx, cy + bodyR * 0.18, bodyR * 1.85, bodyR * 1.7)
+    g.fillStyle(MAGPIE_DARK, 1)
+    g.fillEllipse(cx - bodyR * 0.15, cy - bodyR * 0.42, bodyR * 1.75, bodyR * 1.15)
+
+    // Head: dark, tilted down for the peck frame.
+    const headX = cx + bodyR * 0.95
+    const headY = frame.perch ? cy - bodyR * 0.05 : cy - bodyR * 0.72
+    g.fillStyle(MAGPIE_DARK, 1)
+    g.fillCircle(headX, headY, bodyR * 0.74)
+
+    // Beak, forward (and down when pecking).
+    g.fillStyle(BEAK, 1)
+    g.fillTriangle(
+      headX + bodyR * 0.5,
+      headY - bodyR * 0.16,
+      headX + bodyR * 0.5,
+      headY + bodyR * 0.22,
+      headX + bodyR * (frame.perch ? 1.5 : 1.45),
+      headY + bodyR * (frame.perch ? 0.6 : 0.05),
+    )
+
+    // One big friendly eye with a catchlight — the whole difference between
+    // "cheeky" and "creepy".
+    g.fillStyle(0xffffff, 1)
+    g.fillCircle(headX + bodyR * 0.2, headY - bodyR * 0.2, bodyR * 0.27)
+    g.fillStyle(0x1a1622, 1)
+    g.fillCircle(headX + bodyR * 0.26, headY - bodyR * 0.18, bodyR * 0.15)
+    g.fillStyle(0xffffff, 1)
+    g.fillCircle(headX + bodyR * 0.2, headY - bodyR * 0.26, bodyR * 0.06)
+
+    // The wing, which is the only thing that differs between the flight frames.
+    g.fillStyle(MAGPIE_SHEEN, 1)
+    if (frame.wing === 'up') {
+      g.fillTriangle(
+        cx - bodyR * 0.2,
+        cy - bodyR * 0.3,
+        cx + bodyR * 0.9,
+        cy - bodyR * 2.5,
+        cx - bodyR * 1.5,
+        cy - bodyR * 1.5,
+      )
+    } else if (frame.wing === 'down') {
+      g.fillTriangle(
+        cx - bodyR * 0.2,
+        cy - bodyR * 0.1,
+        cx + bodyR * 0.8,
+        cy + bodyR * 1.9,
+        cx - bodyR * 1.5,
+        cy + bodyR * 1.1,
+      )
+    } else {
+      g.fillEllipse(cx - bodyR * 0.25, cy + bodyR * 0.05, bodyR * 1.2, bodyR * 0.8)
+    }
+    // A white wing flash — the magpie's signature.
+    g.fillStyle(MAGPIE_LIGHT, 0.9)
+    if (frame.wing === 'folded') {
+      g.fillEllipse(cx - bodyR * 0.5, cy + bodyR * 0.2, bodyR * 0.5, bodyR * 0.42)
+    }
+
+    g.generateTexture(frame.key, w, h)
+    g.destroy()
+  }
+}
+
+/** Canvas the `+` / `=` glyphs are authored on, CSS px (square). */
+const OP_TEX_CSS = 40
+/** Arm length of `+`/`=`, × the canvas side — also their paint fraction. */
+const OP_ARM_FRAC = 0.72
+/** Bar thickness, × the canvas side. */
+const OP_BAR_FRAC = 0.2
+/** Gap between the two `=` bars, × the canvas side. */
+const OP_GAP_FRAC = 0.16
+/**
+ * Operator ink: a soft slate, deliberately QUIETER than a food or a ✓ badge. The
+ * glyphs are grammar, not content — the child has to read the pictures first and
+ * the joins second.
+ */
+const OP_INK = 0x6f6b80
+
+/**
+ * `ftm-plus` and `ftm-equals` — two crossed rounded bars, and two stacked ones.
+ * The bar thickness and the gap are shares of the canvas, so the pair stays a
+ * matched set at whatever size the recipe panel resolves to.
+ */
+function buildOperatorGlyphs(scene: Phaser.Scene, px: (css: number) => number): void {
+  const side = px(OP_TEX_CSS)
+  const bar = side * OP_BAR_FRAC
+  const arm = side * OP_ARM_FRAC
+
+  if (!scene.textures.exists('ftm-plus')) {
+    const g = scene.add.graphics()
+    g.fillStyle(OP_INK, 1)
+    g.fillRoundedRect((side - arm) / 2, (side - bar) / 2, arm, bar, bar / 2)
+    g.fillRoundedRect((side - bar) / 2, (side - arm) / 2, bar, arm, bar / 2)
+    g.generateTexture('ftm-plus', side, side)
+    g.destroy()
+  }
+
+  if (!scene.textures.exists('ftm-equals')) {
+    const gap = side * OP_GAP_FRAC
+    const g = scene.add.graphics()
+    g.fillStyle(OP_INK, 1)
+    g.fillRoundedRect((side - arm) / 2, side / 2 - gap / 2 - bar, arm, bar, bar / 2)
+    g.fillRoundedRect((side - arm) / 2, side / 2 + gap / 2, arm, bar, bar / 2)
+    g.generateTexture('ftm-equals', side, side)
+    g.destroy()
+  }
+}
+
+// ─── UI marks ────────────────────────────────────────────────────────────────
+//
+// The small non-food symbols: 🚫, ✓, ?, +, =, ✏️ and the celebration ⭐. Each is
+// procedural by default and each can be replaced by an `art/<name>.png`.
+
+/** Ring radius of the ban sign, CSS px. */
+const BAN_R_CSS = 34
+/** Ring stroke of the ban sign, CSS px. */
+const BAN_STROKE_CSS = 8
+/** The ban ring's outer diameter over its padded canvas: the stroke straddles
+ * the radius, so the canvas carries half a stroke of margin all round. */
+const BAN_PAINT_FRAC = (BAN_R_CSS * 2 + BAN_STROKE_CSS) / (BAN_R_CSS * 2 + BAN_STROKE_CSS * 2)
+/** An emoji glyph's ink over its padded canvas (see EMOJI_PAD_FRAC). */
+const EMOJI_PAINT_FRAC = 1 / (1 + 2 * EMOJI_PAD_FRAC)
+/**
+ * The "?" glyph's INK HEIGHT over its padded canvas. A 900-weight "?" stands
+ * about 0.72em tall, the outline adds half its width top and bottom
+ * (GLYPH_STROKE_FRAC), and the canvas is 1 + 2·GLYPH_PAD_FRAC ems.
+ */
+const Q_PAINT_FRAC = (0.72 + GLYPH_STROKE_FRAC) / (1 + 2 * GLYPH_PAD_FRAC)
+
+/** A UI symbol that shipped art may replace: its procedural fallback, how much
+ * of that fallback's square box the procedural ink covers, and the axis the
+ * fraction is measured on. */
+export interface UiMark {
+  /** Procedural texture key, used when no `art/<name>.png` shipped. */
+  readonly fallback: string
+  /** Share of the fallback texture's box its ink really covers, on `along`. */
+  readonly frac: number
+  /** Axis `frac` is measured on; art keeps its own aspect ratio about it. */
+  readonly along: 'width' | 'height'
+}
+
+/**
+ * Every UI mark, keyed by its `art/<name>.png` name.
+ *
+ * All seven procedural textures are PADDED — the ban ring leaves half a stroke
+ * of margin, the operator arms span 0.72 of their square, an emoji or glyph
+ * canvas is padded so nothing clips. Shipped art is trimmed tight to its ink, so
+ * a consumer sizing against the padded box has to scale the art by `frac` or the
+ * mark renders up to 85% too big. Exactly the contract BLOB_PAINT_FRAC states
+ * for the blobs; `markScale` applies it.
+ *
+ * `along` matters because these sprites are NOT square: "?" is far taller than
+ * wide and "=" far wider than tall, so stretching either into the caller's
+ * square box would deform it. The art is fitted on one axis and free on the
+ * other.
+ */
+export const UI_MARKS = {
+  ban: { fallback: 'ftm-ban', frac: BAN_PAINT_FRAC, along: 'width' },
+  // The ✓ disc fills its canvas edge to edge — nothing to normalize.
+  check: { fallback: 'ftm-check', frac: 1, along: 'width' },
+  q: { fallback: 'ftm-q', frac: Q_PAINT_FRAC, along: 'height' },
+  plus: { fallback: 'ftm-plus', frac: OP_ARM_FRAC, along: 'width' },
+  equals: { fallback: 'ftm-equals', frac: OP_ARM_FRAC, along: 'width' },
+  pencil: { fallback: 'ftm-pencil', frac: EMOJI_PAINT_FRAC, along: 'width' },
+  star: { fallback: 'ftm-star', frac: EMOJI_PAINT_FRAC, along: 'width' },
+} as const satisfies Record<string, UiMark>
+
+/** Name of a UI mark — also its `art/<name>.png` file name. */
+export type UiMarkName = keyof typeof UI_MARKS
+
+/** Font size the ⭐ particle is drawn at, CSS px. */
+const STAR_FONT_CSS = 30
+/** Font size the ✏️ commission mark is drawn at, CSS px. */
+const PENCIL_FONT_CSS = 40
+/** The ⭐ particle's full padded box, CSS px — the footprint a celebration star
+ * occupied at `scale: 1` before any art shipped, and the box art is fitted to. */
+export const STAR_BOX_CSS = STAR_FONT_CSS * (1 + 2 * EMOJI_PAD_FRAC)
+
+/**
+ * Uniform scale that puts a mark's ink inside `box`, the square footprint the
+ * layout gives it. The procedural textures are square, so scaling by
+ * `box / width` reproduces the old `setDisplaySize(box, box)` exactly; art is
+ * scaled to `box * frac` on its fitted axis and keeps its aspect ratio.
+ *
+ * Returned as a number (not applied) because particle emitters need the factor
+ * itself — see FeedTheMonsterScene.buildEmitters.
+ */
+export function markScale(
+  mark: UiMark,
+  tex: { width: number; height: number },
+  box: number,
+  isArt: boolean,
+): number {
+  if (!isArt) return box / tex.width
+  return (box * mark.frac) / (mark.along === 'width' ? tex.width : tex.height)
+}
+
 /**
  * Build every procedural texture the scene needs for the current journey point
  * (friend body, plate, splash, ban/check badges, "?" glyph, particles, halo,
@@ -166,7 +455,9 @@ export function buildSceneTextures(
 
   monsterTexture(scene, opts.color, opts.bodyR)
 
-  // Plate under each tray food.
+  // Plate under each tray food, and under every dish riding the belt. The
+  // FALLBACK look: an `art/plate.png` takes over through scene.look(), and an
+  // episode's `marker-<id>` doily outranks both (see tray.dressPlate).
   if (!scene.textures.exists('ftm-plate')) {
     const pr = px(42)
     const g = scene.add.graphics()
@@ -178,13 +469,16 @@ export function buildSceneTextures(
     g.destroy()
   }
 
-  // Color splash for the task panel tiles (white, tinted per request color).
+  // Color splash for the task panel tiles: drawn WHITE because every tile
+  // tints it (the request colour, the neutral dots backing, the grey "?"
+  // socket). An `art/splash.png` replaces it through scene.look() and must be
+  // white/light-grey for the same reason.
   makeBlobTexture(scene, 'ftm-splash', px(26), 0xffffff, 11)
 
   // Ban sign for "not" rounds: red ring + diagonal bar (🚫, drawn crisp).
   if (!scene.textures.exists('ftm-ban')) {
-    const r = px(34)
-    const stroke = px(8)
+    const r = px(BAN_R_CSS)
+    const stroke = px(BAN_STROKE_CSS)
     const side = r * 2 + stroke * 2
     const g = scene.add.graphics()
     g.lineStyle(stroke, 0xe5484d, 1)
@@ -216,6 +510,13 @@ export function buildSceneTextures(
   // (colour requests, the pattern answer, the not-round progress sockets).
   glyphTexture(scene, opts.dpr, 'ftm-q', '?', 30)
 
+  // The recipe equation's operators, for the pot's panel: `part + part = dish`.
+  // Drawn as SHAPES, not text — the player cannot read, so "+" and "=" have to
+  // arrive as pictures with the same fat, soft, rounded look as the rest of the
+  // art. Authored square at OP_TEX_CSS and stretched to the solved cell size, so
+  // one texture serves every viewport (see layout.recipePanel).
+  buildOperatorGlyphs(scene, px)
+
   // Particles.
   if (!scene.textures.exists('ftm-confetti')) {
     const g = scene.add.graphics()
@@ -231,7 +532,110 @@ export function buildSceneTextures(
     g.generateTexture('ftm-dot', px(12), px(12))
     g.destroy()
   }
-  emojiTexture(scene, opts.dpr, 'ftm-star', '⭐', 30)
+  emojiTexture(scene, opts.dpr, 'ftm-star', '⭐', STAR_FONT_CSS)
+  // The commission ask: "make me one" (see requestBubble.showCommission).
+  emojiTexture(scene, opts.dpr, 'ftm-pencil', '✏️', PENCIL_FONT_CSS)
+
+  // ── The thief ────────────────────────────────────────────────────────────
+  // Separate FULL-BODY frames, swapped — no face-anchored parts, no rigged wings.
+  // That is what the whack-a-mole critters do, and it is the pattern that has not
+  // caused layout bugs; anything hung off a socket has to sit right at every scale
+  // on every screen (see journey.auraIntensity for why the worn accessories went).
+  // All three thief frames share ONE body anchor, so swapping them cannot make the
+  // bird jump.
+  buildThiefFrames(scene, px)
+
+  // The kitchen POT: a friendly wide pot, 3/4 view, two handles, NO LID (the
+  // contents must be visible — that is the whole read of a kitchen round). Drawn
+  // neutral so episode.palette can tint it, thick soft outline to match the food
+  // sprites' style.
+  if (!scene.textures.exists('ftm-pot')) {
+    const w = px(150)
+    const h = px(120)
+    const g = scene.add.graphics()
+    const bodyTop = h * 0.3
+    // Handles first, so the body overlaps them.
+    g.lineStyle(px(11), 0x8f8f98, 1)
+    for (const side of [-1, 1] as const) {
+      g.beginPath()
+      g.arc(
+        w / 2 + side * w * 0.35,
+        bodyTop + (h - bodyTop) * 0.28,
+        w * 0.12,
+        side < 0 ? Math.PI * 0.35 : Math.PI * 0.65,
+        side < 0 ? Math.PI * 1.65 : Math.PI * 1.95,
+      )
+      g.strokePath()
+    }
+    // Body: a bucket that tapers slightly toward the base.
+    g.fillStyle(0x6f6f78, 1)
+    g.fillRoundedRect(w * 0.13, bodyTop, w * 0.74, h - bodyTop, {
+      tl: px(6),
+      tr: px(6),
+      bl: px(22),
+      br: px(22),
+    })
+    // Rim, and the dark opening behind it.
+    g.fillStyle(0x8f8f98, 1)
+    g.fillEllipse(w / 2, bodyTop, w * 0.84, h * 0.24)
+    g.fillStyle(0x413f4a, 1)
+    g.fillEllipse(w / 2, bodyTop + px(2), w * 0.7, h * 0.17)
+    // A soft highlight down the left of the body — makes it read as metal.
+    g.fillStyle(0xb4b4bd, 0.5)
+    g.fillRoundedRect(w * 0.2, bodyTop + h * 0.16, w * 0.1, (h - bodyTop) * 0.62, px(8))
+    g.generateTexture('ftm-pot', w, h)
+    g.destroy()
+  }
+
+  // ── Conveyor belt ────────────────────────────────────────────────────────
+  // Drawn procedurally and NEUTRAL GREY on purpose: every piece is tinted by
+  // episode.palette.table at runtime, so one set of art themes itself across all
+  // four episodes instead of needing four variants. A shipped
+  // `art/belt-strip.png` etc. would take over through the same hasArt() contract
+  // every other look in this game already uses.
+
+  // The running surface, as a horizontally TILEABLE segment: the tread pattern
+  // must meet itself at both edges, because the belt is drawn as a tileSprite
+  // whose tilePositionX scrolls — that scroll IS the visible motion.
+  if (!scene.textures.exists('ftm-belt')) {
+    const period = px(48)
+    const h = px(BELT_TEX_H_CSS)
+    const lip = h * 0.28 // darker front edge, so the belt reads as 3/4 view
+    const g = scene.add.graphics()
+    g.fillStyle(0xd9d9de, 1)
+    g.fillRect(0, 0, period, h - lip)
+    g.fillStyle(0xb2b2ba, 1)
+    g.fillRect(0, h - lip, period, lip)
+    // Two tread ribs per period, inset so neither touches the seam.
+    g.fillStyle(0xc4c4cb, 1)
+    for (const at of [period * 0.22, period * 0.68]) {
+      g.fillRect(at, px(3), period * 0.1, h - lip - px(6))
+    }
+    // A soft highlight along the top edge — the light on a metal belt.
+    g.fillStyle(0xf0f0f4, 0.75)
+    g.fillRect(0, 0, period, px(3))
+    g.generateTexture('ftm-belt', period, h)
+    g.destroy()
+  }
+
+  // One end roller / drum cap, seen from the side; mirrored for the other end.
+  if (!scene.textures.exists('ftm-belt-roller')) {
+    const r = px(BELT_TEX_H_CSS / 2)
+    const g = scene.add.graphics()
+    g.fillStyle(0xb2b2ba, 1)
+    g.fillCircle(r, r, r)
+    g.fillStyle(0xd9d9de, 1)
+    g.fillCircle(r, r, r * 0.62)
+    g.fillStyle(0x9a9aa2, 1)
+    g.fillCircle(r, r, r * 0.2)
+    g.generateTexture('ftm-belt-roller', r * 2, r * 2)
+    g.destroy()
+  }
+
+  // Nothing is drawn at the belt's entry edge. A doorway texture used to live
+  // here, but on the device it read as a brown rectangle on top of the first
+  // plate rather than a kitchen, so the belt is now just the strip and its two
+  // rollers; a dish simply rides in from off screen (see conveyorMode.buildBelt).
 
   // Growth-aura halo: a soft radial glow, tinted per friend and scaled/faded
   // by growth in applyAura. A CanvasTexture gradient stays a crisp bloom at
@@ -252,8 +656,15 @@ export function buildSceneTextures(
     }
   }
 
-  for (const food of opts.episode.foods) {
-    if (!hasArt(`food-${food.id}`))
-      emojiTexture(scene, opts.dpr, `ftm-food-${food.id}`, food.emoji, opts.foodCss)
+  // Every food this episode can put on the tray — its own pool, PLUS anything a
+  // kitchen recipe names. A recipe's parts are pushed onto the tray by id
+  // regardless of the episode (a burger needs bread wherever it is cooked), so
+  // skipping them here would leave a missing-texture box on the plate. They all
+  // happen to ship art today; this makes it structural rather than lucky.
+  const needed = new Map<string, string>()
+  for (const food of opts.episode.foods) needed.set(food.id, food.emoji)
+  for (const id of allRecipeFoods()) needed.set(id, foodById(id).emoji)
+  for (const [id, emoji] of needed) {
+    if (!hasArt(`food-${id}`)) emojiTexture(scene, opts.dpr, `ftm-food-${id}`, emoji, opts.foodCss)
   }
 }

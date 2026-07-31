@@ -42,6 +42,14 @@ export interface FeedTestState {
   mouth: { xCss: number; yCss: number }
   /** How many picture tiles the thought bubble shows. */
   bubbleTiles: number
+  /**
+   * The food each of those tiles shows, in panel order (null for a colour blot, a
+   * dots frame or an unfilled slot) — so a spec can assert WHAT the friend asked
+   * for, e.g. that a kitchen round's bubble holds exactly the finished dish.
+   */
+  bubbleFoodIds: Array<string | null>
+  /** The friend's task-panel box in css px (it must never collide with the pot's). */
+  bubbleBox: { xCss: number; yCss: number; wCss: number; hCss: number }
   /** The visible long-term journey (episode / friends fed / growth step). */
   journey: JourneyState
   /** Active episode theme id (drives the food pool + palette). */
@@ -52,11 +60,212 @@ export interface FeedTestState {
   aura: number
   /** Fed friends standing in the lineup. */
   miniCount: number
+  /**
+   * Is the round being played a "big bite" (+2 growth)? Decided at round start
+   * and announced to the child (lip smack, glowing tray, bigger food), or
+   * upgraded mid-round once the child has struggled enough on this friend.
+   */
+  bigBite: boolean
+  /**
+   * Scale multiplier on every tray food: 1 normally, journey.BIG_BITE_FOOD_BOOST
+   * while a big-bite round is dressed. Asserts the INDICATION is really up, not
+   * just the flag (the glow + lip smack are canvas-only, this one is readable).
+   */
+  foodBoost: number
   /** True while a two-friend duo bonus round is on stage. */
   duoActive: boolean
   /** Per-friend duo state while a duo is live (else null) — lets a spec feed
    * each mouth the food it wants. */
   duo: DuoState | null
+  /**
+   * The live commission (else null): which colour was asked, whether the ask NAMES
+   * the colour (it does not below the colour-round unlock, where it is simply
+   * "draw anything"), and which half of the beat is playing — `asking` while the
+   * friend is visibly asking and the easel has NOT arrived yet, `drawing` once it
+   * has.
+   */
+  commission: {
+    color: string
+    askColor: boolean
+    phase: 'asking' | 'drawing'
+  } | null
+  /**
+   * Why the drawing ask will or will not fire right now — read straight off the
+   * pure rule (journey.commissionGate), so the dev panel can answer "why did that
+   * not just happen?" without keeping a second copy of the rule.
+   */
+  commissionGate: {
+    /** Colour the rule would ask for right now, or null when nothing is due. */
+    dueColor: string | null
+    /** Which gate said no (null when one is due). */
+    blockedBy: string | null
+    /** Episode index of the last ask offered; −1 = never. */
+    lastEpisode: number
+    /** Does the ask NAME a colour yet, or is it still "draw anything"? */
+    namesColor: boolean
+    /** Colours the child already owns a drawing for, newest first. */
+    ownedColors: string[]
+  }
+  /** Food ids of the child's drawings currently in the rotation (max 6). */
+  drawnFoodIds: string[]
+  /** True while this round's food rides the conveyor belt instead of the tray. */
+  conveyorActive: boolean
+  /** Live belt state while a conveyor round is on stage (else null). */
+  conveyor: ConveyorState | null
+  /** The belt's own adaptive meter, 0..BELT_SKILL_MAX. */
+  beltSkill: number
+  /** Live kitchen state while a `dish` round is on stage (else null). */
+  kitchen: KitchenState | null
+  /** The thief bird on stage right now (else null). */
+  visitor: VisitorState | null
+  /** The thief axis's own adaptive meter, 0..THIEF_SKILL_MAX. */
+  thiefSkill: number
+  /**
+   * The variety axis: which KIND of round is on stage and where the session's
+   * setlist stands (see ./session). Exposed because the whole point of the axis is
+   * a RHYTHM across rounds, which no single round can show — a spec plays a dozen
+   * rounds and asserts the blocks, and the `?dev` panel shows an adult on the iPad
+   * why the belt is not out yet.
+   */
+  setlist: SetlistSnapshot
+}
+
+/** Where the session's setlist stands right now. */
+export interface SetlistSnapshot {
+  /** The mode the round on stage plays. */
+  mode: 'classic' | 'conveyor' | 'kitchen' | 'duo'
+  /** Rounds of this block still to come after the one on stage. */
+  left: number
+  /** Blocks started this session (the first is the classic warm-up). */
+  blocks: number
+  /** Specials still in the deck, in draw order — the next few blocks, visible. */
+  deck: string[]
+  /** Specials unlocked by the current episode (what the deck is built from). */
+  unlocked: string[]
+}
+
+/** The thief bird, mid-visit. */
+export interface VisitorState {
+  /** telegraph → approach → peck → leaving. */
+  phase: 'telegraph' | 'approach' | 'peck' | 'leaving'
+  /** Tray slot it is after. */
+  slot: number
+  /** The food on that plate. */
+  foodId: string
+  /** ms left in the peck window (0 outside it). */
+  msLeft: number
+  /** Where to tap, in css px — live, so it tracks the bird through the glide. */
+  xCss: number
+  yCss: number
+  /**
+   * Radius of the tap circle around (xCss, yCss), in css px. Carried from the
+   * visitor's first frame on screen: a tap lands whether it is flying or perched.
+   */
+  tapRadiusCss: number
+  /**
+   * The bird's own shadow on the table, in css px (null once it is gone). Exposed
+   * because it shipped BROKEN: it slid in from the left while the bird came from
+   * the right and was never attached to it. A spec can now prove it sits under the
+   * bird (same x) and on the table line, not beside it.
+   */
+  shadow: { xCss: number; yCss: number } | null
+  /**
+   * The stolen food riding in the bird's claws, in css px (null while nothing has
+   * been taken). Also exposed because it shipped BROKEN: the food was tweened off
+   * to the LEFT on its own path while the bird flew RIGHT. A spec can now prove it
+   * holds a fixed offset from the bird all the way off screen.
+   */
+  carried: { xCss: number; yCss: number } | null
+}
+
+/** One cell of the recipe equation on the pot's panel. */
+export interface RecipeCellState {
+  kind: 'part' | 'plus' | 'equals' | 'result'
+  /** The food a part/result cell shows; null for the `+` and `=` glyphs. */
+  foodId: string | null
+  /** Is this part already in the pot (solid + ✓)? */
+  done: boolean
+  /** Cell centre / side in css px, so a spec can assert the equation fits. */
+  xCss: number
+  sizeCss: number
+}
+
+/**
+ * The POT's own task panel — the recipe as `part + part … = dish`. Separate from
+ * the friend's bubble on purpose: a kitchen round carries two asks and each hangs
+ * over the thing it is about.
+ */
+export interface RecipePanelState {
+  /** Panel centre + box in css px (the two panels must never overlap). */
+  xCss: number
+  yCss: number
+  wCss: number
+  hCss: number
+  /** Side of one picture cell in css px — how legible the equation actually is. */
+  tileCss: number
+  /** Did the panel take the slot below the pot (else above it)? */
+  below: boolean
+  cells: RecipeCellState[]
+}
+
+/** The pot, mid-cook. */
+export interface KitchenState {
+  recipeId: string
+  /** The food the pot will produce — the ONE thing this round feeds. */
+  result: string
+  /** Do the parts have to go in left-to-right? */
+  ordered: boolean
+  /** The recipe's parts, in order. */
+  ingredients: string[]
+  /** What is in the pot already, in the order it went in. */
+  contents: string[]
+  /** What the pot will accept right now (one entry in an ordered round). */
+  wants: string[]
+  /** The cooked dish sitting on the pot, once every part is in (else null). */
+  madeDish: string | null
+  /** Pot centre in css px, for real-pointer drags. */
+  potCss: { x: number; y: number }
+  /** The pot's drop radius in css px. */
+  snapCss: number
+  /** The pot's recipe panel while it is up (null once the dish is cooked). */
+  recipePanel: RecipePanelState | null
+}
+
+/**
+ * One PLATE on the belt — every lane, in lane order, whether it carries a dish or
+ * not. Empty plates are first-class: they keep riding after their dish is eaten or
+ * lifted, so a spec can assert the plate survived the feed.
+ */
+export interface ConveyorLaneState {
+  /** The dish on this plate, or null when the plate is riding empty. */
+  foodId: string | null
+  /** Would feeding this dish be correct right now? (logic.wantsFood) */
+  wanted: boolean
+  /** Is the plate past the hatch and on screen? */
+  visible: boolean
+  /** ms until the child could actually take it (0 = right now). */
+  msUntilReachable: number
+  /** Plate centre in css px, for real-pointer drags. */
+  xCss: number
+  yCss: number
+}
+
+export interface ConveyorState {
+  /** How fast a dish travels, css px per second (the belt-skill speed dial). */
+  dishSpeedCss: number
+  /** ms for one dish to cross the visible belt — derived from the speed. */
+  traverseMs: number
+  /** The anti-drought budget: the longest wait the child may ever face. */
+  maxWaitMs: number
+  /** Is the belt advancing? It never stops while a belt round is on stage. */
+  moving: boolean
+  /** Position along the loop in pitches — grows forever while the belt runs. */
+  offset: number
+  /** The dish in the child's hand right now, lifted off its plate (else null). */
+  lifted: string | null
+  /** Wanted dishes that rode the visible span un-taken this round. */
+  misses: number
+  lanes: ConveyorLaneState[]
 }
 
 /** One duo friend's live ask + where to drop its food (css px). */
@@ -93,29 +302,75 @@ export interface FeedTestApi {
   /**
    * Toggle the random "big bite" sprinkle (a fed round occasionally growing two
    * steps instead of one). Off makes growth deterministic (+1, unless the child
-   * is stuck) so a spec can assert an exact growthStep after a feed. The
-   * adaptive stuck-catch-up is unaffected — only the dice are silenced.
+   * is stuck) so a spec can assert an exact growthStep after a feed, and also
+   * takes back a big bite the LIVE round already won — the dice are rolled at
+   * round start, so by the time a spec speaks the round may already be golden.
+   * The adaptive stuck-catch-up is unaffected — only the dice are silenced.
    */
   setRandomBigBite: (enabled: boolean) => void
 
   // ─── `?dev` cheat overlay (FeedDevPanel) ─────────────────────────────────
-  // Incremental nudges for manual testing; each rebuilds the world + round
-  // and no-ops while a transition is in flight.
+  // Incremental nudges for manual testing; each rebuilds the world + round.
+  //
+  // EVERY force below returns false for exactly one reason — a celebration is in
+  // flight (`state().transitioning`), the one chain that must not be severed. A
+  // rare mode holding the stage (a duo, a drawing ask) is stood down first rather
+  // than refused, so the overlay is never inert; the panel shows the refusal so a
+  // busy game can never read as a broken panel.
   /** Grow/shrink the current friend by delta steps (clamped 0..GROW_STEPS-1). */
-  devHeroLevel: (delta: number) => void
+  devHeroLevel: (delta: number) => boolean
   /** Add/remove grown friends by delta (clamped 0..FRIENDS_PER_EPISODE-1). */
-  devFriends: (delta: number) => void
+  devFriends: (delta: number) => boolean
   /** Step the episode by delta (never below 0; themes wrap). */
-  devEpisode: (delta: number) => void
+  devEpisode: (delta: number) => boolean
   /** Re-deal the current round as a fresh task, leaving the journey untouched. */
-  devRegenerate: () => void
+  devRegenerate: () => boolean
+  /**
+   * Dress/undress the CURRENT round as a big bite (lip smack, glowing tray,
+   * bigger food) without waiting on the 12% dice — so an adult can eyeball the
+   * announcement on the device.
+   */
+  devBigBite: (on: boolean) => boolean
   /**
    * Start a two-friend duo bonus round now (dev/e2e), if ≥2 episode slots are
-   * free and no duo/transition is already running. Bypasses the data+chance
-   * axis so a spec (or a curious adult) can see a duo on demand.
-   * Returns false when a duo can't start right now.
+   * free. Bypasses the setlist so a spec (or a curious adult) can see a
+   * duo on demand. Returns false when a duo is already on stage, no slots are
+   * left, or a celebration is in flight.
    */
   forceDuo: () => boolean
+
+  // ─── Commissions (the food the child draws) ───────────────────────────────
+  /**
+   * Open the pixel pad with a commission at the next round start, bypassing the
+   * once-per-episode / episode-≥2 journey gate. Returns false when the pad is
+   * already up, or while a celebration is in flight.
+   */
+  forceCommission: () => boolean
+  /**
+   * Submit a synthetic drawing for the open commission so a spec need not paint
+   * 40 cells by hand: `cells` are `{x, y, color}` palette entries on a 16×16
+   * grid, or an empty array to close the pad blank. Returns false when no
+   * commission is open.
+   */
+  submitDrawing: (cells: Array<{ x: number; y: number; color: number }>) => boolean
+  /** Dev: retire every drawn food from the game (the gallery keeps the art). */
+  wipeDrawnFoods: () => boolean
+
+  // ─── Conveyor ─────────────────────────────────────────────────────────────
+  /**
+   * Re-deal the current round on the belt, bypassing the setlist.
+   * Returns false while a celebration is in flight.
+   */
+  forceConveyor: () => boolean
+
+  // ─── The thief ────────────────────────────────────────────────────────────
+  /**
+   * Send the bird in right now, bypassing its chance gate. A belt round is
+   * re-dealt as a still one first (a bird pecks at a plate, not at a lane).
+   * Returns false when one is already on stage, the tray is empty, or a
+   * celebration is in flight.
+   */
+  forceVisitor: () => boolean
 }
 
 declare global {
